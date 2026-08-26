@@ -1,0 +1,35 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="MCPIndexSearch.App.UI.Views.ModelSetupWindow"
+        Width="680" Height="500" MinWidth="620" MinHeight="460"
+        CanResize="False" WindowStartupLocation="CenterOwner"
+        Title="Set up semantic search">
+  <Grid RowDefinitions="Auto,Auto,Auto,*,Auto" Margin="24">
+    <StackPanel Spacing="6">
+      <TextBlock Text="Add multilingual semantic search" FontSize="23" FontWeight="SemiBold"/>
+      <TextBlock Text="Keyword search already works. This optional download lets MCPIndexSearch find passages with similar meaning in Portuguese, English, Spanish, and other languages." TextWrapping="Wrap"/>
+    </StackPanel>
+
+    <Border Grid.Row="1" Margin="0,18,0,12" Padding="14" Background="#172036" CornerRadius="8">
+      <StackPanel Spacing="8">
+        <TextBlock Text="Terms for the tokenizer" FontWeight="SemiBold"/>
+        <TextBlock Text="The IBM Granite model is Apache 2.0. Its tokenizer is derived from Google Gemma 3, and IBM states that use of the tokenizer is subject to the Gemma Terms of Use." TextWrapping="Wrap"/>
+        <Button Content="Review Gemma terms" HorizontalAlignment="Left" Click="OpenTerms"/>
+        <CheckBox x:Name="AcceptTermsCheckBox" Content="I have reviewed and accept the Gemma Terms of Use" Click="AcceptanceChanged"/>
+      </StackPanel>
+    </Border>
+
+    <TextBlock Grid.Row="2" Text="The model is stored only on this computer. Downloads are checksum-verified, resumable, and never include your documents." TextWrapping="Wrap" Foreground="#71809C"/>
+
+    <StackPanel Grid.Row="3" VerticalAlignment="Center" Spacing="10">
+      <TextBlock x:Name="StatusBlock" Text="Ready to download." TextWrapping="Wrap"/>
+      <ProgressBar x:Name="DownloadProgress" Minimum="0" Maximum="1" Value="0" Height="8"/>
+      <TextBlock x:Name="BytesBlock" Foreground="#71809C"/>
+    </StackPanel>
+
+    <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+      <Button x:Name="CancelButton" Content="Cancel" Click="Cancel"/>
+      <Button x:Name="InstallButton" Content="Download and enable" IsEnabled="False" Click="Install"/>
+    </StackPanel>
+  </Grid>
+</Window>

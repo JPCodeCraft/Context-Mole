@@ -1,0 +1,172 @@
+<Window xmlns="https://github.com/avaloniaui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:MCPIndexSearch.App.UI.ViewModels" xmlns:core="using:MCPIndexSearch.Core"
+        x:Class="MCPIndexSearch.App.UI.Views.MainWindow"
+        x:DataType="vm:MainViewModel" Width="1120" Height="720" MinWidth="900" MinHeight="600"
+        Icon="/Assets/avalonia-logo.ico" Title="MCPIndexSearch">
+  <Grid RowDefinitions="Auto,*" Background="#0B1020">
+    <Border Grid.Row="0" Background="#121A2E" Padding="22,16">
+      <Grid ColumnDefinitions="*,Auto">
+        <StackPanel Spacing="2"><TextBlock Text="MCPIndexSearch" FontSize="24" FontWeight="SemiBold" Foreground="White"/><TextBlock Text="Local document indexing for Codex" Foreground="#9CAAC5"/></StackPanel>
+        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8"><Button Content="{Binding CodexConnectionAction}" IsEnabled="{Binding CanChangeCodexConnection}" Click="ToggleCodexConnection"/><Button Content="Add project" Click="AddProject"/><Button Content="Quit" Click="QuitApplication"/></StackPanel>
+      </Grid>
+    </Border>
+    <Grid Grid.Row="1" ColumnDefinitions="310,*">
+      <Border Grid.Column="0" Background="#0F1628" BorderBrush="#26314A" BorderThickness="0,1,1,0" Padding="16">
+        <Grid RowDefinitions="Auto,*,Auto">
+          <TextBlock Text="Projects" FontSize="16" FontWeight="SemiBold" Foreground="White" Margin="4,0,0,12"/>
+          <ListBox Grid.Row="1" ItemsSource="{Binding Projects}" SelectedItem="{Binding SelectedProject}" Background="Transparent">
+            <ListBox.ItemTemplate><DataTemplate x:DataType="vm:ProjectItemViewModel"><Border Padding="12" Margin="0,0,0,7" CornerRadius="8" Background="#18223A"><StackPanel><TextBlock Text="{Binding Name}" FontWeight="SemiBold" Foreground="White"/><TextBlock Text="{Binding State}" FontSize="12" Foreground="#9CAAC5"/><ProgressBar Minimum="0" Maximum="{Binding DocumentCount}" Value="{Binding IndexedCount}" Height="4" Margin="0,8,0,0"/></StackPanel></Border></DataTemplate></ListBox.ItemTemplate>
+          </ListBox>
+          <TextBlock Grid.Row="2" Text="{Binding StatusMessage}" Foreground="#7887A4" TextWrapping="Wrap" Margin="4,12,4,0"/>
+        </Grid>
+      </Border>
+      <ScrollViewer Grid.Column="1">
+        <StackPanel Margin="28" Spacing="18">
+          <Border Background="#14243A" BorderBrush="#295383" BorderThickness="1" CornerRadius="8" Padding="14">
+            <StackPanel Spacing="4">
+              <TextBlock Text="Codex connection" Foreground="#8EC5FF" FontWeight="SemiBold"/>
+              <TextBlock Text="{Binding CodexConnectionMessage}" Foreground="#C8DDF3" TextWrapping="Wrap"/>
+            </StackPanel>
+          </Border>
+
+          <Border IsVisible="{Binding IsOcrUnavailable}" Background="#2B2515" BorderBrush="#665B2C" BorderThickness="1" CornerRadius="8" Padding="14">
+            <StackPanel Spacing="4">
+              <TextBlock Text="Local OCR setup" Foreground="#FFD878" FontWeight="SemiBold"/>
+              <TextBlock Text="{Binding OcrStatusMessage}" Foreground="#E7D9AA" TextWrapping="Wrap"/>
+            </StackPanel>
+          </Border>
+
+          <Border IsVisible="{Binding IsSemanticSearchUnavailable}" Background="#14243A" BorderBrush="#295383" BorderThickness="1" CornerRadius="8" Padding="14">
+            <Grid ColumnDefinitions="*,Auto">
+              <StackPanel Spacing="4">
+                <TextBlock Text="Optional semantic search" Foreground="#8EC5FF" FontWeight="SemiBold"/>
+                <TextBlock Text="{Binding SemanticSearchStatusMessage}" Foreground="#C8DDF3" TextWrapping="Wrap"/>
+              </StackPanel>
+              <Button Grid.Column="1" IsVisible="{Binding CanInstallSemanticModel}" Content="Set up" Click="SetupSemanticSearch" Margin="16,0,0,0" VerticalAlignment="Center"/>
+            </Grid>
+          </Border>
+
+          <Border IsVisible="{Binding HasSelection}" Classes="panel">
+            <StackPanel Spacing="10">
+              <Grid ColumnDefinitions="*,Auto">
+                <StackPanel Spacing="3">
+                  <TextBlock Text="Active indexing pipeline" FontSize="16" FontWeight="SemiBold" Foreground="White"/>
+                  <TextBlock Text="{Binding IndexingTimingSummary}" Foreground="#8796B3" FontSize="12"/>
+                </StackPanel>
+                <Border Grid.Column="1" Background="#173227" CornerRadius="10" Padding="10,4" VerticalAlignment="Center">
+                  <TextBlock Text="Live" Foreground="#76D6A0" FontSize="11" FontWeight="SemiBold"/>
+                </Border>
+              </Grid>
+
+              <TextBlock IsVisible="{Binding HasNoActiveIndexingItems}" Text="No files are being accessed right now. Queued files will appear here when a worker starts them." Foreground="#7887A4" TextWrapping="Wrap" Margin="0,4,0,0"/>
+
+              <ItemsControl ItemsSource="{Binding ActiveIndexingItems}">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate x:DataType="vm:IndexingActivityItemViewModel">
+                    <Border Background="#10192C" BorderBrush="#263653" BorderThickness="1" CornerRadius="8" Padding="12" Margin="0,3">
+                      <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto,Auto,Auto">
+                        <TextBlock Text="{Binding FileName}" FontWeight="SemiBold" Foreground="White" TextTrimming="CharacterEllipsis"/>
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="12" Margin="16,0,0,0">
+                          <TextBlock Text="{Binding ElapsedDisplay}" Foreground="#D9E2F3" FontFamily="Consolas" FontSize="12"/>
+                          <TextBlock Text="{Binding StageElapsedDisplay}" Foreground="#8FA4C8" FontFamily="Consolas" FontSize="12"/>
+                        </StackPanel>
+                        <TextBlock Grid.Row="1" Grid.ColumnSpan="2" Text="{Binding SourcePath}" Foreground="#70809E" FontSize="11" TextTrimming="CharacterEllipsis" Margin="0,3,0,0"/>
+                        <TextBlock Grid.Row="2" Grid.ColumnSpan="2" Text="{Binding StageDisplay}" Foreground="#78A7FF" FontSize="12" FontWeight="SemiBold" Margin="0,8,0,4"/>
+                        <ProgressBar Grid.Row="3" Grid.ColumnSpan="2" Minimum="0" Maximum="100" Value="{Binding PipelinePosition}" Height="5"/>
+                      </Grid>
+                    </Border>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </StackPanel>
+          </Border>
+
+          <TextBlock IsVisible="{Binding HasNoSelection}" Text="Select a project or create one to begin." Foreground="#9CAAC5" FontSize="18"/>
+
+          <ContentControl Content="{Binding SelectedProject}" HorizontalContentAlignment="Stretch">
+            <ContentControl.ContentTemplate>
+              <DataTemplate x:DataType="vm:ProjectItemViewModel">
+                <StackPanel Spacing="18">
+                  <Grid ColumnDefinitions="*,Auto">
+                    <StackPanel>
+                      <TextBlock Text="{Binding Name}" FontSize="28" FontWeight="SemiBold" Foreground="White"/>
+                      <TextBlock Text="{Binding Phase}" Foreground="#78A7FF" FontWeight="SemiBold"/>
+                    </StackPanel>
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+                      <Button Content="Pause / Resume" Click="TogglePause"/>
+                      <Button Content="Reindex" Click="ReindexProject"/>
+                      <Button Content="Edit" Click="EditProject"/>
+                      <Button Content="Remove" Click="RemoveProject" Foreground="#FF9292"/>
+                    </StackPanel>
+                  </Grid>
+
+                  <UniformGrid Columns="5">
+                    <Border Classes="metric"><StackPanel><TextBlock Text="Discovered" Classes="metricLabel"/><TextBlock Text="{Binding DocumentCount}" Classes="metricValue"/></StackPanel></Border>
+                    <Border Classes="metric"><StackPanel><TextBlock Text="Pending" Classes="metricLabel"/><TextBlock Text="{Binding PendingCount}" Classes="metricValue"/></StackPanel></Border>
+                    <Border Classes="metric"><StackPanel><TextBlock Text="Indexed" Classes="metricLabel"/><TextBlock Text="{Binding IndexedCount}" Classes="metricValue"/></StackPanel></Border>
+                    <Border Classes="metric"><StackPanel><TextBlock Text="Skipped" Classes="metricLabel"/><TextBlock Text="{Binding SkippedCount}" Classes="metricValue"/></StackPanel></Border>
+                    <Border Classes="metric"><StackPanel><TextBlock Text="Errors" Classes="metricLabel"/><TextBlock Text="{Binding ErrorCount}" Classes="metricValue"/></StackPanel></Border>
+                  </UniformGrid>
+
+                  <Border Classes="panel">
+                    <StackPanel Spacing="8">
+                      <TextBlock Text="Project index" FontSize="16" FontWeight="SemiBold" Foreground="White"/>
+                      <Grid ColumnDefinitions="160,*" RowDefinitions="Auto,Auto">
+                        <TextBlock Text="Last completed" Classes="fieldLabel"/>
+                        <TextBlock Grid.Column="1" Text="{Binding LastCompletedDisplay}" Foreground="#D9E2F3"/>
+                        <TextBlock Grid.Row="1" Text="Search generation" Classes="fieldLabel"/>
+                        <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding SearchGeneration}" Foreground="#D9E2F3"/>
+                      </Grid>
+                    </StackPanel>
+                  </Border>
+
+                  <Border Classes="panel">
+                    <StackPanel Spacing="8">
+                      <TextBlock Text="Folders" FontSize="16" FontWeight="SemiBold" Foreground="White"/>
+                      <ItemsControl ItemsSource="{Binding Folders}">
+                        <ItemsControl.ItemTemplate>
+                          <DataTemplate x:DataType="core:ProjectFolderInfo">
+                            <Border Background="#10192C" Padding="10" Margin="0,3" CornerRadius="5">
+                              <TextBlock Text="{Binding Path}" Foreground="#D9E2F3" TextWrapping="Wrap"/>
+                            </Border>
+                          </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                      </ItemsControl>
+                    </StackPanel>
+                  </Border>
+
+                  <Border Classes="panel">
+                    <StackPanel Spacing="8">
+                      <TextBlock Text="Recent errors" FontSize="16" FontWeight="SemiBold" Foreground="White"/>
+                      <ItemsControl ItemsSource="{Binding RecentErrors}">
+                        <ItemsControl.ItemTemplate>
+                          <DataTemplate x:DataType="core:ProjectErrorInfo">
+                            <Border Background="#251824" Padding="10" Margin="0,3" CornerRadius="5">
+                              <StackPanel>
+                                <TextBlock Text="{Binding Code}" Foreground="#FF9BA8" FontWeight="SemiBold"/>
+                                <TextBlock Text="{Binding Message}" Foreground="#E5CAD0" TextWrapping="Wrap"/>
+                                <TextBlock Text="{Binding SourcePath}" FontSize="11" Foreground="#9D7D86" TextWrapping="Wrap"/>
+                              </StackPanel>
+                            </Border>
+                          </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                      </ItemsControl>
+                    </StackPanel>
+                  </Border>
+                </StackPanel>
+              </DataTemplate>
+            </ContentControl.ContentTemplate>
+          </ContentControl>
+        </StackPanel>
+      </ScrollViewer>
+    </Grid>
+  </Grid>
+  <Window.Styles>
+    <Style Selector="Button"><Setter Property="Padding" Value="14,8"/><Setter Property="CornerRadius" Value="6"/></Style>
+    <Style Selector="Border.metric"><Setter Property="Background" Value="#151F35"/><Setter Property="CornerRadius" Value="8"/><Setter Property="Padding" Value="14"/><Setter Property="Margin" Value="0,0,8,0"/></Style>
+    <Style Selector="TextBlock.metricLabel"><Setter Property="Foreground" Value="#8796B3"/><Setter Property="FontSize" Value="12"/></Style>
+    <Style Selector="TextBlock.metricValue"><Setter Property="Foreground" Value="White"/><Setter Property="FontSize" Value="24"/><Setter Property="FontWeight" Value="SemiBold"/></Style>
+    <Style Selector="Border.panel"><Setter Property="Background" Value="#121A2E"/><Setter Property="CornerRadius" Value="10"/><Setter Property="Padding" Value="18"/></Style>
+    <Style Selector="TextBlock.fieldLabel"><Setter Property="Foreground" Value="#8796B3"/><Setter Property="Margin" Value="0,4,12,4"/></Style>
+  </Window.Styles>
+</Window>

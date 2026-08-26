@@ -1,0 +1,14 @@
+<Window xmlns="https://github.com/avaloniaui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="MCPIndexSearch.App.UI.Views.ProjectEditorWindow" Width="620" Height="480"
+        CanResize="False" WindowStartupLocation="CenterOwner" Title="Project">
+  <Grid RowDefinitions="Auto,Auto,*,Auto,Auto" Margin="22">
+    <TextBlock Text="Project name" FontWeight="SemiBold"/>
+    <TextBox x:Name="ProjectNameBox" Grid.Row="1" Margin="0,7,0,16" PlaceholderText="e.g. Client research"/>
+    <Grid Grid.Row="2" RowDefinitions="Auto,*">
+      <Grid ColumnDefinitions="*,Auto,Auto"><TextBlock Text="Folders" FontWeight="SemiBold"/><Button Grid.Column="1" Content="Add folders" Click="AddFolders" Margin="8,0"/><Button Grid.Column="2" Content="Remove" Click="RemoveFolder"/></Grid>
+      <ListBox x:Name="FoldersList" Grid.Row="1" Margin="0,8,0,0"/>
+    </Grid>
+    <TextBlock x:Name="ValidationBlock" Grid.Row="3" Foreground="#C33" TextWrapping="Wrap" MinHeight="32" Margin="0,12,0,4"/>
+    <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8"><Button Content="Cancel" Click="Cancel"/><Button Content="Save project" Click="Save"/></StackPanel>
+  </Grid>
+</Window>

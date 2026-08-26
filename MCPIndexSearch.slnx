@@ -1,0 +1,27 @@
+<Solution>
+  <Folder Name="/src/" />
+  <Folder Name="/src/App.UI/">
+    <Project Path="src/App.UI/MCPIndexSearch.App.UI.csproj" />
+  </Folder>
+  <Folder Name="/src/Core/">
+    <Project Path="src/Core/MCPIndexSearch.Core.csproj" />
+  </Folder>
+  <Folder Name="/src/Documents/">
+    <Project Path="src/Documents/MCPIndexSearch.Documents.csproj" />
+  </Folder>
+  <Folder Name="/src/Indexing/">
+    <Project Path="src/Indexing/MCPIndexSearch.Indexing.csproj" />
+  </Folder>
+  <Folder Name="/src/Infrastructure/">
+    <Project Path="src/Infrastructure/MCPIndexSearch.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/src/Mcp/">
+    <Project Path="src/Mcp/MCPIndexSearch.Mcp.csproj" />
+  </Folder>
+  <Folder Name="/src/Search/">
+    <Project Path="src/Search/MCPIndexSearch.Search.csproj" />
+  </Folder>
+  <Folder Name="/src/Storage/">
+    <Project Path="src/Storage/MCPIndexSearch.Storage.csproj" />
+  </Folder>
+</Solution>
