@@ -12,7 +12,7 @@ Updates replace application files only. The index database, downloaded models, l
 
 ## Development prerequisites
 
-- .NET SDK 10.0.203 or a compatible 10.0 feature band selected by `global.json`.
+- The exact .NET SDK 10.0.203 selected by `global.json`.
 - Windows x64 for the validated development smoke in this workspace. The supported publish targets are `win-x64`, `linux-x64` (glibc), `osx-x64`, and `osx-arm64`.
 - Internet access for NuGet restore and the first-run OCR model download, plus the optional semantic-model download when the user enables it. Indexing, OCR, and search then run locally without Docker, Python, Node.js, API keys, or cloud services.
 
