@@ -2,6 +2,14 @@
 
 MCPIndexSearch is a local desktop indexer for Codex. The Avalonia application manages named projects and folders; research and conversation stay in Codex through a separate, read-only stdio MCP executable. Source files are opened read-only and are never edited, launched, or used to fetch external resources.
 
+## Install on Windows
+
+Windows 10+ x64 users can download the latest `Setup.exe` from [GitHub Releases](https://github.com/JPCodeCraft/MCPIndexSearch/releases/latest). The Velopack installer is per-user, does not require administrator privileges, and creates shortcuts on the Desktop and Start menu. This initial release is not digitally signed, so Windows SmartScreen may display an unrecognized-app warning. Code signing is recommended before broader public distribution and can be added to the release workflow without changing the package or update-feed format.
+
+Installed Windows builds check the public stable `win-x64` GitHub Releases feed at startup and every six hours. New versions download in the background. When a package is ready, the app displays **Restart to update**; restarting remains unavailable while any project is actively indexing so services can drain cleanly before the binaries are replaced. Development builds, portable copies, macOS, and Linux do not query the update feed.
+
+Updates replace application files only. The index database, downloaded models, logs, and settings remain in their existing application-data directories. If the bundled MCP executable changes, the existing connection status displays **Update Codex connection** so Codex can be pointed to the new verified deployment.
+
 ## Development prerequisites
 
 - .NET SDK 10.0.203 or a compatible 10.0 feature band selected by `global.json`.
@@ -146,8 +154,21 @@ dotnet publish src/Mcp/MCPIndexSearch.Mcp.csproj -c Release -f net10.0 -r <rid> 
 
 See [docs/NATIVE-SMOKE.md](docs/NATIVE-SMOKE.md) for publish-output inspection and native platform checks. macOS/Linux checklists are supplied for execution on those platforms; they are not claimed as executed from Windows.
 
+### Publish a Windows release
+
+The Windows installer and automatic-update feed are produced only from strict stable tags in the form `vMAJOR.MINOR.PATCH`. The tag version is applied to both the desktop executable and bundled MCP sidecar. For example:
+
+```powershell
+git tag -a v0.1.0 -m "MCPIndexSearch v0.1.0"
+git push origin v0.1.0
+```
+
+`.github/workflows/release-windows.yml` restores committed lockfiles, builds and publishes self-contained `win-x64` output, verifies the approved branding source and required executables, downloads the previous feed when available for delta generation, and runs Velopack 1.2.0. It publishes the per-user installer, full package, available deltas, and `releases.win-x64.json` to a public GitHub Release using the workflow-provided `GITHUB_TOKEN`. Release notes are generated from GitHub history and embedded in both the package and Release.
+
+Manual self-contained builds for `linux-x64`, `osx-x64`, and `osx-arm64` remain available through the commands above, but those platforms do not currently have an installer or automatic updates.
+
 ## Architecture
 
 The modular monolith has eight projects: `App.UI`, `Core`, `Indexing`, `Documents`, `Search`, `Storage`, `Mcp`, and `Infrastructure`. SQLite runs in WAL mode with one bounded-channel writer and concurrent query-only read connections. Durable jobs use leases, retry backoff, startup recovery, observation epochs, and invisible staging revisions followed by atomic activation.
 
-Automated tests, installers, signing, update workflows, and release automation are intentionally outside this development build.
+The first public Windows release is intentionally unsigned. The release workflow keeps packaging and publication separate so a signing step can be inserted before Velopack publication later.

@@ -1,13 +1,18 @@
 using Avalonia;
+
 using MCPIndexSearch.Core;
 using MCPIndexSearch.Documents;
 using MCPIndexSearch.Indexing;
 using MCPIndexSearch.Infrastructure;
 using MCPIndexSearch.Storage;
+
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+
 using Serilog;
+
+using Velopack;
 
 namespace MCPIndexSearch.App.UI;
 
@@ -21,6 +26,8 @@ internal static class Program
     [STAThread]
     public static void Main(string[] args)
     {
+        VelopackApp.Build().Run();
+
         try
         {
             var paths = new AppPaths();
@@ -40,6 +47,7 @@ internal static class Program
             builder.Services.AddMcpIndexDocuments();
             builder.Services.AddWritableMcpIndexStorage();
             builder.Services.AddMcpIndexing();
+            builder.Services.AddSingleton<ApplicationUpdateService>();
             builder.Services.AddSingleton<ViewModels.MainViewModel>();
             _host = builder.Build();
             _host.StartAsync().GetAwaiter().GetResult();

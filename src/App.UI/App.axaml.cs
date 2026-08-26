@@ -3,8 +3,11 @@ using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
 using Avalonia.Platform;
+
 using MCPIndexSearch.App.UI.ViewModels;
 using MCPIndexSearch.App.UI.Views;
+using MCPIndexSearch.Indexing;
+
 using Microsoft.Extensions.DependencyInjection;
 
 namespace MCPIndexSearch.App.UI;
@@ -57,7 +60,7 @@ public partial class App : Application
             menu.Add(quit);
             _trayIcon = new TrayIcon
             {
-                Icon = new WindowIcon(AssetLoader.Open(new Uri("avares://MCPIndexSearch.App.UI/Assets/avalonia-logo.ico"))),
+                Icon = new WindowIcon(AssetLoader.Open(new Uri("avares://MCPIndexSearch.App.UI/Assets/mcp-index-search.ico"))),
                 ToolTipText = "MCPIndexSearch",
                 Menu = menu,
                 IsVisible = true
@@ -79,4 +82,20 @@ public partial class App : Application
 
     public bool ShouldHideOnClose => !_quitting && _trayIcon is not null && !OperatingSystem.IsLinux();
     public bool IsQuitting => _quitting;
+
+    public async Task RestartForUpdateAsync()
+    {
+        if (Program.Services.GetRequiredService<IndexingActivityTracker>().HasActiveItems)
+        {
+            throw new InvalidOperationException("Wait for active indexing to finish before restarting to update.");
+        }
+
+        var updateService = Program.Services.GetRequiredService<ApplicationUpdateService>();
+        if (!updateService.PrepareRestart())
+        {
+            throw new InvalidOperationException("No downloaded application update is ready to install.");
+        }
+
+        await QuitAsync();
+    }
 }

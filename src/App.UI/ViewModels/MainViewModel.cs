@@ -1,13 +1,16 @@
 using System.Collections.ObjectModel;
+
 using Avalonia.Threading;
+
 using CommunityToolkit.Mvvm.ComponentModel;
+
 using MCPIndexSearch.Core;
 using MCPIndexSearch.Indexing;
 using MCPIndexSearch.Infrastructure;
 
 namespace MCPIndexSearch.App.UI.ViewModels;
 
-public partial class MainViewModel : ViewModelBase
+internal partial class MainViewModel : ViewModelBase
 {
     private readonly IIndexWriter _writer;
     private readonly ISearchStore _store;
@@ -16,10 +19,12 @@ public partial class MainViewModel : ViewModelBase
     private readonly GraniteModelInstaller _modelInstaller;
     private readonly CodexMcpConfigurationService _codexConfiguration;
     private readonly IndexingActivityTracker _indexingActivities;
+    private readonly ApplicationUpdateService _applicationUpdates;
     private readonly SemaphoreSlim _refreshGate = new(1, 1);
     private CancellationTokenSource? _polling;
     private bool? _reportedOcrAvailable;
     private string? _reportedOcrMessage;
+    private bool _hasAnyActiveIndexingItems;
 
     public MainViewModel(
         IIndexWriter writer,
@@ -28,7 +33,8 @@ public partial class MainViewModel : ViewModelBase
         IEmbeddingGenerator embeddingGenerator,
         GraniteModelInstaller modelInstaller,
         CodexMcpConfigurationService codexConfiguration,
-        IndexingActivityTracker indexingActivities)
+        IndexingActivityTracker indexingActivities,
+        ApplicationUpdateService applicationUpdates)
     {
         _writer = writer;
         _store = store;
@@ -37,6 +43,9 @@ public partial class MainViewModel : ViewModelBase
         _modelInstaller = modelInstaller;
         _codexConfiguration = codexConfiguration;
         _indexingActivities = indexingActivities;
+        _applicationUpdates = applicationUpdates;
+        _applicationUpdates.SnapshotChanged += OnApplicationUpdateSnapshotChanged;
+        ApplicationUpdate = _applicationUpdates.Snapshot;
     }
 
     public ObservableCollection<ProjectItemViewModel> Projects { get; } = [];
@@ -62,6 +71,14 @@ public partial class MainViewModel : ViewModelBase
     [ObservableProperty]
     public partial string IndexingTimingSummary { get; set; } = "No files are currently active.";
 
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsApplicationUpdateVisible))]
+    [NotifyPropertyChangedFor(nameof(IsApplicationUpdateProgressVisible))]
+    [NotifyPropertyChangedFor(nameof(IsApplicationUpdateReady))]
+    [NotifyPropertyChangedFor(nameof(CanRestartForUpdate))]
+    [NotifyPropertyChangedFor(nameof(ApplicationUpdateMessage))]
+    public partial ApplicationUpdateSnapshot ApplicationUpdate { get; set; } = ApplicationUpdateSnapshot.Disabled;
+
     public bool IsOcrUnavailable => !_ocrEngine.IsAvailable;
     public string OcrStatusMessage => _ocrEngine.UnavailableReason ?? "Local PP-OCRv6 medium OCR is ready.";
     public bool IsSemanticSearchUnavailable => !_embeddingGenerator.IsAvailable;
@@ -73,6 +90,17 @@ public partial class MainViewModel : ViewModelBase
     public bool HasNoSelection => SelectedProject is null;
     public bool HasActiveIndexingItems => ActiveIndexingItems.Count > 0;
     public bool HasNoActiveIndexingItems => ActiveIndexingItems.Count == 0;
+    public bool IsApplicationUpdateVisible => ApplicationUpdate.State is
+        ApplicationUpdateState.Checking or
+        ApplicationUpdateState.Downloading or
+        ApplicationUpdateState.Ready or
+        ApplicationUpdateState.Error;
+    public bool IsApplicationUpdateProgressVisible => ApplicationUpdate.State == ApplicationUpdateState.Downloading;
+    public bool IsApplicationUpdateReady => ApplicationUpdate.State == ApplicationUpdateState.Ready;
+    public bool CanRestartForUpdate => IsApplicationUpdateReady && !_hasAnyActiveIndexingItems;
+    public string ApplicationUpdateMessage => IsApplicationUpdateReady && _hasAnyActiveIndexingItems
+        ? $"{ApplicationUpdate.Message} Restart will be available when indexing is idle."
+        : ApplicationUpdate.Message;
     public bool IsCodexConnected => CodexConnectionState == CodexMcpConnectionState.Connected;
     public bool CanChangeCodexConnection => CodexConnectionState is CodexMcpConnectionState.Connected
         or CodexMcpConnectionState.Disconnected or CodexMcpConnectionState.UpdateRequired;
@@ -101,6 +129,7 @@ public partial class MainViewModel : ViewModelBase
     {
         if (_polling is not null) return;
         _polling = new CancellationTokenSource();
+        _applicationUpdates.Start();
         _ = PrepareOcrAsync(_polling.Token);
         _ = RefreshCodexConnectionAsync(_polling.Token);
         _ = PollAsync(_polling.Token);
@@ -112,6 +141,7 @@ public partial class MainViewModel : ViewModelBase
         if (polling is null) return;
         polling.Cancel();
         polling.Dispose();
+        _applicationUpdates.Stop();
     }
 
     public async Task CreateAsync(string name, IReadOnlyList<string> folders) =>
@@ -322,6 +352,14 @@ public partial class MainViewModel : ViewModelBase
 
     private void ReconcileIndexingActivities(IndexingTimingSnapshot snapshot)
     {
+        var hasAnyActiveIndexingItems = _indexingActivities.HasActiveItems;
+        if (_hasAnyActiveIndexingItems != hasAnyActiveIndexingItems)
+        {
+            _hasAnyActiveIndexingItems = hasAnyActiveIndexingItems;
+            OnPropertyChanged(nameof(CanRestartForUpdate));
+            OnPropertyChanged(nameof(ApplicationUpdateMessage));
+        }
+
         for (var targetIndex = 0; targetIndex < snapshot.ActiveItems.Count; targetIndex++)
         {
             var incoming = snapshot.ActiveItems[targetIndex];
@@ -358,6 +396,11 @@ public partial class MainViewModel : ViewModelBase
         IndexingTimingSummary = $"{activeText} · {completedText}";
         OnPropertyChanged(nameof(HasActiveIndexingItems));
         OnPropertyChanged(nameof(HasNoActiveIndexingItems));
+    }
+
+    private void OnApplicationUpdateSnapshotChanged(object? sender, ApplicationUpdateSnapshot snapshot)
+    {
+        Dispatcher.UIThread.Post(() => ApplicationUpdate = snapshot);
     }
 
     private int IndexOfProject(Guid id, int startIndex)

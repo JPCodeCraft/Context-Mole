@@ -4,6 +4,7 @@
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\mcp-index-search.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
@@ -31,6 +32,7 @@
     <PackageReference Include="Microsoft.Extensions.Hosting" />
     <PackageReference Include="Serilog.Extensions.Hosting" />
     <PackageReference Include="Serilog.Sinks.File" />
+    <PackageReference Include="Velopack" />
   </ItemGroup>
 
   <Target Name="PublishBundledMcpServer" AfterTargets="Publish"
@@ -39,6 +41,6 @@
       <_McpBundleDirectory>$(PublishDir)mcp-server\</_McpBundleDirectory>
     </PropertyGroup>
     <MSBuild Projects="..\Mcp\MCPIndexSearch.Mcp.csproj" Targets="Publish" BuildInParallel="false"
-             Properties="Configuration=$(Configuration);TargetFramework=$(TargetFramework);RuntimeIdentifier=$(RuntimeIdentifier);SelfContained=$(SelfContained);PublishSingleFile=false;PublishTrimmed=false;PublishAot=false;PublishDir=$(_McpBundleDirectory);MCPIndexSearchSkipMcpBundle=true" />
+             Properties="Configuration=$(Configuration);TargetFramework=$(TargetFramework);RuntimeIdentifier=$(RuntimeIdentifier);SelfContained=$(SelfContained);Version=$(Version);SourceRevisionId=$(SourceRevisionId);ContinuousIntegrationBuild=$(ContinuousIntegrationBuild);PublishSingleFile=false;PublishTrimmed=false;PublishAot=false;PublishDir=$(_McpBundleDirectory);MCPIndexSearchSkipMcpBundle=true" />
   </Target>
 </Project>

@@ -1,9 +1,11 @@
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
+
 using MCPIndexSearch.App.UI.ViewModels;
 using MCPIndexSearch.Core;
 using MCPIndexSearch.Infrastructure;
+
 using Microsoft.Extensions.DependencyInjection;
 
 namespace MCPIndexSearch.App.UI.Views;
@@ -102,6 +104,20 @@ public partial class MainWindow : Window
     private async void QuitApplication(object? sender, RoutedEventArgs args)
     {
         if (Application.Current is App app) await app.QuitAsync();
+    }
+
+    private async void RestartToUpdate(object? sender, RoutedEventArgs args)
+    {
+        if (!ViewModel.CanRestartForUpdate || Application.Current is not App app) return;
+
+        try
+        {
+            await app.RestartForUpdateAsync();
+        }
+        catch (Exception exception)
+        {
+            await ConfirmWindow.ShowErrorAsync(this, exception.Message);
+        }
     }
 
     private async Task RunUiActionAsync(Func<Task> action)

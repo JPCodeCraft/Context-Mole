@@ -34,5 +34,6 @@
     <PackageVersion Include="SkiaSharp" Version="4.150.1" />
     <PackageVersion Include="System.Text.Encoding.CodePages" Version="10.0.11" />
     <PackageVersion Include="Tokenizers.HuggingFace" Version="3.23.1" />
+    <PackageVersion Include="Velopack" Version="1.2.0" />
   </ItemGroup>
 </Project>

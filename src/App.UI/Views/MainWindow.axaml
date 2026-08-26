@@ -2,7 +2,7 @@
         xmlns:vm="using:MCPIndexSearch.App.UI.ViewModels" xmlns:core="using:MCPIndexSearch.Core"
         x:Class="MCPIndexSearch.App.UI.Views.MainWindow"
         x:DataType="vm:MainViewModel" Width="1120" Height="720" MinWidth="900" MinHeight="600"
-        Icon="/Assets/avalonia-logo.ico" Title="MCPIndexSearch">
+        Icon="/Assets/mcp-index-search.ico" Title="MCPIndexSearch">
   <Grid RowDefinitions="Auto,*" Background="#0B1020">
     <Border Grid.Row="0" Background="#121A2E" Padding="22,16">
       <Grid ColumnDefinitions="*,Auto">
@@ -27,6 +27,17 @@
               <TextBlock Text="Codex connection" Foreground="#8EC5FF" FontWeight="SemiBold"/>
               <TextBlock Text="{Binding CodexConnectionMessage}" Foreground="#C8DDF3" TextWrapping="Wrap"/>
             </StackPanel>
+          </Border>
+
+          <Border IsVisible="{Binding IsApplicationUpdateVisible}" Background="#14243A" BorderBrush="#295383" BorderThickness="1" CornerRadius="8" Padding="14">
+            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
+              <StackPanel Spacing="7">
+                <TextBlock Text="Application update" Foreground="#8EC5FF" FontWeight="SemiBold"/>
+                <TextBlock Text="{Binding ApplicationUpdateMessage}" Foreground="#C8DDF3" TextWrapping="Wrap"/>
+                <ProgressBar IsVisible="{Binding IsApplicationUpdateProgressVisible}" Minimum="0" Maximum="100" Value="{Binding ApplicationUpdate.ProgressPercent}" Height="7"/>
+              </StackPanel>
+              <Button Grid.Column="1" Content="Restart to update" IsVisible="{Binding IsApplicationUpdateReady}" IsEnabled="{Binding CanRestartForUpdate}" Click="RestartToUpdate" VerticalAlignment="Center"/>
+            </Grid>
           </Border>
 
           <Border IsVisible="{Binding IsOcrUnavailable}" Background="#2B2515" BorderBrush="#665B2C" BorderThickness="1" CornerRadius="8" Padding="14">

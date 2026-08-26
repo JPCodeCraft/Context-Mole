@@ -1,4 +1,5 @@
 using System.Diagnostics;
+
 using MCPIndexSearch.Core;
 
 namespace MCPIndexSearch.Indexing;
@@ -36,6 +37,14 @@ public sealed class IndexingActivityTracker
     private readonly object _gate = new();
     private readonly Dictionary<Guid, ActiveActivity> _active = [];
     private readonly Dictionary<Guid, CompletedTiming> _completedByProject = [];
+
+    public bool HasActiveItems
+    {
+        get
+        {
+            lock (_gate) return _active.Count > 0;
+        }
+    }
 
     public IndexingActivityHandle Start(IndexJobLease job)
     {
