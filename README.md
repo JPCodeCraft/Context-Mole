@@ -51,6 +51,14 @@ $env:MCPINDEXSEARCH_DATA_DIR = Join-Path $env:TEMP "MCPIndexSearch-materializati
 dotnet run --file tools/MaterializationSmoke.cs
 ```
 
+ZIP/RAR recursive indexing and safe entry materialization (uses a committed RAR regression fixture and does not
+require WinRAR or 7-Zip):
+
+```powershell
+$env:MCPINDEXSEARCH_DATA_DIR = "$PWD/artifacts/archive-smoke-data"
+dotnet run --file tools/ArchiveSmoke.cs
+```
+
 Root-document inventory has a focused gate for lifecycle statuses, authorized filters, metadata aggregation, stable cursor pagination, and structured validation errors:
 
 ```powershell
@@ -126,7 +134,7 @@ All eight tools declare read-only, non-destructive, idempotent, closed-world ann
 
 ## Supported content and provenance
 
-The indexer supports PDF (including selective OCR for scanned pages), DOCX, XLSX, PPTX, TXT, Markdown, HTML, PNG, JPEG, BMP, GIF, WebP, TIFF, EML, MSG, and recursively supported attachments. Expansion is bounded by depth, count, individual size, aggregate size, and SHA-256 cycle detection. Encrypted, malformed, unsupported, or unavailable items are isolated as errors without stopping a project.
+The indexer supports PDF (including selective OCR for scanned pages), DOCX, XLSX, PPTX, TXT, Markdown, HTML, PNG, JPEG, BMP, GIF, WebP, TIFF, EML, MSG, ZIP, RAR, and recursively supported attachments. ZIP and RAR entries are streamed individually in archive order and are never expanded as a directory tree, so entry names such as `../file.txt` remain provenance rather than filesystem paths. Nested archives use the same depth, count, individual-size, aggregate-size, and SHA-256 cycle limits as email and document attachments. Encrypted, malformed, unsupported, or unavailable items are isolated as errors without stopping a project; unsupported archive entries remain available to `materialize_content` by their indexed `content_id`.
 
 Every passage stores its project/document/content identity, physical source path, file metadata, attachment chain, extraction method, OCR confidence when available, and a typed page/sheet/cell/slide/structure/email/image locator. Search returns only stored provenance and never synthesizes citations.
 

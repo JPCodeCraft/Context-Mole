@@ -97,6 +97,7 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
                 ".pptx" => await PresentationNodeAsync(bytes, name, mimeType, relationship, depth, context, cancellationToken),
                 ".eml" => await EmlNodeAsync(bytes, name, mimeType, relationship, depth, context, cancellationToken),
                 ".msg" => await MsgNodeAsync(bytes, name, mimeType, relationship, depth, context, cancellationToken),
+                ".zip" or ".rar" => await ArchiveNodeAsync(bytes, name, mimeType, relationship, extension, depth, context, cancellationToken),
                 ".png" or ".jpg" or ".jpeg" or ".bmp" or ".gif" or ".webp" or ".tif" or ".tiff" =>
                     await ImageNodeAsync(bytes, name, mimeType, relationship, cancellationToken),
                 _ => Rejected(name, mimeType, relationship, context, "unsupported_format", $"Unsupported attachment format: {extension ?? "unknown"}.")
@@ -298,6 +299,8 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => ".docx",
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" => ".xlsx",
             "application/vnd.openxmlformats-officedocument.presentationml.presentation" => ".pptx",
+            "application/zip" or "application/x-zip" or "application/x-zip-compressed" => ".zip",
+            "application/vnd.rar" or "application/x-rar" or "application/x-rar-compressed" => ".rar",
             "message/rfc822" => ".eml",
             "text/plain" => ".txt",
             "text/html" => ".html",
@@ -316,6 +319,8 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
         ".pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
         ".eml" => "message/rfc822",
         ".msg" => "application/vnd.ms-outlook",
+        ".zip" => "application/zip",
+        ".rar" => "application/vnd.rar",
         ".html" or ".htm" => "text/html",
         ".md" or ".markdown" => "text/markdown",
         ".txt" => "text/plain",

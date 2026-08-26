@@ -22,7 +22,7 @@ public sealed class McpTools(ISearchStore store, HybridSearchService search, ICo
     });
 
     [McpServerTool(Name = "search_project", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false, UseStructuredContent = true)]
-    [Description("Use to find evidence in one known project. Runs ranked keyword and local-semantic search over indexed passages and returns excerpts with IDs plus exact stored source, attachment-chain, and typed-location provenance; it does not return complete documents.")]
+    [Description("Use to find evidence in one known project. Runs ranked keyword and local-semantic search over indexed passages, including ZIP/RAR entries, and returns excerpts with IDs plus exact stored source, attachment-chain, and typed-location provenance; it does not return complete documents.")]
     public Task<object> SearchProject(Guid project_id, string query, int limit = 10, McpSearchFilters? filters = null,
         CancellationToken cancellationToken = default) => RunAsync(async () =>
     {
@@ -75,7 +75,7 @@ public sealed class McpTools(ISearchStore store, HybridSearchService search, ICo
     });
 
     [McpServerTool(Name = "list_attachments", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false, UseStructuredContent = true)]
-    [Description("Use to discover attachment content IDs and hierarchy for one indexed root document. Returns attachment metadata in deterministic preorder; it does not read, open, or materialize attachment bytes.")]
+    [Description("Use to discover attachment and archive-entry content IDs and hierarchy for one indexed root document. Returns metadata in deterministic preorder; it does not read, open, or materialize content bytes.")]
     public Task<object> ListAttachments(Guid project_id, Guid document_id, string? cursor = null, int limit = 100,
         CancellationToken cancellationToken = default) => RunAsync(async () =>
     {
@@ -96,7 +96,7 @@ public sealed class McpTools(ISearchStore store, HybridSearchService search, ICo
     });
 
     [McpServerTool(Name = "materialize_content", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false, UseStructuredContent = true)]
-    [Description("Use when another tool must open or verify an indexed root document or attachment, especially when formatting, tables, images, or structure matter. It validates project authorization and the indexed fingerprint; root content reuses its source path, while an attachment extracts only the selected content to collision-safe temporary storage. It does not open or render the file.")]
+    [Description("Use when another tool must open or verify an indexed root document, attachment, or ZIP/RAR entry, especially when formatting, tables, images, or structure matter. It validates project authorization and the indexed fingerprint; root content reuses its source path, while nested content extracts only the selected item to collision-safe temporary storage. It does not open or render the file.")]
     public Task<object> MaterializeContent(Guid project_id, Guid content_id,
         CancellationToken cancellationToken = default) => RunAsync(async () =>
     {

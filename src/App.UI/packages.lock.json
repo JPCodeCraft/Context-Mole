@@ -643,6 +643,7 @@
           "OpenMcdf": "[3.1.4, )",
           "PDFtoImage": "[5.4.0, )",
           "PdfPig": "[0.1.16, )",
+          "SharpCompress": "[0.50.4, )",
           "SkiaSharp": "[4.150.1, )"
         }
       },
@@ -802,6 +803,12 @@
         "requested": "[4.4.0, )",
         "resolved": "4.3.0",
         "contentHash": "+cDryFR0GRhsGOnZSKwaDzRRl4MupvJ42FhCE4zhQRVanX0Jpg6WuCBk59OVhVDPmab1bB+nRykAnykYELA9qQ=="
+      },
+      "SharpCompress": {
+        "type": "CentralTransitive",
+        "requested": "[0.50.4, )",
+        "resolved": "0.50.4",
+        "contentHash": "/hxjUR7DEX6mky8/LQXyrnrKioOL6D6veAID1EZpro+q4s02x5dHEYBV3qjEN6lDYYilDoQQ76BcmQj+lRx51w=="
       },
       "SkiaSharp": {
         "type": "CentralTransitive",

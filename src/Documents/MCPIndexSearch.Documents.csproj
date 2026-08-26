@@ -15,6 +15,7 @@
     <PackageReference Include="OpenMcdf" />
     <PackageReference Include="PdfPig" />
     <PackageReference Include="PDFtoImage" />
+    <PackageReference Include="SharpCompress" />
     <PackageReference Include="SkiaSharp" />
     <PackageReference Include="System.Text.Encoding.CodePages" />
   </ItemGroup>

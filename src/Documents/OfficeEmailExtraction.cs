@@ -416,6 +416,8 @@ public sealed partial class DocumentExtractionRegistry
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => ".docx",
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" => ".xlsx",
         "application/vnd.openxmlformats-officedocument.presentationml.presentation" => ".pptx",
+        "application/zip" or "application/x-zip" or "application/x-zip-compressed" => ".zip",
+        "application/vnd.rar" or "application/x-rar" or "application/x-rar-compressed" => ".rar",
         "message/rfc822" => ".eml",
         "image/png" => ".png",
         "image/jpeg" => ".jpg",

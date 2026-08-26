@@ -455,7 +455,8 @@ public static class SupportedContent
     public static readonly ReadOnlyCollection<string> Extensions = Array.AsReadOnly(new[]
     {
         ".pdf", ".docx", ".xlsx", ".pptx", ".txt", ".md", ".markdown", ".html", ".htm",
-        ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", ".tiff", ".eml", ".msg"
+        ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", ".tiff", ".eml", ".msg",
+        ".zip", ".rar"
     });
 
     public static bool IsSupported(string path) => Extensions.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase);

@@ -8,7 +8,7 @@ using Storage = MsgReader.Outlook.Storage;
 
 namespace MCPIndexSearch.Documents;
 
-public sealed class ContentMaterializationService(ISearchStore store, IAppPaths paths) : IContentMaterializer
+public sealed partial class ContentMaterializationService(ISearchStore store, IAppPaths paths) : IContentMaterializer
 {
     public const long DefaultMaxBytes = 250L * 1024 * 1024;
     public const string MaxBytesEnvironmentVariable = "MCPINDEXSEARCH_MATERIALIZE_MAX_BYTES";
@@ -156,6 +156,7 @@ public sealed class ContentMaterializationService(ISearchStore store, IAppPaths 
             ".pptx" => await ExtractPresentationChildAsync(containerBytes, ordinal, cancellationToken).ConfigureAwait(false),
             ".eml" => await ExtractEmlChildAsync(containerBytes, ordinal, cancellationToken).ConfigureAwait(false),
             ".msg" => ExtractMsgChild(containerBytes, ordinal),
+            ".zip" or ".rar" => await ExtractArchiveChildAsync(containerBytes, extension, ordinal, cancellationToken).ConfigureAwait(false),
             _ => throw new McpIndexException("unsupported_container", "The indexed parent content is not a supported attachment container.")
         };
     }
@@ -494,6 +495,8 @@ public sealed class ContentMaterializationService(ISearchStore store, IAppPaths 
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => ".docx",
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" => ".xlsx",
         "application/vnd.openxmlformats-officedocument.presentationml.presentation" => ".pptx",
+        "application/zip" or "application/x-zip" or "application/x-zip-compressed" => ".zip",
+        "application/vnd.rar" or "application/x-rar" or "application/x-rar-compressed" => ".rar",
         "application/vnd.ms-outlook" => ".msg",
         "message/rfc822" => ".eml",
         "text/plain" => ".txt",
@@ -518,6 +521,8 @@ public sealed class ContentMaterializationService(ISearchStore store, IAppPaths 
         ".pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
         ".eml" => "message/rfc822",
         ".msg" => "application/vnd.ms-outlook",
+        ".zip" => "application/zip",
+        ".rar" => "application/vnd.rar",
         ".html" or ".htm" => "text/html",
         ".md" or ".markdown" => "text/markdown",
         ".txt" => "text/plain",
