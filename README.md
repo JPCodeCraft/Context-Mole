@@ -101,9 +101,9 @@ Set `MCPINDEXSEARCH_DATA_DIR` to override the default data directory. Otherwise 
 dotnet run --project src/App.UI/MCPIndexSearch.App.UI.csproj -c Release --no-restore
 ```
 
-Create a project and select one or more non-overlapping folders. The UI reports discovered, pending, indexed, skipped, and error counts plus every actively accessed file. Each live row shows its pipeline stage, total elapsed time, time in the current stage, and pipeline position; the panel also reports active-time and successfully completed-file averages for the selected project during the current app session. Rows are reconciled in place so timer refreshes do not reset scrolling. Closing the window keeps indexing active when a usable tray icon is available; Linux uses a minimize/taskbar fallback. **Quit** cancels producers and OCR, drains the single database writer, checkpoints WAL, and stops the host.
+Create a project and select one or more non-overlapping folders. The UI reports discovered, pending, indexed, skipped, and error counts plus every actively accessed file. Each live row shows its pipeline stage, total elapsed time, time in the current stage, and pipeline position; the panel also reports the active-file count and successfully completed-file average for the selected project during the current app session. Rows are reconciled in place so timer refreshes do not reset scrolling. Closing the window keeps indexing active when a usable tray icon is available; Linux uses a minimize/taskbar fallback. **Quit** cancels producers and OCR, drains the single database writer, checkpoints WAL, and stops the host.
 
-Pause persists across restarts and stops new job dispatch while watchers continue to record changes. Reindex and remove both require confirmation. Removing a project deletes only local index records—originals remain untouched.
+Pause persists across restarts and stops new job dispatch while watchers continue to record changes. **Retry failed files** queues only documents currently carrying an unresolved error; successful files remain untouched. Retry, reindex, and remove require confirmation. Removing a project deletes only local index records—originals remain untouched.
 
 ## Register the read-only MCP server with Codex
 

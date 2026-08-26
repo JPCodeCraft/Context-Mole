@@ -18,6 +18,7 @@ internal partial class MainViewModel : ViewModelBase
     private readonly IEmbeddingGenerator _embeddingGenerator;
     private readonly GraniteModelInstaller _modelInstaller;
     private readonly CodexMcpConfigurationService _codexConfiguration;
+    private readonly CodexConnectionBannerDismissalStore _codexBannerDismissals;
     private readonly IndexingActivityTracker _indexingActivities;
     private readonly ApplicationUpdateService _applicationUpdates;
     private readonly SemaphoreSlim _refreshGate = new(1, 1);
@@ -33,6 +34,7 @@ internal partial class MainViewModel : ViewModelBase
         IEmbeddingGenerator embeddingGenerator,
         GraniteModelInstaller modelInstaller,
         CodexMcpConfigurationService codexConfiguration,
+        CodexConnectionBannerDismissalStore codexBannerDismissals,
         IndexingActivityTracker indexingActivities,
         ApplicationUpdateService applicationUpdates)
     {
@@ -42,6 +44,7 @@ internal partial class MainViewModel : ViewModelBase
         _embeddingGenerator = embeddingGenerator;
         _modelInstaller = modelInstaller;
         _codexConfiguration = codexConfiguration;
+        _codexBannerDismissals = codexBannerDismissals;
         _indexingActivities = indexingActivities;
         _applicationUpdates = applicationUpdates;
         _applicationUpdates.SnapshotChanged += OnApplicationUpdateSnapshotChanged;
@@ -67,6 +70,9 @@ internal partial class MainViewModel : ViewModelBase
 
     [ObservableProperty]
     public partial string CodexConnectionMessage { get; set; } = "Checking the Codex connection…";
+
+    [ObservableProperty]
+    public partial bool IsCodexConnectionBannerVisible { get; set; } = true;
 
     [ObservableProperty]
     public partial string IndexingTimingSummary { get; set; } = "No files are currently active.";
@@ -110,6 +116,8 @@ internal partial class MainViewModel : ViewModelBase
         CodexMcpConnectionState.UpdateRequired => "Update Codex connection",
         _ => "Connect to Codex"
     };
+
+    private CodexMcpConnectionStatus? CurrentCodexConnectionStatus { get; set; }
 
     public void RefreshAssetAvailability()
     {
@@ -168,6 +176,20 @@ internal partial class MainViewModel : ViewModelBase
         await MutateAsync(async () => { await _writer.RequestReindexAsync(id); return id; });
     }
 
+    public async Task RetryFailedFilesAsync()
+    {
+        if (SelectedProject is null) return;
+        var id = SelectedProject.Id;
+        var queued = await _writer.RetryFailedFilesAsync(id);
+        await RefreshAsync(id);
+        StatusMessage = queued switch
+        {
+            0 => "No failed files needed to be queued.",
+            1 => "Queued 1 failed file for retry.",
+            _ => $"Queued {queued} failed files for retry."
+        };
+    }
+
     public async Task RemoveAsync()
     {
         if (SelectedProject is null) return;
@@ -182,6 +204,13 @@ internal partial class MainViewModel : ViewModelBase
             : await _codexConfiguration.ConnectAsync().ConfigureAwait(false);
         await Dispatcher.UIThread.InvokeAsync(() => ApplyCodexConnectionStatus(result));
         return result;
+    }
+
+    public void DismissCodexConnectionBanner()
+    {
+        if (CurrentCodexConnectionStatus is { } status)
+            _codexBannerDismissals.Dismiss(status);
+        IsCodexConnectionBannerVisible = false;
     }
 
     public async Task RefreshAsync(Guid? preferredProjectId = null)
@@ -271,14 +300,20 @@ internal partial class MainViewModel : ViewModelBase
         }
         catch (Exception exception)
         {
-            await Dispatcher.UIThread.InvokeAsync(() => CodexConnectionMessage = exception.Message);
+            await Dispatcher.UIThread.InvokeAsync(() =>
+            {
+                CodexConnectionMessage = exception.Message;
+                IsCodexConnectionBannerVisible = true;
+            });
         }
     }
 
     private void ApplyCodexConnectionStatus(CodexMcpConnectionStatus status)
     {
+        CurrentCodexConnectionStatus = status;
         CodexConnectionState = status.State;
         CodexConnectionMessage = status.Message;
+        IsCodexConnectionBannerVisible = !_codexBannerDismissals.IsDismissed(status);
     }
 
     private void RefreshOcrAvailability()
@@ -384,12 +419,9 @@ internal partial class MainViewModel : ViewModelBase
         while (ActiveIndexingItems.Count > snapshot.ActiveItems.Count)
             ActiveIndexingItems.RemoveAt(ActiveIndexingItems.Count - 1);
 
-        TimeSpan? activeAverage = snapshot.ActiveItems.Count == 0
-            ? null
-            : TimeSpan.FromMilliseconds(snapshot.ActiveItems.Average(item => item.Elapsed.TotalMilliseconds));
         var activeText = snapshot.ActiveItems.Count == 0
             ? "No files active"
-            : $"{snapshot.ActiveItems.Count} active · average active time {IndexingActivityItemViewModel.FormatDuration(activeAverage!.Value)}";
+            : $"{snapshot.ActiveItems.Count} active";
         var completedText = snapshot.AverageCompletedDuration is { } average
             ? $"completed average {IndexingActivityItemViewModel.FormatDuration(average)} ({snapshot.CompletedSampleCount} this session)"
             : "completed average —";

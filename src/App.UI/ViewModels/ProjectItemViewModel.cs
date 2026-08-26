@@ -41,6 +41,7 @@ public sealed class ProjectItemViewModel : ViewModelBase
         : PendingCount > 0 ? "Queued" : "Ready";
 
     public int SkippedCount => Math.Max(0, DocumentCount - IndexedCount - PendingCount);
+    public bool CanRetryFailedFiles => State == ProjectState.Active && ErrorCount > 0;
     public string CurrentFileDisplay => string.IsNullOrWhiteSpace(CurrentFile) ? "—" : CurrentFile;
     public string LastCompletedDisplay => LastCompletedUtc?.ToLocalTime().ToString("g") ?? "Not yet completed";
 
@@ -53,6 +54,7 @@ public sealed class ProjectItemViewModel : ViewModelBase
 
         var previousPhase = Phase;
         var previousSkipped = SkippedCount;
+        var previousCanRetryFailedFiles = CanRetryFailedFiles;
         var previousCurrentFileDisplay = CurrentFileDisplay;
         var previousLastCompletedDisplay = LastCompletedDisplay;
 
@@ -69,6 +71,7 @@ public sealed class ProjectItemViewModel : ViewModelBase
 
         if (!string.Equals(previousPhase, Phase, StringComparison.Ordinal)) OnPropertyChanged(nameof(Phase));
         if (previousSkipped != SkippedCount) OnPropertyChanged(nameof(SkippedCount));
+        if (previousCanRetryFailedFiles != CanRetryFailedFiles) OnPropertyChanged(nameof(CanRetryFailedFiles));
         if (!string.Equals(previousCurrentFileDisplay, CurrentFileDisplay, StringComparison.Ordinal)) OnPropertyChanged(nameof(CurrentFileDisplay));
         if (!string.Equals(previousLastCompletedDisplay, LastCompletedDisplay, StringComparison.Ordinal)) OnPropertyChanged(nameof(LastCompletedDisplay));
     }

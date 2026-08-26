@@ -22,11 +22,14 @@
       </Border>
       <ScrollViewer Grid.Column="1">
         <StackPanel Margin="28" Spacing="18">
-          <Border Background="#14243A" BorderBrush="#295383" BorderThickness="1" CornerRadius="8" Padding="14">
-            <StackPanel Spacing="4">
-              <TextBlock Text="Codex connection" Foreground="#8EC5FF" FontWeight="SemiBold"/>
-              <TextBlock Text="{Binding CodexConnectionMessage}" Foreground="#C8DDF3" TextWrapping="Wrap"/>
-            </StackPanel>
+          <Border IsVisible="{Binding IsCodexConnectionBannerVisible}" Background="#14243A" BorderBrush="#295383" BorderThickness="1" CornerRadius="8" Padding="14">
+            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
+              <StackPanel Spacing="4">
+                <TextBlock Text="Codex connection" Foreground="#8EC5FF" FontWeight="SemiBold"/>
+                <TextBlock Text="{Binding CodexConnectionMessage}" Foreground="#C8DDF3" TextWrapping="Wrap"/>
+              </StackPanel>
+              <Button Grid.Column="1" Content="Close" Click="DismissCodexConnectionBanner" VerticalAlignment="Top" ToolTip.Tip="Dismiss this message"/>
+            </Grid>
           </Border>
 
           <Border IsVisible="{Binding IsApplicationUpdateVisible}" Background="#14243A" BorderBrush="#295383" BorderThickness="1" CornerRadius="8" Padding="14">
@@ -105,6 +108,7 @@
                     </StackPanel>
                     <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
                       <Button Content="Pause / Resume" Click="TogglePause"/>
+                      <Button Content="Retry failed files" Click="RetryFailedFiles" IsEnabled="{Binding CanRetryFailedFiles}"/>
                       <Button Content="Reindex" Click="ReindexProject"/>
                       <Button Content="Edit" Click="EditProject"/>
                       <Button Content="Remove" Click="RemoveProject" Foreground="#FF9292"/>

@@ -64,6 +64,9 @@ public partial class MainWindow : Window
         }
     }
 
+    private void DismissCodexConnectionBanner(object? sender, RoutedEventArgs args) =>
+        ViewModel.DismissCodexConnectionBanner();
+
     private async void SetupSemanticSearch(object? sender, RoutedEventArgs args)
     {
         var installer = Program.Services.GetRequiredService<GraniteModelInstaller>();
@@ -86,6 +89,14 @@ public partial class MainWindow : Window
     }
 
     private async void TogglePause(object? sender, RoutedEventArgs args) => await RunUiActionAsync(ViewModel.TogglePauseAsync);
+
+    private async void RetryFailedFiles(object? sender, RoutedEventArgs args)
+    {
+        if (ViewModel.SelectedProject is not { CanRetryFailedFiles: true }) return;
+        if (!await ConfirmWindow.AskAsync(this, "Retry failed files?",
+                "Only documents currently marked with errors will be queued again. Successfully indexed files will not be touched.")) return;
+        await RunUiActionAsync(ViewModel.RetryFailedFilesAsync);
+    }
 
     private async void ReindexProject(object? sender, RoutedEventArgs args)
     {

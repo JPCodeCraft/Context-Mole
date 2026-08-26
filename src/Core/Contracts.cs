@@ -58,6 +58,7 @@ public interface IIndexWriter
     Task UpdateProjectAsync(UpdateProjectRequest request, CancellationToken cancellationToken = default);
     Task SetProjectPausedAsync(Guid projectId, bool paused, CancellationToken cancellationToken = default);
     Task RequestReindexAsync(Guid projectId, CancellationToken cancellationToken = default);
+    Task<int> RetryFailedFilesAsync(Guid projectId, CancellationToken cancellationToken = default);
     Task RemoveProjectAsync(Guid projectId, CancellationToken cancellationToken = default);
     Task<ObservationResult> ObserveFileAsync(FileObservation observation, CancellationToken cancellationToken = default);
     Task HandleRenamedAsync(Guid projectId, Guid folderId, string oldPath, string newPath, CancellationToken cancellationToken = default);

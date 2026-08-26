@@ -192,6 +192,64 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
             return null;
         }, cancellationToken);
 
+    public Task<int> RetryFailedFilesAsync(Guid projectId, CancellationToken cancellationToken = default) =>
+        EnqueueAsync(async (connection, token) =>
+        {
+            using var transaction = connection.BeginTransaction();
+            var state = await GetProjectStateAsync(connection, transaction, projectId, token).ConfigureAwait(false);
+            if (state == ProjectState.Paused)
+            {
+                throw new McpIndexException("project_paused", "Resume the project before retrying failed files.");
+            }
+
+            await using var select = connection.CreateCommand();
+            select.Transaction = transaction;
+            select.CommandText =
+                """
+                SELECT d.id,d.observation_epoch
+                FROM documents d
+                WHERE d.project_id=$project AND d.tombstoned=0
+                  AND NOT EXISTS(
+                    SELECT 1 FROM index_jobs open_job
+                    WHERE open_job.project_id=$project AND open_job.document_id=d.id
+                      AND open_job.state IN ('queued','retry_wait','running')
+                  )
+                  AND (
+                  EXISTS(SELECT 1 FROM project_errors e WHERE e.project_id=$project AND e.document_id=d.id)
+                  OR COALESCE((
+                    SELECT j.state FROM index_jobs j
+                    WHERE j.project_id=$project AND j.document_id=d.id
+                    ORDER BY j.updated_utc DESC,j.id DESC LIMIT 1
+                  ),'')='failed'
+                )
+                ORDER BY d.path_key,d.id;
+                """;
+            select.Parameters.AddWithValue("$project", projectId.ToString());
+            var documents = new List<(Guid Id, long Epoch)>();
+            await using (var reader = await select.ExecuteReaderAsync(token).ConfigureAwait(false))
+            {
+                while (await reader.ReadAsync(token).ConfigureAwait(false))
+                {
+                    documents.Add((Guid.Parse(reader.GetString(0)), reader.GetInt64(1)));
+                }
+            }
+
+            var now = DateTimeOffset.UtcNow.ToString("O");
+            foreach (var document in documents)
+            {
+                var nextEpoch = document.Epoch + 1;
+                await ExecuteAsync(connection, transaction,
+                    "UPDATE documents SET observation_epoch=$epoch,updated_utc=$now WHERE id=$document;",
+                    [new("$epoch", nextEpoch), new("$now", now), new("$document", document.Id.ToString())], token)
+                    .ConfigureAwait(false);
+                await UpsertOpenJobAsync(connection, transaction, projectId, document.Id, nextEpoch,
+                    IndexJobKind.Reindex, now, token).ConfigureAwait(false);
+            }
+
+            await transaction.CommitAsync(token).ConfigureAwait(false);
+            return documents.Count;
+        }, cancellationToken);
+
     public Task RemoveProjectAsync(Guid projectId, CancellationToken cancellationToken = default) =>
         EnqueueAsync<object?>(async (connection, token) =>
         {
