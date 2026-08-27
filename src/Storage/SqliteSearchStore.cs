@@ -83,6 +83,28 @@ public sealed class SqliteSearchStore : ISearchStore
         return projects;
     }
 
+    public async Task<IReadOnlyList<ProjectFileTypeCount>> ListProjectFileTypeCountsAsync(Guid projectId,
+        CancellationToken cancellationToken = default)
+    {
+        if (!await IsInitializedAsync(cancellationToken).ConfigureAwait(false)) return [];
+
+        await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT extension,COUNT(*)
+            FROM documents
+            WHERE project_id=$project AND tombstoned=0
+            GROUP BY extension
+            ORDER BY COUNT(*) DESC,extension;
+            """;
+        command.Parameters.AddWithValue("$project", projectId.ToString());
+        var counts = new List<ProjectFileTypeCount>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            counts.Add(new ProjectFileTypeCount(reader.GetString(0), reader.GetInt32(1)));
+        return counts;
+    }
+
     public async Task<DocumentListResponse> ListDocumentsAsync(DocumentListRequest request,
         CancellationToken cancellationToken = default)
     {

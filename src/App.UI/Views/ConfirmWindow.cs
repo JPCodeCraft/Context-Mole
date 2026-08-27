@@ -7,37 +7,106 @@ namespace MCPIndexSearch.App.UI.Views;
 
 public sealed class ConfirmWindow : Window
 {
-    private ConfirmWindow(string title, string message, bool error)
+    private ConfirmWindow(string title, string message, bool singleAction, string acceptLabel, bool destructive)
     {
         Title = title;
-        Width = 460;
-        Height = 210;
+        Width = 480;
+        MinHeight = 220;
         CanResize = false;
+        SizeToContent = SizeToContent.Height;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
-        var accept = new Button { Content = error ? "OK" : "Continue", MinWidth = 90 };
-        accept.Click += (_, _) => Close(true);
-        var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Spacing = 8 };
-        if (!error)
+        Icon = new WindowIcon("avares://MCPIndexSearch.App.UI/Assets/mcp-index-search.ico");
+
+        var accept = new Button
         {
-            var cancel = new Button { Content = "Cancel", MinWidth = 90 };
+            Content = acceptLabel,
+            MinWidth = 96,
+            IsDefault = true,
+        };
+        accept.Classes.Add(destructive ? "destructive" : "primary");
+        accept.Click += (_, _) => Close(true);
+
+        var buttons = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Spacing = 8,
+        };
+        if (!singleAction)
+        {
+            var cancel = new Button
+            {
+                Content = "Cancel",
+                MinWidth = 90,
+                IsCancel = true,
+            };
+            cancel.Classes.Add("ghost");
             cancel.Click += (_, _) => Close(false);
             buttons.Children.Add(cancel);
         }
         buttons.Children.Add(accept);
+
+        var marker = new Border
+        {
+            Width = 36,
+            Height = 36,
+            CornerRadius = new CornerRadius(11),
+            Background = new SolidColorBrush(Color.Parse(destructive ? "#2A1820" : "#182A47")),
+            Child = new TextBlock
+            {
+                Text = destructive ? "!" : "i",
+                FontSize = 17,
+                FontWeight = FontWeight.Bold,
+                Foreground = new SolidColorBrush(Color.Parse(destructive ? "#FF8996" : "#6E9FFF")),
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+            },
+        };
+
+        var heading = new Grid
+        {
+            ColumnDefinitions = new ColumnDefinitions("Auto,*"),
+            ColumnSpacing = 12,
+            Children =
+            {
+                marker,
+                new TextBlock
+                {
+                    Text = title,
+                    FontSize = 20,
+                    FontWeight = FontWeight.SemiBold,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    [Grid.ColumnProperty] = 1,
+                },
+            },
+        };
+
         Content = new StackPanel
         {
-            Margin = new Thickness(22),
+            Margin = new Thickness(26),
             Spacing = 18,
             Children =
             {
-                new TextBlock { Text = title, FontSize = 20, FontWeight = FontWeight.SemiBold },
-                new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap },
-                buttons
-            }
+                heading,
+                new TextBlock
+                {
+                    Text = message,
+                    TextWrapping = TextWrapping.Wrap,
+                    Foreground = new SolidColorBrush(Color.Parse("#A2AEC0")),
+                    LineHeight = 20,
+                },
+                buttons,
+            },
         };
     }
 
-    public static Task<bool> AskAsync(Window owner, string title, string message) => new ConfirmWindow(title, message, false).ShowDialog<bool>(owner);
-    public static Task<bool> ShowErrorAsync(Window owner, string message) => new ConfirmWindow("Operation failed", message, true).ShowDialog<bool>(owner);
-    public static Task<bool> ShowMessageAsync(Window owner, string title, string message) => new ConfirmWindow(title, message, true).ShowDialog<bool>(owner);
+    public static Task<bool> AskAsync(Window owner, string title, string message,
+        string acceptLabel = "Continue", bool destructive = false) =>
+        new ConfirmWindow(title, message, false, acceptLabel, destructive).ShowDialog<bool>(owner);
+
+    public static Task<bool> ShowErrorAsync(Window owner, string message) =>
+        new ConfirmWindow("Operation failed", message, true, "OK", true).ShowDialog<bool>(owner);
+
+    public static Task<bool> ShowMessageAsync(Window owner, string title, string message) =>
+        new ConfirmWindow(title, message, true, "OK", false).ShowDialog<bool>(owner);
 }

@@ -5,7 +5,7 @@ namespace MCPIndexSearch.Storage;
 
 internal static class Schema
 {
-    public const int CurrentVersion = 4;
+    public const int CurrentVersion = 5;
 
     public static async Task MigrateAsync(SqliteConnection connection, CancellationToken cancellationToken)
     {

@@ -1,0 +1,321 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:MCPIndexSearch.App.UI.ViewModels"
+             xmlns:core="using:MCPIndexSearch.Core"
+             x:Class="MCPIndexSearch.App.UI.Views.ProjectsView"
+             x:DataType="vm:MainViewModel">
+  <ScrollViewer>
+    <StackPanel Margin="30,24,30,38" Spacing="18">
+      <Border IsVisible="{Binding HasNoSelection}" Classes="card" MinHeight="260">
+        <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="9" MaxWidth="420">
+          <Border Width="48" Height="48" CornerRadius="14" Background="{DynamicResource AccentSubtleBrush}">
+            <TextBlock Text="+" Foreground="{DynamicResource AccentBrush}" FontSize="27"
+                       HorizontalAlignment="Center" VerticalAlignment="Center" />
+          </Border>
+          <TextBlock Text="Create your first project" Classes="sectionTitle" HorizontalAlignment="Center" />
+          <TextBlock Text="Choose one or more folders and MCPIndexSearch will build a private, local search index."
+                     Classes="muted" TextWrapping="Wrap" TextAlignment="Center" />
+          <TextBlock Text="Use Add project above to get started." Classes="quiet" FontSize="12"
+                     HorizontalAlignment="Center" />
+        </StackPanel>
+      </Border>
+
+      <ContentControl Content="{Binding SelectedProject}" HorizontalContentAlignment="Stretch">
+        <ContentControl.ContentTemplate>
+          <DataTemplate x:DataType="vm:ProjectItemViewModel">
+            <StackPanel Spacing="18">
+              <Grid ColumnDefinitions="*,Auto" ColumnSpacing="24">
+                <StackPanel Spacing="5">
+                  <StackPanel Orientation="Horizontal" Spacing="10">
+                    <TextBlock Text="{Binding Name}" FontSize="28" FontWeight="SemiBold"
+                               TextTrimming="CharacterEllipsis" />
+                    <Border Background="{DynamicResource AccentSubtleBrush}" CornerRadius="10"
+                            Padding="9,3" VerticalAlignment="Center">
+                      <TextBlock Text="{Binding Phase}" Foreground="{DynamicResource AccentBrush}"
+                                 FontSize="11" FontWeight="SemiBold" />
+                    </Border>
+                  </StackPanel>
+                  <TextBlock Text="{Binding FolderCountDisplay}" Classes="muted" />
+                </StackPanel>
+                <WrapPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right"
+                           VerticalAlignment="Center">
+                  <Button Content="{Binding PauseActionLabel}" Click="TogglePause" Margin="0,0,8,8" />
+                  <Button Content="Reindex" Click="ReindexProject" Margin="0,0,8,8" />
+                  <Button Content="Edit" Click="EditProject" Margin="0,0,8,8" />
+                  <Button Classes="danger" Content="Remove" Click="RemoveProject" Margin="0,0,0,8" />
+                </WrapPanel>
+              </Grid>
+
+              <UniformGrid Columns="5">
+                <Border Classes="metricCard" Margin="0,0,9,0">
+                  <StackPanel Spacing="5">
+                    <TextBlock Text="TOTAL FILES" Classes="eyebrow" />
+                    <TextBlock Text="{Binding DocumentCount}" Classes="metricValue" />
+                  </StackPanel>
+                </Border>
+                <Border Classes="metricCard" Margin="0,0,9,0">
+                  <StackPanel Spacing="5">
+                    <TextBlock Text="INDEXED" Classes="eyebrow" />
+                    <TextBlock Text="{Binding IndexedCount}" Classes="metricValue" />
+                  </StackPanel>
+                </Border>
+                <Border Classes="metricCard" Margin="0,0,9,0">
+                  <StackPanel Spacing="5">
+                    <TextBlock Text="QUEUED" Classes="eyebrow" />
+                    <TextBlock Text="{Binding PendingCount}" Classes="metricValue" />
+                  </StackPanel>
+                </Border>
+                <Border Classes="metricCard" Margin="0,0,9,0">
+                  <StackPanel Spacing="5">
+                    <TextBlock Text="SKIPPED" Classes="eyebrow" />
+                    <TextBlock Text="{Binding SkippedCount}" Classes="metricValue" />
+                  </StackPanel>
+                </Border>
+                <Border Classes="metricCard errorMetric">
+                  <StackPanel Spacing="5">
+                    <TextBlock Text="ERRORS" Classes="eyebrow" />
+                    <TextBlock Text="{Binding ErrorCount}" Classes="metricValue errorValue" />
+                  </StackPanel>
+                </Border>
+              </UniformGrid>
+
+              <Border IsVisible="{Binding $parent[UserControl].((vm:MainViewModel)DataContext).HasActiveIndexingItems}"
+                      Classes="card">
+                <StackPanel Spacing="12">
+                  <Grid ColumnDefinitions="*,Auto">
+                    <StackPanel Spacing="3">
+                      <TextBlock Text="Active indexing" Classes="sectionTitle" />
+                      <TextBlock Text="{Binding $parent[UserControl].((vm:MainViewModel)DataContext).IndexingTimingSummary}"
+                                 Classes="quiet" FontSize="12" />
+                    </StackPanel>
+                    <Border Grid.Column="1" Background="{DynamicResource SuccessSubtleBrush}"
+                            CornerRadius="10" Padding="9,4" VerticalAlignment="Center">
+                      <TextBlock Text="LIVE" Foreground="{DynamicResource SuccessBrush}"
+                                 FontSize="10" FontWeight="SemiBold" LetterSpacing="0.6" />
+                    </Border>
+                  </Grid>
+                  <ItemsControl ItemsSource="{Binding $parent[UserControl].((vm:MainViewModel)DataContext).ActiveIndexingItems}">
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate x:DataType="vm:IndexingActivityItemViewModel">
+                        <Border Classes="subtleCard" Margin="0,3">
+                          <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto,Auto,Auto">
+                            <TextBlock Text="{Binding FileName}" FontWeight="SemiBold"
+                                       TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding SourcePath}" />
+                            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="13" Margin="16,0,0,0">
+                              <TextBlock Text="{Binding ElapsedDisplay}" Classes="muted" FontFamily="Consolas" FontSize="12" />
+                              <TextBlock Text="{Binding StageElapsedDisplay}" Classes="quiet" FontFamily="Consolas" FontSize="12" />
+                            </StackPanel>
+                            <TextBlock Grid.Row="1" Grid.ColumnSpan="2" Text="{Binding SourcePath}" Classes="quiet"
+                                       FontSize="12" TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding SourcePath}"
+                                       Margin="0,3,0,0" />
+                            <TextBlock Grid.Row="2" Grid.ColumnSpan="2" Text="{Binding StageDisplay}"
+                                       Foreground="{DynamicResource AccentBrush}" FontSize="12"
+                                       FontWeight="SemiBold" Margin="0,9,0,5" />
+                            <ProgressBar Grid.Row="3" Grid.ColumnSpan="2" Minimum="0" Maximum="100"
+                                         Value="{Binding PipelinePosition}" Height="5" />
+                          </Grid>
+                        </Border>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                </StackPanel>
+              </Border>
+
+              <Grid ColumnDefinitions="3*,2*" ColumnSpacing="18">
+                <Border Classes="card">
+                  <StackPanel Spacing="13">
+                    <StackPanel Spacing="3">
+                      <TextBlock Text="File types" Classes="sectionTitle" />
+                      <TextBlock Text="All active files in this project." Classes="quiet" FontSize="12" />
+                    </StackPanel>
+                    <TextBlock IsVisible="{Binding HasNoFileTypeCounts}" Text="File-type totals will appear after discovery begins."
+                               Classes="muted" TextWrapping="Wrap" />
+                    <ItemsControl IsVisible="{Binding HasFileTypeCounts}" ItemsSource="{Binding FileTypeCounts}">
+                      <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate>
+                          <WrapPanel Orientation="Horizontal" />
+                        </ItemsPanelTemplate>
+                      </ItemsControl.ItemsPanel>
+                      <ItemsControl.ItemTemplate>
+                        <DataTemplate x:DataType="core:ProjectFileTypeCount">
+                          <Border Classes="fileTypeChip" Margin="0,0,8,8">
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                              <TextBlock Text="{Binding Extension}" FontWeight="SemiBold"
+                                         Foreground="#C7D7F3" FontFamily="Consolas" />
+                              <Border Background="#26354B" CornerRadius="7" Padding="7,1">
+                                <TextBlock Text="{Binding Count}" Classes="muted" FontSize="11" />
+                              </Border>
+                            </StackPanel>
+                          </Border>
+                        </DataTemplate>
+                      </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                  </StackPanel>
+                </Border>
+
+                <Border Grid.Column="1" Classes="card">
+                  <StackPanel Spacing="13">
+                    <StackPanel Spacing="3">
+                      <TextBlock Text="Index details" Classes="sectionTitle" />
+                      <TextBlock Text="Current local search state." Classes="quiet" FontSize="12" />
+                    </StackPanel>
+                    <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto,Auto"
+                          ColumnSpacing="18" RowSpacing="10">
+                      <TextBlock Text="Last completed" Classes="muted" FontSize="12" />
+                      <TextBlock Grid.Column="1" Text="{Binding LastCompletedDisplay}"
+                                 HorizontalAlignment="Right" FontSize="12" />
+                      <TextBlock Grid.Row="1" Text="Generation" Classes="muted" FontSize="12" />
+                      <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding SearchGeneration}"
+                                 HorizontalAlignment="Right" FontFamily="Consolas" FontSize="12" />
+                      <TextBlock Grid.Row="2" Text="Current file" Classes="muted" FontSize="12" />
+                      <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding CurrentFileDisplay}"
+                                 HorizontalAlignment="Right" TextTrimming="CharacterEllipsis" MaxWidth="220"
+                                 ToolTip.Tip="{Binding CurrentFile}" FontSize="12" />
+                    </Grid>
+                  </StackPanel>
+                </Border>
+              </Grid>
+
+              <Border Classes="card">
+                <StackPanel Spacing="12">
+                  <StackPanel Spacing="3">
+                    <TextBlock Text="Indexed folders" Classes="sectionTitle" />
+                    <TextBlock Text="MCPIndexSearch watches these locations for changes." Classes="quiet" FontSize="12" />
+                  </StackPanel>
+                  <ItemsControl ItemsSource="{Binding Folders}">
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate x:DataType="core:ProjectFolderInfo">
+                        <Border Classes="folderRow" Margin="0,3">
+                          <Grid ColumnDefinitions="Auto,*" ColumnSpacing="10">
+                            <Border Width="8" Height="8" CornerRadius="4" Background="{DynamicResource AccentBrush}"
+                                    VerticalAlignment="Center" />
+                            <TextBlock Grid.Column="1" Text="{Binding Path}" Classes="muted"
+                                       TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding Path}" />
+                          </Grid>
+                        </Border>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                </StackPanel>
+              </Border>
+
+              <Border Classes="card">
+                <StackPanel Spacing="13">
+                  <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
+                    <StackPanel Spacing="3">
+                      <TextBlock Text="Recent errors" Classes="sectionTitle" />
+                      <StackPanel Orientation="Horizontal" Spacing="5">
+                        <TextBlock Text="{Binding ErrorCountDisplay}" Classes="quiet" FontSize="12" />
+                        <TextBlock Text="· up to 12 shown" Classes="quiet" FontSize="12" />
+                      </StackPanel>
+                    </StackPanel>
+                    <Button Grid.Column="1" Content="Retry failed files" Click="RetryFailedFiles"
+                            IsEnabled="{Binding CanRetryFailedFiles}" VerticalAlignment="Center" />
+                  </Grid>
+
+                  <Border IsVisible="{Binding HasNoRecentErrors}" Background="{DynamicResource SurfaceRaisedBrush}"
+                          CornerRadius="9" Padding="18">
+                    <Grid ColumnDefinitions="Auto,*" ColumnSpacing="12">
+                      <Border Width="28" Height="28" CornerRadius="14" Background="{DynamicResource SuccessSubtleBrush}">
+                        <TextBlock Text="✓" Foreground="{DynamicResource SuccessBrush}"
+                                   HorizontalAlignment="Center" VerticalAlignment="Center" />
+                      </Border>
+                      <StackPanel Grid.Column="1" Spacing="2">
+                        <TextBlock Text="No recent errors" FontWeight="SemiBold" />
+                        <TextBlock Text="Files that need attention will be listed here." Classes="muted" FontSize="12" />
+                      </StackPanel>
+                    </Grid>
+                  </Border>
+
+                  <ItemsControl ItemsSource="{Binding RecentErrors}">
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate x:DataType="vm:ProjectErrorItemViewModel">
+                        <Border Classes="errorRow" Margin="0,3">
+                          <Grid ColumnDefinitions="4,*" ColumnSpacing="13">
+                            <Border Background="{DynamicResource DangerBrush}" CornerRadius="2" />
+                            <StackPanel Grid.Column="1" Spacing="8">
+                              <Grid ColumnDefinitions="*,Auto" ColumnSpacing="14">
+                                <StackPanel Orientation="Horizontal" Spacing="9">
+                                  <TextBlock Text="{Binding FileName}" FontWeight="SemiBold"
+                                             TextTrimming="CharacterEllipsis" MaxWidth="440"
+                                             ToolTip.Tip="{Binding SourcePath}" />
+                                  <Border Background="{DynamicResource DangerSubtleBrush}" CornerRadius="8" Padding="8,2">
+                                    <TextBlock Text="{Binding CodeDisplay}" Foreground="{DynamicResource DangerBrush}"
+                                               FontSize="10" FontWeight="SemiBold" />
+                                  </Border>
+                                </StackPanel>
+                                <TextBlock Grid.Column="1" Text="{Binding CreatedDisplay}" Classes="quiet"
+                                           FontSize="12" VerticalAlignment="Center" />
+                              </Grid>
+                              <TextBlock Text="{Binding Message}" Classes="muted" TextWrapping="Wrap" />
+                              <TextBlock Text="{Binding SourcePath}" Classes="quiet" FontSize="12"
+                                         TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding SourcePath}" />
+                              <StackPanel Orientation="Horizontal" Spacing="8">
+                                <Border IsVisible="{Binding IsRetryable}" Background="{DynamicResource WarningSubtleBrush}"
+                                        CornerRadius="8" Padding="8,2">
+                                  <TextBlock Text="Retryable" Foreground="{DynamicResource WarningBrush}"
+                                             FontSize="10" FontWeight="SemiBold" />
+                                </Border>
+                                <Border IsVisible="{Binding IsPermanent}" Background="{DynamicResource SurfaceRaisedBrush}"
+                                        CornerRadius="8" Padding="8,2">
+                                  <TextBlock Text="Manual review" Classes="muted" FontSize="10" FontWeight="SemiBold" />
+                                </Border>
+                                <TextBlock Text="{Binding AttemptDisplay}" Classes="quiet" FontSize="11"
+                                           VerticalAlignment="Center" />
+                              </StackPanel>
+                            </StackPanel>
+                          </Grid>
+                        </Border>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                </StackPanel>
+              </Border>
+            </StackPanel>
+          </DataTemplate>
+        </ContentControl.ContentTemplate>
+      </ContentControl>
+    </StackPanel>
+  </ScrollViewer>
+
+  <UserControl.Styles>
+    <Style Selector="Border.metricCard">
+      <Setter Property="Background" Value="{DynamicResource SurfaceBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="11" />
+      <Setter Property="Padding" Value="16" />
+      <Setter Property="MinHeight" Value="86" />
+    </Style>
+    <Style Selector="Border.metricCard.errorMetric">
+      <Setter Property="Background" Value="{DynamicResource DangerSubtleBrush}" />
+      <Setter Property="BorderBrush" Value="#50303B" />
+    </Style>
+    <Style Selector="TextBlock.metricValue">
+      <Setter Property="FontSize" Value="25" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+    </Style>
+    <Style Selector="TextBlock.metricValue.errorValue">
+      <Setter Property="Foreground" Value="{DynamicResource DangerBrush}" />
+    </Style>
+    <Style Selector="Border.fileTypeChip">
+      <Setter Property="Background" Value="{DynamicResource SurfaceRaisedBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource BorderStrongBrush}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="9" />
+      <Setter Property="Padding" Value="10,7" />
+    </Style>
+    <Style Selector="Border.folderRow">
+      <Setter Property="Background" Value="{DynamicResource SurfaceRaisedBrush}" />
+      <Setter Property="CornerRadius" Value="8" />
+      <Setter Property="Padding" Value="12,10" />
+    </Style>
+    <Style Selector="Border.errorRow">
+      <Setter Property="Background" Value="{DynamicResource SurfaceRaisedBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="9" />
+      <Setter Property="Padding" Value="0,13,14,13" />
+    </Style>
+  </UserControl.Styles>
+</UserControl>

@@ -10,6 +10,12 @@ using MCPIndexSearch.Infrastructure;
 
 namespace MCPIndexSearch.App.UI.ViewModels;
 
+internal enum MainSection
+{
+    Projects,
+    Settings,
+}
+
 internal partial class MainViewModel : ViewModelBase
 {
     private readonly IIndexWriter _writer;
@@ -20,7 +26,6 @@ internal partial class MainViewModel : ViewModelBase
     private readonly WindowsStartupService _windowsStartup;
     private readonly GraniteModelInstaller _modelInstaller;
     private readonly CodexMcpConfigurationService _codexConfiguration;
-    private readonly CodexConnectionBannerDismissalStore _codexBannerDismissals;
     private readonly IndexingActivityTracker _indexingActivities;
     private readonly ApplicationUpdateService _applicationUpdates;
     private readonly SemaphoreSlim _refreshGate = new(1, 1);
@@ -30,6 +35,9 @@ internal partial class MainViewModel : ViewModelBase
     private string? _reportedOcrMessage;
     private bool _hasAnyActiveIndexingItems;
     private int _lastProjectCount = -1;
+    private Guid? _fileTypeCountsProjectId;
+    private long _fileTypeCountsGeneration = -1;
+    private int _fileTypeCountsDocumentCount = -1;
 
     public MainViewModel(
         IIndexWriter writer,
@@ -40,7 +48,6 @@ internal partial class MainViewModel : ViewModelBase
         WindowsStartupService windowsStartup,
         GraniteModelInstaller modelInstaller,
         CodexMcpConfigurationService codexConfiguration,
-        CodexConnectionBannerDismissalStore codexBannerDismissals,
         IndexingActivityTracker indexingActivities,
         ApplicationUpdateService applicationUpdates)
     {
@@ -53,7 +60,6 @@ internal partial class MainViewModel : ViewModelBase
         _windowsStartup.Initialize();
         _modelInstaller = modelInstaller;
         _codexConfiguration = codexConfiguration;
-        _codexBannerDismissals = codexBannerDismissals;
         _indexingActivities = indexingActivities;
         _applicationUpdates = applicationUpdates;
         _applicationUpdates.SnapshotChanged += OnApplicationUpdateSnapshotChanged;
@@ -72,19 +78,27 @@ internal partial class MainViewModel : ViewModelBase
     public partial ProjectItemViewModel? SelectedProject { get; set; }
 
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsProjectsSection))]
+    [NotifyPropertyChangedFor(nameof(IsSettingsSection))]
+    public partial MainSection CurrentSection { get; set; } = MainSection.Projects;
+
+    [ObservableProperty]
     public partial string StatusMessage { get; set; } = "Starting local index…";
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsCodexConnected))]
     [NotifyPropertyChangedFor(nameof(CanChangeCodexConnection))]
     [NotifyPropertyChangedFor(nameof(CodexConnectionAction))]
+    [NotifyPropertyChangedFor(nameof(CodexConnectionStatusLabel))]
     public partial CodexMcpConnectionState CodexConnectionState { get; set; } = CodexMcpConnectionState.Disconnected;
 
     [ObservableProperty]
     public partial string CodexConnectionMessage { get; set; } = "Checking the Codex connection…";
 
     [ObservableProperty]
-    public partial bool IsCodexConnectionBannerVisible { get; set; } = true;
+    [NotifyPropertyChangedFor(nameof(CanChangeCodexConnection))]
+    [NotifyPropertyChangedFor(nameof(CodexConnectionAction))]
+    public partial bool IsChangingCodexConnection { get; set; }
 
     [ObservableProperty]
     public partial string IndexingTimingSummary { get; set; } = "No files are currently active.";
@@ -97,14 +111,15 @@ internal partial class MainViewModel : ViewModelBase
     public partial bool StartWithWindowsEnabled { get; set; }
 
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(IsApplicationUpdateVisible))]
     [NotifyPropertyChangedFor(nameof(IsApplicationUpdateProgressVisible))]
     [NotifyPropertyChangedFor(nameof(IsApplicationUpdateReady))]
     [NotifyPropertyChangedFor(nameof(CanRestartForUpdate))]
     [NotifyPropertyChangedFor(nameof(ApplicationUpdateMessage))]
+    [NotifyPropertyChangedFor(nameof(ApplicationUpdateStatusLabel))]
     public partial ApplicationUpdateSnapshot ApplicationUpdate { get; set; } = ApplicationUpdateSnapshot.Disabled;
 
     public bool IsOcrUnavailable => !_ocrEngine.IsAvailable;
+    public bool IsOcrAvailable => !IsOcrUnavailable;
     public bool IsWindowsStartupSupported => _windowsStartup.IsSupported;
     public string CpuUsageSummary
     {
@@ -124,43 +139,65 @@ internal partial class MainViewModel : ViewModelBase
     public string OcrStatusMessage => _ocrEngine.UnavailableReason ?? "Local PP-OCRv6 medium OCR is ready.";
     public bool IsSemanticSearchUnavailable => !_embeddingGenerator.IsAvailable;
     public bool CanInstallSemanticModel => _modelInstaller.IsSupported;
-    public string SemanticSearchStatusMessage => !_modelInstaller.IsSupported
-        ? _embeddingGenerator.UnavailableReason ?? "Semantic search is unavailable on this platform."
-        : "Keyword search is ready. Install the optional local Granite model to add multilingual meaning-based search.";
+    public bool CanSetUpSemanticSearch => IsSemanticSearchUnavailable && CanInstallSemanticModel;
+    public string SemanticSearchStatusLabel => IsSemanticSearchUnavailable ? "Optional" : "Ready";
+    public string SemanticSearchStatusMessage => !IsSemanticSearchUnavailable
+        ? "The local Granite model is ready for multilingual meaning-based search."
+        : !_modelInstaller.IsSupported
+            ? _embeddingGenerator.UnavailableReason ?? "Semantic search is unavailable on this platform."
+            : "Keyword search is ready. Install the optional local Granite model to add multilingual meaning-based search.";
     public bool HasSelection => SelectedProject is not null;
     public bool HasNoSelection => SelectedProject is null;
+    public bool IsProjectsSection => CurrentSection == MainSection.Projects;
+    public bool IsSettingsSection => CurrentSection == MainSection.Settings;
     public bool HasActiveIndexingItems => ActiveIndexingItems.Count > 0;
-    public bool HasNoActiveIndexingItems => ActiveIndexingItems.Count == 0;
-    public bool IsApplicationUpdateVisible => ApplicationUpdate.State is
-        ApplicationUpdateState.Checking or
-        ApplicationUpdateState.Downloading or
-        ApplicationUpdateState.Ready or
-        ApplicationUpdateState.Error;
     public bool IsApplicationUpdateProgressVisible => ApplicationUpdate.State == ApplicationUpdateState.Downloading;
     public bool IsApplicationUpdateReady => ApplicationUpdate.State == ApplicationUpdateState.Ready;
     public bool CanRestartForUpdate => IsApplicationUpdateReady && !_hasAnyActiveIndexingItems;
     public string ApplicationUpdateMessage => IsApplicationUpdateReady && _hasAnyActiveIndexingItems
         ? $"{ApplicationUpdate.Message} Restart will be available when indexing is idle."
         : ApplicationUpdate.Message;
+    public string ApplicationUpdateStatusLabel => ApplicationUpdate.State switch
+    {
+        ApplicationUpdateState.Checking => "Checking",
+        ApplicationUpdateState.Downloading => "Downloading",
+        ApplicationUpdateState.Ready => "Ready to install",
+        ApplicationUpdateState.Current => "Up to date",
+        ApplicationUpdateState.Error => "Needs attention",
+        _ => "Installed builds",
+    };
     public bool IsCodexConnected => CodexConnectionState == CodexMcpConnectionState.Connected;
-    public bool CanChangeCodexConnection => CodexConnectionState is CodexMcpConnectionState.Connected
+    public bool CanChangeCodexConnection => !IsChangingCodexConnection && CodexConnectionState is CodexMcpConnectionState.Connected
         or CodexMcpConnectionState.Disconnected or CodexMcpConnectionState.UpdateRequired;
+    public string CodexConnectionStatusLabel => CodexConnectionState switch
+    {
+        CodexMcpConnectionState.Connected => "Connected",
+        CodexMcpConnectionState.UpdateRequired => "Update needed",
+        CodexMcpConnectionState.Conflict => "Conflict",
+        CodexMcpConnectionState.ServerUnavailable => "Unavailable",
+        _ => "Not connected",
+    };
     public string CodexConnectionAction => CodexConnectionState switch
     {
+        _ when IsChangingCodexConnection => "Working…",
         CodexMcpConnectionState.Connected => "Disconnect Codex",
         CodexMcpConnectionState.UpdateRequired => "Update Codex connection",
         _ => "Connect to Codex"
     };
-
-    private CodexMcpConnectionStatus? CurrentCodexConnectionStatus { get; set; }
 
     public void RefreshAssetAvailability()
     {
         RefreshOcrAvailability();
         OnPropertyChanged(nameof(IsSemanticSearchUnavailable));
         OnPropertyChanged(nameof(CanInstallSemanticModel));
+        OnPropertyChanged(nameof(CanSetUpSemanticSearch));
+        OnPropertyChanged(nameof(SemanticSearchStatusLabel));
         OnPropertyChanged(nameof(SemanticSearchStatusMessage));
     }
+
+    public void ShowProjects() => CurrentSection = MainSection.Projects;
+
+    public void ShowSettings() => CurrentSection = MainSection.Settings;
 
     partial void OnSelectedProjectChanged(ProjectItemViewModel? value)
     {
@@ -263,18 +300,19 @@ internal partial class MainViewModel : ViewModelBase
 
     public async Task<CodexMcpConnectionStatus> ToggleCodexConnectionAsync()
     {
-        var result = IsCodexConnected
-            ? await _codexConfiguration.DisconnectAsync().ConfigureAwait(false)
-            : await _codexConfiguration.ConnectAsync().ConfigureAwait(false);
-        await Dispatcher.UIThread.InvokeAsync(() => ApplyCodexConnectionStatus(result));
-        return result;
-    }
-
-    public void DismissCodexConnectionBanner()
-    {
-        if (CurrentCodexConnectionStatus is { } status)
-            _codexBannerDismissals.Dismiss(status);
-        IsCodexConnectionBannerVisible = false;
+        IsChangingCodexConnection = true;
+        try
+        {
+            var result = IsCodexConnected
+                ? await _codexConfiguration.DisconnectAsync().ConfigureAwait(false)
+                : await _codexConfiguration.ConnectAsync().ConfigureAwait(false);
+            await Dispatcher.UIThread.InvokeAsync(() => ApplyCodexConnectionStatus(result));
+            return result;
+        }
+        finally
+        {
+            await Dispatcher.UIThread.InvokeAsync(() => IsChangingCodexConnection = false);
+        }
     }
 
     public async Task RefreshAsync(Guid? preferredProjectId = null, CancellationToken cancellationToken = default)
@@ -283,6 +321,7 @@ internal partial class MainViewModel : ViewModelBase
         try
         {
             var projects = await _store.ListProjectsAsync(cancellationToken).ConfigureAwait(false);
+            (Guid Id, long Generation, int DocumentCount)? fileTypeRefresh = null;
             await Dispatcher.UIThread.InvokeAsync(() =>
             {
                 var selectedId = preferredProjectId ?? SelectedProject?.Id;
@@ -298,7 +337,18 @@ internal partial class MainViewModel : ViewModelBase
                         ? "Create a project to begin indexing."
                         : "Indexing runs locally in the background.";
                 }
+
+                if (SelectedProject is { } selected &&
+                    (_fileTypeCountsProjectId != selected.Id ||
+                     _fileTypeCountsGeneration != selected.SearchGeneration ||
+                     _fileTypeCountsDocumentCount != selected.DocumentCount))
+                {
+                    fileTypeRefresh = (selected.Id, selected.SearchGeneration, selected.DocumentCount);
+                }
             });
+
+            if (fileTypeRefresh is { } refresh)
+                await RefreshFileTypeCountsAsync(refresh, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -383,17 +433,14 @@ internal partial class MainViewModel : ViewModelBase
             await Dispatcher.UIThread.InvokeAsync(() =>
             {
                 CodexConnectionMessage = exception.Message;
-                IsCodexConnectionBannerVisible = true;
             });
         }
     }
 
     private void ApplyCodexConnectionStatus(CodexMcpConnectionStatus status)
     {
-        CurrentCodexConnectionStatus = status;
         CodexConnectionState = status.State;
         CodexConnectionMessage = status.Message;
-        IsCodexConnectionBannerVisible = !_codexBannerDismissals.IsDismissed(status);
     }
 
     private void RefreshOcrAvailability()
@@ -406,6 +453,7 @@ internal partial class MainViewModel : ViewModelBase
         _reportedOcrAvailable = available;
         _reportedOcrMessage = message;
         OnPropertyChanged(nameof(IsOcrUnavailable));
+        OnPropertyChanged(nameof(IsOcrAvailable));
         OnPropertyChanged(nameof(OcrStatusMessage));
     }
 
@@ -421,9 +469,26 @@ internal partial class MainViewModel : ViewModelBase
         }
     }
 
+    private async Task RefreshFileTypeCountsAsync((Guid Id, long Generation, int DocumentCount) refresh,
+        CancellationToken cancellationToken)
+    {
+        var counts = await _store.ListProjectFileTypeCountsAsync(refresh.Id, cancellationToken).ConfigureAwait(false);
+        await Dispatcher.UIThread.InvokeAsync(() =>
+        {
+            if (SelectedProject is not { } selected || selected.Id != refresh.Id ||
+                selected.SearchGeneration != refresh.Generation || selected.DocumentCount != refresh.DocumentCount)
+                return;
+
+            selected.UpdateFileTypeCounts(counts);
+            _fileTypeCountsProjectId = refresh.Id;
+            _fileTypeCountsGeneration = refresh.Generation;
+            _fileTypeCountsDocumentCount = refresh.DocumentCount;
+        });
+    }
+
     private async Task RefreshErrorsAsync(Guid projectId, CancellationToken cancellationToken = default)
     {
-        var errors = await _store.ListProjectErrorsAsync(projectId, 25, cancellationToken).ConfigureAwait(false);
+        var errors = await _store.ListProjectErrorsAsync(projectId, 12, cancellationToken).ConfigureAwait(false);
         await Dispatcher.UIThread.InvokeAsync(() =>
         {
             if (SelectedProject is { Id: var selectedId } selected && selectedId == projectId)
@@ -507,7 +572,6 @@ internal partial class MainViewModel : ViewModelBase
             : "completed average —";
         IndexingTimingSummary = $"{activeText} · {completedText}";
         OnPropertyChanged(nameof(HasActiveIndexingItems));
-        OnPropertyChanged(nameof(HasNoActiveIndexingItems));
     }
 
     private void OnApplicationUpdateSnapshotChanged(object? sender, ApplicationUpdateSnapshot snapshot)

@@ -87,6 +87,8 @@ public enum DocumentSortDirection
 
 public sealed record ProjectFolderInfo(Guid Id, string Path);
 
+public sealed record ProjectFileTypeCount(string Extension, int Count);
+
 public sealed record ProjectSummary(
     Guid Id,
     string Name,

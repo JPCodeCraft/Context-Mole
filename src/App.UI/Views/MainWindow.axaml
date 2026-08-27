@@ -1,202 +1,168 @@
-<Window xmlns="https://github.com/avaloniaui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        xmlns:vm="using:MCPIndexSearch.App.UI.ViewModels" xmlns:core="using:MCPIndexSearch.Core"
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:MCPIndexSearch.App.UI.ViewModels"
+        xmlns:views="using:MCPIndexSearch.App.UI.Views"
         x:Class="MCPIndexSearch.App.UI.Views.MainWindow"
-        x:DataType="vm:MainViewModel" Width="1120" Height="720" MinWidth="900" MinHeight="600"
-        Icon="/Assets/mcp-index-search.ico" Title="MCPIndexSearch">
-  <Grid RowDefinitions="Auto,*" Background="#0B1020">
-    <Border Grid.Row="0" Background="#121A2E" Padding="22,16">
-      <Grid ColumnDefinitions="*,Auto">
-        <StackPanel Spacing="2"><TextBlock Text="MCPIndexSearch" FontSize="24" FontWeight="SemiBold" Foreground="White"/><TextBlock Text="Local document indexing for Codex" Foreground="#9CAAC5"/></StackPanel>
-        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8"><Button Content="{Binding CodexConnectionAction}" IsEnabled="{Binding CanChangeCodexConnection}" Click="ToggleCodexConnection"/><Button Content="Add project" Click="AddProject"/><Button Content="Quit" Click="QuitApplication"/></StackPanel>
+        x:DataType="vm:MainViewModel"
+        Width="1280" Height="800" MinWidth="980" MinHeight="640"
+        Icon="/Assets/mcp-index-search.ico"
+        Title="MCPIndexSearch">
+  <Grid ColumnDefinitions="268,*">
+    <Border Background="{DynamicResource SidebarBrush}"
+            BorderBrush="{DynamicResource BorderBrush}"
+            BorderThickness="0,0,1,0">
+      <Grid RowDefinitions="Auto,Auto,Auto,*,Auto" Margin="16,18,16,14">
+        <StackPanel Orientation="Horizontal" Spacing="11" Margin="6,0,6,20">
+          <Border Width="36" Height="36" CornerRadius="10" Background="{DynamicResource AccentBrush}">
+            <TextBlock Text="M" Foreground="#08101E" FontSize="18" FontWeight="Bold"
+                       HorizontalAlignment="Center" VerticalAlignment="Center" />
+          </Border>
+          <StackPanel VerticalAlignment="Center" Spacing="1">
+            <TextBlock Text="MCPIndexSearch" FontWeight="SemiBold" FontSize="15" />
+            <TextBlock Text="Local document search" Classes="quiet" FontSize="11" />
+          </StackPanel>
+        </StackPanel>
+
+        <StackPanel Grid.Row="1" Spacing="5">
+          <Button Classes="navButton" Classes.active="{Binding IsProjectsSection}"
+                  Content="Projects" HorizontalContentAlignment="Left" Click="ShowProjects" />
+          <Button Classes="navButton" Classes.active="{Binding IsSettingsSection}"
+                  Content="Settings" HorizontalContentAlignment="Left" Click="ShowSettings" />
+        </StackPanel>
+
+        <Grid Grid.Row="2" ColumnDefinitions="*,Auto" Margin="7,22,5,9">
+          <TextBlock Text="YOUR PROJECTS" Classes="eyebrow" VerticalAlignment="Center" />
+          <Button Grid.Column="1" Classes="ghost compact" Content="+ Add" Click="AddProject"
+                  ToolTip.Tip="Add a new project" />
+        </Grid>
+
+        <ListBox Grid.Row="3" Classes="projectList" ItemsSource="{Binding Projects}"
+                 SelectedItem="{Binding SelectedProject}" SelectionChanged="ProjectSelectionChanged">
+          <ListBox.ItemTemplate>
+            <DataTemplate x:DataType="vm:ProjectItemViewModel">
+              <Border Classes="projectCard" Margin="0,0,0,7" Padding="12" CornerRadius="9"
+                      Background="Transparent" BorderBrush="Transparent" BorderThickness="1"
+                      PointerPressed="ProjectCardPressed">
+                <StackPanel Spacing="7">
+                  <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                    <TextBlock Text="{Binding Name}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"
+                               ToolTip.Tip="{Binding Name}" />
+                    <Border Grid.Column="1" Classes="phaseBadge" Padding="7,2" CornerRadius="8">
+                      <TextBlock Text="{Binding Phase}" FontSize="10" FontWeight="SemiBold"
+                                 Foreground="{DynamicResource AccentBrush}" />
+                    </Border>
+                  </Grid>
+                  <StackPanel Orientation="Horizontal" Spacing="5">
+                    <TextBlock Text="{Binding DocumentCount}" Classes="muted" FontSize="11" />
+                    <TextBlock Text="files" Classes="quiet" FontSize="11" />
+                    <TextBlock Text="·" Classes="quiet" FontSize="11" />
+                    <TextBlock Text="{Binding ErrorCount}" Classes="muted" FontSize="11" />
+                    <TextBlock Text="errors" Classes="quiet" FontSize="11" />
+                  </StackPanel>
+                  <ProgressBar Minimum="0" Maximum="{Binding DocumentCount}" Value="{Binding IndexedCount}"
+                               Height="4" />
+                </StackPanel>
+              </Border>
+            </DataTemplate>
+          </ListBox.ItemTemplate>
+        </ListBox>
+
+        <StackPanel Grid.Row="4" Spacing="10" Margin="3,12,3,0">
+          <Border Background="{DynamicResource SurfaceBrush}" CornerRadius="8" Padding="10,9">
+            <Grid ColumnDefinitions="Auto,*" ColumnSpacing="8">
+              <Border Width="7" Height="7" CornerRadius="4" Background="{DynamicResource AccentBrush}"
+                      VerticalAlignment="Top" Margin="0,4,0,0" />
+              <TextBlock Grid.Column="1" Text="{Binding StatusMessage}" Classes="quiet" FontSize="11"
+                         TextWrapping="Wrap" MaxHeight="48" />
+            </Grid>
+          </Border>
+          <Button Classes="ghost compact" Content="Quit MCPIndexSearch" HorizontalContentAlignment="Left"
+                  Click="QuitApplication" />
+        </StackPanel>
       </Grid>
     </Border>
-    <Grid Grid.Row="1" ColumnDefinitions="310,*">
-      <Border Grid.Column="0" Background="#0F1628" BorderBrush="#26314A" BorderThickness="0,1,1,0" Padding="16">
-        <Grid RowDefinitions="Auto,*,Auto">
-          <TextBlock Text="Projects" FontSize="16" FontWeight="SemiBold" Foreground="White" Margin="4,0,0,12"/>
-          <ListBox Grid.Row="1" ItemsSource="{Binding Projects}" SelectedItem="{Binding SelectedProject}" Background="Transparent">
-            <ListBox.ItemTemplate><DataTemplate x:DataType="vm:ProjectItemViewModel"><Border Padding="12" Margin="0,0,0,7" CornerRadius="8" Background="#18223A"><StackPanel><TextBlock Text="{Binding Name}" FontWeight="SemiBold" Foreground="White"/><TextBlock Text="{Binding State}" FontSize="12" Foreground="#9CAAC5"/><ProgressBar Minimum="0" Maximum="{Binding DocumentCount}" Value="{Binding IndexedCount}" Height="4" Margin="0,8,0,0"/></StackPanel></Border></DataTemplate></ListBox.ItemTemplate>
-          </ListBox>
-          <TextBlock Grid.Row="2" Text="{Binding StatusMessage}" Foreground="#7887A4" TextWrapping="Wrap" Margin="4,12,4,0"/>
+
+    <Grid Grid.Column="1" RowDefinitions="Auto,Auto,*">
+      <Border Grid.Row="0" Background="{DynamicResource AppBackgroundBrush}"
+              BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,0,0,1" Padding="30,21">
+        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="20">
+          <StackPanel IsVisible="{Binding IsProjectsSection}" Spacing="3">
+            <TextBlock Text="Projects" Classes="pageTitle" />
+            <TextBlock Text="Monitor and manage your local indexes." Classes="muted" />
+          </StackPanel>
+          <StackPanel IsVisible="{Binding IsSettingsSection}" Spacing="3">
+            <TextBlock Text="Settings" Classes="pageTitle" />
+            <TextBlock Text="Preferences apply globally across every project." Classes="muted" />
+          </StackPanel>
+          <Button Grid.Column="1" IsVisible="{Binding IsProjectsSection}" Classes="primary"
+                  Content="Add project" Click="AddProject" VerticalAlignment="Center" />
         </Grid>
       </Border>
-      <ScrollViewer Grid.Column="1">
-        <StackPanel Margin="28" Spacing="18">
-          <Border IsVisible="{Binding IsCodexConnectionBannerVisible}" Background="#14243A" BorderBrush="#295383" BorderThickness="1" CornerRadius="8" Padding="14">
-            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
-              <StackPanel Spacing="4">
-                <TextBlock Text="Codex connection" Foreground="#8EC5FF" FontWeight="SemiBold"/>
-                <TextBlock Text="{Binding CodexConnectionMessage}" Foreground="#C8DDF3" TextWrapping="Wrap"/>
-              </StackPanel>
-              <Button Grid.Column="1" Content="Close" Click="DismissCodexConnectionBanner" VerticalAlignment="Top" ToolTip.Tip="Dismiss this message"/>
-            </Grid>
-          </Border>
 
-          <Border IsVisible="{Binding IsApplicationUpdateVisible}" Background="#14243A" BorderBrush="#295383" BorderThickness="1" CornerRadius="8" Padding="14">
-            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
-              <StackPanel Spacing="7">
-                <TextBlock Text="Application update" Foreground="#8EC5FF" FontWeight="SemiBold"/>
-                <TextBlock Text="{Binding ApplicationUpdateMessage}" Foreground="#C8DDF3" TextWrapping="Wrap"/>
-                <ProgressBar IsVisible="{Binding IsApplicationUpdateProgressVisible}" Minimum="0" Maximum="100" Value="{Binding ApplicationUpdate.ProgressPercent}" Height="7"/>
-              </StackPanel>
-              <Button Grid.Column="1" Content="Restart to update" IsVisible="{Binding IsApplicationUpdateReady}" IsEnabled="{Binding CanRestartForUpdate}" Click="RestartToUpdate" VerticalAlignment="Center"/>
-            </Grid>
-          </Border>
+      <Border Grid.Row="1" IsVisible="{Binding IsApplicationUpdateReady}"
+              Background="{DynamicResource AccentSubtleBrush}" BorderBrush="#31568C"
+              BorderThickness="0,0,0,1" Padding="30,10">
+        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
+          <TextBlock Text="{Binding ApplicationUpdateMessage}" Foreground="#BBD4FF"
+                     TextWrapping="Wrap" VerticalAlignment="Center" />
+          <Button Grid.Column="1" Classes="compact" Content="Open settings" Click="ShowSettings" />
+        </Grid>
+      </Border>
 
-          <Border Classes="panel">
-            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="24">
-              <StackPanel Spacing="5">
-                <TextBlock Text="Global performance" FontSize="16" FontWeight="SemiBold" Foreground="White"/>
-                <TextBlock Text="The CPU profile is shared by every project. A single Granite or OCR operation can use the full budget." Foreground="#9CAAC5" TextWrapping="Wrap"/>
-                <TextBlock Text="{Binding CpuUsageSummary}" Foreground="#78A7FF" FontSize="12"/>
-                <CheckBox IsVisible="{Binding IsWindowsStartupSupported}" IsChecked="{Binding StartWithWindowsEnabled, Mode=OneWay}" Content="Start MCPIndexSearch with Windows" Click="StartWithWindowsChanged" Margin="0,8,0,0" Foreground="#D9E2F3"/>
-              </StackPanel>
-              <StackPanel Grid.Column="1" Spacing="5" VerticalAlignment="Center">
-                <TextBlock Text="CPU usage" Foreground="#8796B3" FontSize="12"/>
-                <ComboBox Width="140" ItemsSource="{Binding CpuUsageProfiles}" SelectedItem="{Binding SelectedCpuUsageProfile, Mode=OneWay}" SelectionChanged="CpuUsageProfileChanged"/>
-              </StackPanel>
-            </Grid>
-          </Border>
-
-          <Border IsVisible="{Binding IsOcrUnavailable}" Background="#2B2515" BorderBrush="#665B2C" BorderThickness="1" CornerRadius="8" Padding="14">
-            <StackPanel Spacing="4">
-              <TextBlock Text="Local OCR setup" Foreground="#FFD878" FontWeight="SemiBold"/>
-              <TextBlock Text="{Binding OcrStatusMessage}" Foreground="#E7D9AA" TextWrapping="Wrap"/>
-            </StackPanel>
-          </Border>
-
-          <Border IsVisible="{Binding IsSemanticSearchUnavailable}" Background="#14243A" BorderBrush="#295383" BorderThickness="1" CornerRadius="8" Padding="14">
-            <Grid ColumnDefinitions="*,Auto">
-              <StackPanel Spacing="4">
-                <TextBlock Text="Optional semantic search" Foreground="#8EC5FF" FontWeight="SemiBold"/>
-                <TextBlock Text="{Binding SemanticSearchStatusMessage}" Foreground="#C8DDF3" TextWrapping="Wrap"/>
-              </StackPanel>
-              <Button Grid.Column="1" IsVisible="{Binding CanInstallSemanticModel}" Content="Set up" Click="SetupSemanticSearch" Margin="16,0,0,0" VerticalAlignment="Center"/>
-            </Grid>
-          </Border>
-
-          <Border IsVisible="{Binding HasSelection}" Classes="panel">
-            <StackPanel Spacing="10">
-              <Grid ColumnDefinitions="*,Auto">
-                <StackPanel Spacing="3">
-                  <TextBlock Text="Active indexing pipeline" FontSize="16" FontWeight="SemiBold" Foreground="White"/>
-                  <TextBlock Text="{Binding IndexingTimingSummary}" Foreground="#8796B3" FontSize="12"/>
-                </StackPanel>
-                <Border Grid.Column="1" Background="#173227" CornerRadius="10" Padding="10,4" VerticalAlignment="Center">
-                  <TextBlock Text="Live" Foreground="#76D6A0" FontSize="11" FontWeight="SemiBold"/>
-                </Border>
-              </Grid>
-
-              <TextBlock IsVisible="{Binding HasNoActiveIndexingItems}" Text="No files are being accessed right now. Queued files will appear here when a worker starts them." Foreground="#7887A4" TextWrapping="Wrap" Margin="0,4,0,0"/>
-
-              <ItemsControl ItemsSource="{Binding ActiveIndexingItems}">
-                <ItemsControl.ItemTemplate>
-                  <DataTemplate x:DataType="vm:IndexingActivityItemViewModel">
-                    <Border Background="#10192C" BorderBrush="#263653" BorderThickness="1" CornerRadius="8" Padding="12" Margin="0,3">
-                      <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto,Auto,Auto">
-                        <TextBlock Text="{Binding FileName}" FontWeight="SemiBold" Foreground="White" TextTrimming="CharacterEllipsis"/>
-                        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="12" Margin="16,0,0,0">
-                          <TextBlock Text="{Binding ElapsedDisplay}" Foreground="#D9E2F3" FontFamily="Consolas" FontSize="12"/>
-                          <TextBlock Text="{Binding StageElapsedDisplay}" Foreground="#8FA4C8" FontFamily="Consolas" FontSize="12"/>
-                        </StackPanel>
-                        <TextBlock Grid.Row="1" Grid.ColumnSpan="2" Text="{Binding SourcePath}" Foreground="#70809E" FontSize="11" TextTrimming="CharacterEllipsis" Margin="0,3,0,0"/>
-                        <TextBlock Grid.Row="2" Grid.ColumnSpan="2" Text="{Binding StageDisplay}" Foreground="#78A7FF" FontSize="12" FontWeight="SemiBold" Margin="0,8,0,4"/>
-                        <ProgressBar Grid.Row="3" Grid.ColumnSpan="2" Minimum="0" Maximum="100" Value="{Binding PipelinePosition}" Height="5"/>
-                      </Grid>
-                    </Border>
-                  </DataTemplate>
-                </ItemsControl.ItemTemplate>
-              </ItemsControl>
-            </StackPanel>
-          </Border>
-
-          <TextBlock IsVisible="{Binding HasNoSelection}" Text="Select a project or create one to begin." Foreground="#9CAAC5" FontSize="18"/>
-
-          <ContentControl Content="{Binding SelectedProject}" HorizontalContentAlignment="Stretch">
-            <ContentControl.ContentTemplate>
-              <DataTemplate x:DataType="vm:ProjectItemViewModel">
-                <StackPanel Spacing="18">
-                  <Grid ColumnDefinitions="*,Auto">
-                    <StackPanel>
-                      <TextBlock Text="{Binding Name}" FontSize="28" FontWeight="SemiBold" Foreground="White"/>
-                      <TextBlock Text="{Binding Phase}" Foreground="#78A7FF" FontWeight="SemiBold"/>
-                    </StackPanel>
-                    <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
-                      <Button Content="Pause / Resume" Click="TogglePause"/>
-                      <Button Content="Retry failed files" Click="RetryFailedFiles" IsEnabled="{Binding CanRetryFailedFiles}"/>
-                      <Button Content="Reindex" Click="ReindexProject"/>
-                      <Button Content="Edit" Click="EditProject"/>
-                      <Button Content="Remove" Click="RemoveProject" Foreground="#FF9292"/>
-                    </StackPanel>
-                  </Grid>
-
-                  <UniformGrid Columns="5">
-                    <Border Classes="metric"><StackPanel><TextBlock Text="Discovered" Classes="metricLabel"/><TextBlock Text="{Binding DocumentCount}" Classes="metricValue"/></StackPanel></Border>
-                    <Border Classes="metric"><StackPanel><TextBlock Text="Pending" Classes="metricLabel"/><TextBlock Text="{Binding PendingCount}" Classes="metricValue"/></StackPanel></Border>
-                    <Border Classes="metric"><StackPanel><TextBlock Text="Indexed" Classes="metricLabel"/><TextBlock Text="{Binding IndexedCount}" Classes="metricValue"/></StackPanel></Border>
-                    <Border Classes="metric"><StackPanel><TextBlock Text="Skipped" Classes="metricLabel"/><TextBlock Text="{Binding SkippedCount}" Classes="metricValue"/></StackPanel></Border>
-                    <Border Classes="metric"><StackPanel><TextBlock Text="Errors" Classes="metricLabel"/><TextBlock Text="{Binding ErrorCount}" Classes="metricValue"/></StackPanel></Border>
-                  </UniformGrid>
-
-                  <Border Classes="panel">
-                    <StackPanel Spacing="8">
-                      <TextBlock Text="Project index" FontSize="16" FontWeight="SemiBold" Foreground="White"/>
-                      <Grid ColumnDefinitions="160,*" RowDefinitions="Auto,Auto">
-                        <TextBlock Text="Last completed" Classes="fieldLabel"/>
-                        <TextBlock Grid.Column="1" Text="{Binding LastCompletedDisplay}" Foreground="#D9E2F3"/>
-                        <TextBlock Grid.Row="1" Text="Search generation" Classes="fieldLabel"/>
-                        <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding SearchGeneration}" Foreground="#D9E2F3"/>
-                      </Grid>
-                    </StackPanel>
-                  </Border>
-
-                  <Border Classes="panel">
-                    <StackPanel Spacing="8">
-                      <TextBlock Text="Folders" FontSize="16" FontWeight="SemiBold" Foreground="White"/>
-                      <ItemsControl ItemsSource="{Binding Folders}">
-                        <ItemsControl.ItemTemplate>
-                          <DataTemplate x:DataType="core:ProjectFolderInfo">
-                            <Border Background="#10192C" Padding="10" Margin="0,3" CornerRadius="5">
-                              <TextBlock Text="{Binding Path}" Foreground="#D9E2F3" TextWrapping="Wrap"/>
-                            </Border>
-                          </DataTemplate>
-                        </ItemsControl.ItemTemplate>
-                      </ItemsControl>
-                    </StackPanel>
-                  </Border>
-
-                  <Border Classes="panel">
-                    <StackPanel Spacing="8">
-                      <TextBlock Text="Recent errors" FontSize="16" FontWeight="SemiBold" Foreground="White"/>
-                      <ItemsControl ItemsSource="{Binding RecentErrors}">
-                        <ItemsControl.ItemTemplate>
-                          <DataTemplate x:DataType="core:ProjectErrorInfo">
-                            <Border Background="#251824" Padding="10" Margin="0,3" CornerRadius="5">
-                              <StackPanel>
-                                <TextBlock Text="{Binding Code}" Foreground="#FF9BA8" FontWeight="SemiBold"/>
-                                <TextBlock Text="{Binding Message}" Foreground="#E5CAD0" TextWrapping="Wrap"/>
-                                <TextBlock Text="{Binding SourcePath}" FontSize="11" Foreground="#9D7D86" TextWrapping="Wrap"/>
-                              </StackPanel>
-                            </Border>
-                          </DataTemplate>
-                        </ItemsControl.ItemTemplate>
-                      </ItemsControl>
-                    </StackPanel>
-                  </Border>
-                </StackPanel>
-              </DataTemplate>
-            </ContentControl.ContentTemplate>
-          </ContentControl>
-        </StackPanel>
-      </ScrollViewer>
+      <views:ProjectsView Grid.Row="2" IsVisible="{Binding IsProjectsSection}" />
+      <views:SettingsView Grid.Row="2" IsVisible="{Binding IsSettingsSection}" />
     </Grid>
   </Grid>
+
   <Window.Styles>
-    <Style Selector="Button"><Setter Property="Padding" Value="14,8"/><Setter Property="CornerRadius" Value="6"/></Style>
-    <Style Selector="Border.metric"><Setter Property="Background" Value="#151F35"/><Setter Property="CornerRadius" Value="8"/><Setter Property="Padding" Value="14"/><Setter Property="Margin" Value="0,0,8,0"/></Style>
-    <Style Selector="TextBlock.metricLabel"><Setter Property="Foreground" Value="#8796B3"/><Setter Property="FontSize" Value="12"/></Style>
-    <Style Selector="TextBlock.metricValue"><Setter Property="Foreground" Value="White"/><Setter Property="FontSize" Value="24"/><Setter Property="FontWeight" Value="SemiBold"/></Style>
-    <Style Selector="Border.panel"><Setter Property="Background" Value="#121A2E"/><Setter Property="CornerRadius" Value="10"/><Setter Property="Padding" Value="18"/></Style>
-    <Style Selector="TextBlock.fieldLabel"><Setter Property="Foreground" Value="#8796B3"/><Setter Property="Margin" Value="0,4,12,4"/></Style>
+    <Style Selector="Button.navButton">
+      <Setter Property="MinHeight" Value="41" />
+      <Setter Property="Padding" Value="12,9" />
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderBrush" Value="Transparent" />
+      <Setter Property="Foreground" Value="{DynamicResource TextSecondaryBrush}" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+    </Style>
+    <Style Selector="Button.navButton:pointerover">
+      <Setter Property="Background" Value="{DynamicResource SurfaceRaisedBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource SurfaceRaisedBrush}" />
+      <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
+    </Style>
+    <Style Selector="Button.navButton.active">
+      <Setter Property="Background" Value="{DynamicResource AccentSubtleBrush}" />
+      <Setter Property="BorderBrush" Value="#2D4D7D" />
+      <Setter Property="Foreground" Value="#C5D8FF" />
+    </Style>
+    <Style Selector="Border.phaseBadge">
+      <Setter Property="Background" Value="{DynamicResource AccentSubtleBrush}" />
+    </Style>
+    <Style Selector="ListBox.projectList ListBoxItem /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderBrush" Value="Transparent" />
+    </Style>
+    <Style Selector="ListBox.projectList ListBoxItem:selected /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource SurfaceRaisedBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="9" />
+    </Style>
+    <Style Selector="ListBox.projectList ListBoxItem:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderBrush" Value="Transparent" />
+    </Style>
+    <Style Selector="ListBox.projectList ListBoxItem:selected:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource SurfaceRaisedBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="9" />
+    </Style>
+    <Style Selector="ListBox.projectList ListBoxItem:pointerover Border.projectCard">
+      <Setter Property="Background" Value="{DynamicResource SurfaceBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}" />
+    </Style>
+    <Style Selector="ListBox.projectList ListBoxItem:selected Border.projectCard">
+      <Setter Property="Background" Value="{DynamicResource SurfaceRaisedBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
+    </Style>
   </Window.Styles>
 </Window>

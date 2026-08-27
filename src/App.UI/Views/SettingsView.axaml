@@ -1,0 +1,151 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:MCPIndexSearch.App.UI.ViewModels"
+             x:Class="MCPIndexSearch.App.UI.Views.SettingsView"
+             x:DataType="vm:MainViewModel">
+  <ScrollViewer>
+    <StackPanel Margin="30,24,30,40" Spacing="18" MaxWidth="920" HorizontalAlignment="Center">
+      <Border Classes="card">
+        <Grid ColumnDefinitions="*,220" ColumnSpacing="28">
+          <StackPanel Spacing="7">
+            <TextBlock Text="Performance" Classes="sectionTitle" />
+            <TextBlock Text="Set the shared CPU budget for indexing, OCR, and semantic search. The limit is enforced across all projects."
+                       Classes="muted" TextWrapping="Wrap" />
+            <TextBlock Text="{Binding CpuUsageSummary}" Foreground="{DynamicResource AccentBrush}"
+                       FontSize="12" TextWrapping="Wrap" />
+          </StackPanel>
+          <StackPanel Grid.Column="1" Spacing="7" VerticalAlignment="Center">
+            <TextBlock Text="CPU USAGE PROFILE" Classes="eyebrow" />
+            <ComboBox ItemsSource="{Binding CpuUsageProfiles}"
+                      SelectedItem="{Binding SelectedCpuUsageProfile, Mode=OneWay}"
+                      SelectionChanged="CpuUsageProfileChanged" />
+          </StackPanel>
+        </Grid>
+      </Border>
+
+      <Border Classes="card">
+        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="24">
+          <StackPanel Spacing="6">
+            <TextBlock Text="Start with Windows" Classes="sectionTitle" />
+            <TextBlock Text="Keep the local index available after you sign in. The app starts in the background and remains accessible from the system tray."
+                       Classes="muted" TextWrapping="Wrap" />
+          </StackPanel>
+          <CheckBox Grid.Column="1" IsVisible="{Binding IsWindowsStartupSupported}"
+                    IsChecked="{Binding StartWithWindowsEnabled, Mode=OneWay}"
+                    Content="Launch automatically" Click="StartWithWindowsChanged"
+                    VerticalAlignment="Center" />
+        </Grid>
+      </Border>
+
+      <Border Classes="card">
+        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="24">
+          <StackPanel Spacing="8">
+            <StackPanel Orientation="Horizontal" Spacing="9">
+              <TextBlock Text="Codex integration" Classes="sectionTitle" />
+              <Border Classes="statusBadge" VerticalAlignment="Center">
+                <TextBlock Text="{Binding CodexConnectionStatusLabel}" Foreground="{DynamicResource AccentBrush}"
+                           FontSize="10" FontWeight="SemiBold" />
+              </Border>
+            </StackPanel>
+            <TextBlock Text="{Binding CodexConnectionMessage}" Classes="muted" TextWrapping="Wrap" />
+            <TextBlock Text="Connect once to make this local search service available to Codex."
+                       Classes="quiet" FontSize="12" TextWrapping="Wrap" />
+          </StackPanel>
+          <Button Grid.Column="1" Content="{Binding CodexConnectionAction}"
+                  IsEnabled="{Binding CanChangeCodexConnection}" Click="ToggleCodexConnection"
+                  VerticalAlignment="Center" />
+        </Grid>
+      </Border>
+
+      <Border Classes="card">
+        <StackPanel Spacing="4">
+          <TextBlock Text="Local search features" Classes="sectionTitle" />
+          <TextBlock Text="Processing stays on this computer. These statuses apply to every project."
+                     Classes="muted" TextWrapping="Wrap" Margin="0,0,0,10" />
+
+          <Border Classes="settingsRow">
+            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="20">
+              <StackPanel Spacing="5">
+                <StackPanel Orientation="Horizontal" Spacing="9">
+                  <TextBlock Text="Document OCR" Classes="cardTitle" />
+                  <Border IsVisible="{Binding IsOcrAvailable}" Classes="statusBadge readyBadge" VerticalAlignment="Center">
+                    <TextBlock Text="Ready" Foreground="{DynamicResource SuccessBrush}"
+                               FontSize="10" FontWeight="SemiBold" />
+                  </Border>
+                  <Border IsVisible="{Binding IsOcrUnavailable}" Classes="statusBadge warningBadge" VerticalAlignment="Center">
+                    <TextBlock Text="Needs attention" Foreground="{DynamicResource WarningBrush}"
+                               FontSize="10" FontWeight="SemiBold" />
+                  </Border>
+                </StackPanel>
+                <TextBlock Text="{Binding OcrStatusMessage}" Classes="muted" TextWrapping="Wrap" />
+              </StackPanel>
+              <TextBlock Grid.Column="1" Text="Automatic" Classes="quiet" FontSize="12"
+                         VerticalAlignment="Center" />
+            </Grid>
+          </Border>
+
+          <Border Classes="settingsRow" Margin="0,8,0,0">
+            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="20">
+              <StackPanel Spacing="5">
+                <StackPanel Orientation="Horizontal" Spacing="9">
+                  <TextBlock Text="Semantic search" Classes="cardTitle" />
+                  <Border Classes="statusBadge" VerticalAlignment="Center">
+                    <TextBlock Text="{Binding SemanticSearchStatusLabel}" Foreground="{DynamicResource AccentBrush}"
+                               FontSize="10" FontWeight="SemiBold" />
+                  </Border>
+                </StackPanel>
+                <TextBlock Text="{Binding SemanticSearchStatusMessage}" Classes="muted" TextWrapping="Wrap" />
+              </StackPanel>
+              <Button Grid.Column="1" IsVisible="{Binding CanSetUpSemanticSearch}"
+                      Classes="primary" Content="Set up" Click="SetupSemanticSearch"
+                      VerticalAlignment="Center" />
+            </Grid>
+          </Border>
+        </StackPanel>
+      </Border>
+
+      <Border Classes="card">
+        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="24">
+          <StackPanel Spacing="7">
+            <StackPanel Orientation="Horizontal" Spacing="9">
+              <TextBlock Text="Application updates" Classes="sectionTitle" />
+              <Border Classes="statusBadge" VerticalAlignment="Center">
+                <TextBlock Text="{Binding ApplicationUpdateStatusLabel}" Foreground="{DynamicResource AccentBrush}"
+                           FontSize="10" FontWeight="SemiBold" />
+              </Border>
+            </StackPanel>
+            <TextBlock Text="{Binding ApplicationUpdateMessage}" Classes="muted" TextWrapping="Wrap" />
+            <ProgressBar IsVisible="{Binding IsApplicationUpdateProgressVisible}"
+                         Minimum="0" Maximum="100" Value="{Binding ApplicationUpdate.ProgressPercent}"
+                         Height="6" Margin="0,5,0,0" />
+          </StackPanel>
+          <Button Grid.Column="1" Content="Restart to update"
+                  IsVisible="{Binding IsApplicationUpdateReady}"
+                  IsEnabled="{Binding CanRestartForUpdate}"
+                  Click="RestartToUpdate" VerticalAlignment="Center" />
+        </Grid>
+      </Border>
+    </StackPanel>
+  </ScrollViewer>
+
+  <UserControl.Styles>
+    <Style Selector="Border.settingsRow">
+      <Setter Property="Background" Value="{DynamicResource SurfaceRaisedBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="9" />
+      <Setter Property="Padding" Value="15" />
+    </Style>
+    <Style Selector="Border.statusBadge">
+      <Setter Property="Background" Value="{DynamicResource AccentSubtleBrush}" />
+      <Setter Property="CornerRadius" Value="8" />
+      <Setter Property="Padding" Value="8,2" />
+    </Style>
+    <Style Selector="Border.statusBadge.readyBadge">
+      <Setter Property="Background" Value="{DynamicResource SuccessSubtleBrush}" />
+    </Style>
+    <Style Selector="Border.statusBadge.warningBadge">
+      <Setter Property="Background" Value="{DynamicResource WarningSubtleBrush}" />
+    </Style>
+  </UserControl.Styles>
+</UserControl>

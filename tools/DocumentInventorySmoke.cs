@@ -58,6 +58,13 @@ var delta = await ObserveAsync(writer, projectId, folderId, deltaPath, new DateT
 var initial = await store.ListDocumentsAsync(new DocumentListRequest(projectId));
 if (initial.ReturnedCount != 4 || initial.ProjectId != projectId || initial.SearchGeneration < 1)
     throw new InvalidOperationException("The initial document inventory response is incomplete.");
+var fileTypeCounts = await store.ListProjectFileTypeCountsAsync(projectId);
+if (!fileTypeCounts.SequenceEqual([
+        new ProjectFileTypeCount(".txt", 2),
+        new ProjectFileTypeCount(".eml", 1),
+        new ProjectFileTypeCount(".md", 1)
+    ]))
+    throw new InvalidOperationException("The project file-type counts are incorrect.");
 AssertStatus(initial, alpha.DocumentId, DocumentInventoryStatus.Indexed);
 AssertStatus(initial, bravo.DocumentId, DocumentInventoryStatus.Error);
 AssertStatus(initial, charlie.DocumentId, DocumentInventoryStatus.Processing);
@@ -146,7 +153,7 @@ if (!stillIndexed.Documents.Select(document => document.DocumentId).Order().Sequ
 
 await writer.RemoveProjectAsync(projectId);
 await host.StopAsync();
-Console.WriteLine("DOCUMENT_INVENTORY_SMOKE_OK statuses=covered filters=covered pagination=stable metadata=verified errors=structured");
+Console.WriteLine("DOCUMENT_INVENTORY_SMOKE_OK statuses=covered filters=covered pagination=stable metadata=verified errors=structured file_types=counted");
 
 static async Task<ObservationResult> ObserveAsync(IIndexWriter writer, Guid projectId, Guid folderId, string path,
     DateTimeOffset modifiedUtc)

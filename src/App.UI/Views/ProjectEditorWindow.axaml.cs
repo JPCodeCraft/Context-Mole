@@ -44,8 +44,12 @@ public partial class ProjectEditorWindow : Window
     private void RemoveFolder(object? sender, RoutedEventArgs args)
     {
         if (FoldersList.SelectedItem is string selected) _folders.Remove(selected);
+        RemoveFolderButton.IsEnabled = FoldersList.SelectedItem is not null;
         ValidateInput();
     }
+
+    private void FolderSelectionChanged(object? sender, SelectionChangedEventArgs args) =>
+        RemoveFolderButton.IsEnabled = FoldersList.SelectedItem is not null;
 
     private void Cancel(object? sender, RoutedEventArgs args) => Close(null);
 

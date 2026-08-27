@@ -1,14 +1,58 @@
-<Window xmlns="https://github.com/avaloniaui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        x:Class="MCPIndexSearch.App.UI.Views.ProjectEditorWindow" Width="620" Height="480"
-        CanResize="False" WindowStartupLocation="CenterOwner" Title="Project">
-  <Grid RowDefinitions="Auto,Auto,*,Auto,Auto" Margin="22">
-    <TextBlock Text="Project name" FontWeight="SemiBold"/>
-    <TextBox x:Name="ProjectNameBox" Grid.Row="1" Margin="0,7,0,16" PlaceholderText="e.g. Client research"/>
-    <Grid Grid.Row="2" RowDefinitions="Auto,*">
-      <Grid ColumnDefinitions="*,Auto,Auto"><TextBlock Text="Folders" FontWeight="SemiBold"/><Button Grid.Column="1" Content="Add folders" Click="AddFolders" Margin="8,0"/><Button Grid.Column="2" Content="Remove" Click="RemoveFolder"/></Grid>
-      <ListBox x:Name="FoldersList" Grid.Row="1" Margin="0,8,0,0"/>
-    </Grid>
-    <TextBlock x:Name="ValidationBlock" Grid.Row="3" Foreground="#C33" TextWrapping="Wrap" MinHeight="32" Margin="0,12,0,4"/>
-    <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8"><Button Content="Cancel" Click="Cancel"/><Button Content="Save project" Click="Save"/></StackPanel>
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="MCPIndexSearch.App.UI.Views.ProjectEditorWindow"
+        Width="680" Height="540" MinWidth="600" MinHeight="500"
+        WindowStartupLocation="CenterOwner" Title="Project"
+        Icon="/Assets/mcp-index-search.ico">
+  <Grid RowDefinitions="Auto,*,Auto,Auto" Margin="26">
+    <StackPanel Spacing="5" Margin="0,0,0,18">
+      <TextBlock Text="Project details" Classes="pageTitle" />
+      <TextBlock Text="Give the index a clear name and choose the folders it should watch."
+                 Classes="muted" TextWrapping="Wrap" />
+    </StackPanel>
+
+    <Border Grid.Row="1" Classes="card">
+      <Grid RowDefinitions="Auto,Auto,Auto,*">
+        <TextBlock Text="PROJECT NAME" Classes="eyebrow" />
+        <TextBox x:Name="ProjectNameBox" Grid.Row="1" Margin="0,7,0,18"
+                 PlaceholderText="e.g. Client research" />
+
+        <Grid Grid.Row="2" ColumnDefinitions="*,Auto,Auto" Margin="0,0,0,8">
+          <StackPanel Spacing="2">
+            <TextBlock Text="FOLDERS" Classes="eyebrow" />
+            <TextBlock Text="Files in these locations are indexed locally." Classes="quiet" FontSize="12" />
+          </StackPanel>
+          <Button Grid.Column="1" Classes="compact" Content="Add folders" Click="AddFolders" Margin="8,0" />
+          <Button x:Name="RemoveFolderButton" Grid.Column="2" Classes="ghost compact"
+                  Content="Remove" Click="RemoveFolder" IsEnabled="False" />
+        </Grid>
+
+        <ListBox x:Name="FoldersList" Grid.Row="3" Classes="folderPicker"
+                 SelectionChanged="FolderSelectionChanged" />
+      </Grid>
+    </Border>
+
+    <TextBlock x:Name="ValidationBlock" Grid.Row="2" Foreground="{DynamicResource DangerBrush}"
+               TextWrapping="Wrap" MinHeight="24" Margin="4,12,4,4" />
+
+    <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+      <Button Classes="ghost" Content="Cancel" Click="Cancel" IsCancel="True" />
+      <Button Classes="primary" Content="Save project" Click="Save" IsDefault="True" />
+    </StackPanel>
   </Grid>
+
+  <Window.Styles>
+    <Style Selector="ListBox.folderPicker">
+      <Setter Property="Background" Value="{DynamicResource AppBackgroundBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="8" />
+      <Setter Property="Padding" Value="5" />
+    </Style>
+    <Style Selector="ListBox.folderPicker ListBoxItem">
+      <Setter Property="Padding" Value="10,8" />
+      <Setter Property="Margin" Value="0,2" />
+      <Setter Property="CornerRadius" Value="6" />
+    </Style>
+  </Window.Styles>
 </Window>

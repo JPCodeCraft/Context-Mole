@@ -1,35 +1,58 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         x:Class="MCPIndexSearch.App.UI.Views.ModelSetupWindow"
-        Width="680" Height="500" MinWidth="620" MinHeight="460"
-        CanResize="False" WindowStartupLocation="CenterOwner"
-        Title="Set up semantic search">
-  <Grid RowDefinitions="Auto,Auto,Auto,*,Auto" Margin="24">
-    <StackPanel Spacing="6">
-      <TextBlock Text="Add multilingual semantic search" FontSize="23" FontWeight="SemiBold"/>
-      <TextBlock Text="Keyword search already works. This optional download lets MCPIndexSearch find passages with similar meaning in Portuguese, English, Spanish, and other languages." TextWrapping="Wrap"/>
-    </StackPanel>
+        Width="700" Height="570" MinWidth="620" MinHeight="520"
+        WindowStartupLocation="CenterOwner"
+        Title="Set up semantic search"
+        Icon="/Assets/mcp-index-search.ico">
+  <Grid RowDefinitions="*,Auto" Margin="26">
+    <ScrollViewer>
+      <StackPanel Spacing="18">
+        <StackPanel Spacing="6">
+          <TextBlock Text="Add semantic search" Classes="pageTitle" />
+          <TextBlock Text="Find passages with similar meaning across Portuguese, English, Spanish, and other languages. Keyword search already works without this download."
+                     Classes="muted" TextWrapping="Wrap" />
+        </StackPanel>
 
-    <Border Grid.Row="1" Margin="0,18,0,12" Padding="14" Background="#172036" CornerRadius="8">
-      <StackPanel Spacing="8">
-        <TextBlock Text="Terms for the tokenizer" FontWeight="SemiBold"/>
-        <TextBlock Text="The IBM Granite model is Apache 2.0. Its tokenizer is derived from Google Gemma 3, and IBM states that use of the tokenizer is subject to the Gemma Terms of Use." TextWrapping="Wrap"/>
-        <Button Content="Review Gemma terms" HorizontalAlignment="Left" Click="OpenTerms"/>
-        <CheckBox x:Name="AcceptTermsCheckBox" Content="I have reviewed and accept the Gemma Terms of Use" Click="AcceptanceChanged"/>
+        <Border Classes="card">
+          <StackPanel Spacing="10">
+            <Grid ColumnDefinitions="Auto,*" ColumnSpacing="12">
+              <Border Width="34" Height="34" CornerRadius="10" Background="{DynamicResource AccentSubtleBrush}">
+                <TextBlock Text="i" Foreground="{DynamicResource AccentBrush}" FontWeight="Bold"
+                           HorizontalAlignment="Center" VerticalAlignment="Center" />
+              </Border>
+              <StackPanel Grid.Column="1" Spacing="5">
+                <TextBlock Text="Tokenizer terms" Classes="sectionTitle" />
+                <TextBlock Text="The IBM Granite model is Apache 2.0. Its tokenizer is derived from Google Gemma 3, and IBM states that use of the tokenizer is subject to the Gemma Terms of Use."
+                           Classes="muted" TextWrapping="Wrap" />
+              </StackPanel>
+            </Grid>
+            <Button Classes="ghost compact" Content="Review Gemma terms" HorizontalAlignment="Left"
+                    Click="OpenTerms" />
+            <CheckBox x:Name="AcceptTermsCheckBox"
+                      Content="I have reviewed and accept the Gemma Terms of Use"
+                      Click="AcceptanceChanged" />
+          </StackPanel>
+        </Border>
+
+        <Border Classes="subtleCard">
+          <StackPanel Spacing="12">
+            <TextBlock Text="Download and validation" Classes="sectionTitle" />
+            <TextBlock Text="The model is stored only on this computer. Downloads are checksum-verified, resumable, and never include your documents."
+                       Classes="muted" TextWrapping="Wrap" />
+            <TextBlock x:Name="StatusBlock" Text="Ready to download." TextWrapping="Wrap" />
+            <ProgressBar x:Name="DownloadProgress" Minimum="0" Maximum="1" Value="0" Height="7" />
+            <TextBlock x:Name="BytesBlock" Classes="quiet" FontSize="12" />
+          </StackPanel>
+        </Border>
       </StackPanel>
-    </Border>
+    </ScrollViewer>
 
-    <TextBlock Grid.Row="2" Text="The model is stored only on this computer. Downloads are checksum-verified, resumable, and never include your documents." TextWrapping="Wrap" Foreground="#71809C"/>
-
-    <StackPanel Grid.Row="3" VerticalAlignment="Center" Spacing="10">
-      <TextBlock x:Name="StatusBlock" Text="Ready to download." TextWrapping="Wrap"/>
-      <ProgressBar x:Name="DownloadProgress" Minimum="0" Maximum="1" Value="0" Height="8"/>
-      <TextBlock x:Name="BytesBlock" Foreground="#71809C"/>
-    </StackPanel>
-
-    <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
-      <Button x:Name="CancelButton" Content="Cancel" Click="Cancel"/>
-      <Button x:Name="InstallButton" Content="Download and enable" IsEnabled="False" Click="Install"/>
+    <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Right"
+                Spacing="8" Margin="0,18,0,0">
+      <Button x:Name="CancelButton" Classes="ghost" Content="Cancel" Click="Cancel" IsCancel="True" />
+      <Button x:Name="InstallButton" Classes="primary" Content="Download and enable"
+              IsEnabled="False" Click="Install" IsDefault="True" />
     </StackPanel>
   </Grid>
 </Window>

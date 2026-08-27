@@ -101,6 +101,8 @@ public interface ISearchStore
 {
     Task<bool> IsInitializedAsync(CancellationToken cancellationToken = default);
     Task<IReadOnlyList<ProjectSummary>> ListProjectsAsync(CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<ProjectFileTypeCount>> ListProjectFileTypeCountsAsync(Guid projectId,
+        CancellationToken cancellationToken = default);
     Task<DocumentListResponse> ListDocumentsAsync(DocumentListRequest request,
         CancellationToken cancellationToken = default);
     Task<IReadOnlyList<ProjectErrorInfo>> ListProjectErrorsAsync(Guid projectId, int limit, CancellationToken cancellationToken = default);
