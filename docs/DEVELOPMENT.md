@@ -1,13 +1,13 @@
 # Development checks
 
-Use the SDK pinned by `global.json` and restore the committed lock files before building:
+Use the SDK pinned by `global.json`, restore the committed lock files, and run the automated suite:
 
 ```powershell
 dotnet restore MCPIndexSearch.slnx --locked-mode
-dotnet build MCPIndexSearch.slnx -c Release --no-restore
+dotnet test --solution MCPIndexSearch.slnx -c Release --no-restore
 ```
 
-The tools below are isolated manual smoke tests. Run this assignment again before every smoke command so each one gets a fresh disposable data directory:
+This is the default validation for every change. The tools below are supplemental manual smoke tests for focused integration and runtime checks. Run this assignment again before every smoke command so each one gets a fresh disposable data directory:
 
 ```powershell
 $env:MCPINDEXSEARCH_DATA_DIR = Join-Path $env:TEMP ("MCPIndexSearch-smoke-" + [guid]::NewGuid().ToString("N"))
@@ -23,14 +23,14 @@ dotnet run --file tools/DevelopmentSmoke.cs
 dotnet run --file tools/JobSupersessionSmoke.cs
 dotnet run --file tools/ErrorResolutionSmoke.cs
 
-# CPU profile persistence, global admission, fairness, and full-budget upgrades
+# CPU/model persistence, global admission, fairness, and full-budget upgrades
 dotnet run --file tools/CpuUsagePolicySmoke.cs
 
-# Extraction failures and malformed/unsupported content
+# HTML/MHTML variants, extraction failures, and malformed/unsupported content
 dotnet run --file tools/ExtractionRobustnessSmoke.cs
 dotnet run --file tools/EmlRegressionSmoke.cs
 
-# SQLite WAL reader/writer concurrency
+# SQLite WAL reader/writer concurrency and embedding-policy migration safety
 dotnet run --file tools/SqliteWalConcurrencySmoke.cs
 
 # ZIP/RAR recursion and entry provenance

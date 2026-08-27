@@ -9,14 +9,9 @@ namespace MCPIndexSearch.Infrastructure;
 
 public sealed class GraniteEmbeddingGenerator : IEmbeddingGenerator
 {
-    public const string ModelId = "ibm-granite/granite-embedding-311m-multilingual-r2";
-    public const string Revision = "44399559930365213510b1ee2eb15ded83374f0e";
-    public const string TokenizerSha = "0087c868b33bad550a78a08d19798cfd7f713cde4f020803b8f51f405503e15f";
-    public const string QuantizedSha = "f1fdd44e7e1ac51f12ab7957c7bd092e064d596c288513bf9d326842f669edee";
-    public const string Fp32Sha = "75f9f258bf5013f5fe8a4dad61dd0fd16ac0cbaa7a106e3d3f41c2d04a42d541";
-
     private readonly IAppPaths _paths;
     private readonly ICpuUsageSettings _cpuUsageSettings;
+    private readonly IEmbeddingModelSettings _modelSettings;
     private readonly IGlobalCpuBudget _cpuBudget;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly object _stateGate = new();
@@ -25,29 +20,50 @@ public sealed class GraniteEmbeddingGenerator : IEmbeddingGenerator
     private volatile bool _isAvailable;
     private string? _unavailableReason;
     private EmbeddingPolicy? _policy;
+    private EmbeddingModelChoice? _loadedModel;
     private int _configuredThreadCount;
+    private string? _installationFingerprint;
 
     public GraniteEmbeddingGenerator(
         IAppPaths paths,
         ICpuUsageSettings cpuUsageSettings,
+        IEmbeddingModelSettings modelSettings,
         IGlobalCpuBudget cpuBudget)
     {
         _paths = paths;
         _cpuUsageSettings = cpuUsageSettings;
+        _modelSettings = modelSettings;
         _cpuBudget = cpuBudget;
-        LoadCore(_cpuUsageSettings.ThreadLimit);
+        _unavailableReason = $"{GraniteEmbeddingModels.Get(_modelSettings.Model).DisplayName} is loading.";
     }
 
     public bool IsAvailable => _isAvailable;
-    public string? UnavailableReason => _unavailableReason;
-    public EmbeddingPolicy? Policy => _policy;
+    public string? UnavailableReason
+    {
+        get { lock (_stateGate) return _unavailableReason; }
+    }
+    public EmbeddingPolicy? Policy
+    {
+        get { lock (_stateGate) return _policy; }
+    }
 
     public async Task ReloadAsync(CancellationToken cancellationToken = default)
     {
+        _modelSettings.RefreshFromDisk();
+        var selectedModel = GraniteEmbeddingModels.Get(_modelSettings.Model);
+        var installationFingerprint = GetInstallationFingerprint(selectedModel);
+        if (CanReuseAttempt(selectedModel.Choice, _cpuUsageSettings.ThreadLimit, installationFingerprint)) return;
+
+        using var cpuCapacity = await _cpuBudget.AcquireFullCapacityAsync(cancellationToken).ConfigureAwait(false);
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            LoadCore(_cpuUsageSettings.ThreadLimit);
+            _modelSettings.RefreshFromDisk();
+            var model = GraniteEmbeddingModels.Get(_modelSettings.Model);
+            installationFingerprint = GetInstallationFingerprint(model);
+            if (CanReuseAttempt(model.Choice, cpuCapacity.ThreadCount, installationFingerprint)) return;
+            await Task.Run(() => LoadCore(model, cpuCapacity.ThreadCount, installationFingerprint), cancellationToken)
+                .ConfigureAwait(false);
         }
         finally
         {
@@ -55,18 +71,29 @@ public sealed class GraniteEmbeddingGenerator : IEmbeddingGenerator
         }
     }
 
-    private void LoadCore(int threadCount)
+    private bool CanReuseAttempt(EmbeddingModelChoice choice, int threadCount, string installationFingerprint)
     {
-        var modelDirectory = Path.Combine(_paths.AssetsDirectory, "granite", Revision);
+        lock (_stateGate)
+            return _loadedModel == choice && _configuredThreadCount == threadCount &&
+                   string.Equals(_installationFingerprint, installationFingerprint, StringComparison.Ordinal);
+    }
+
+    private void LoadCore(
+        GraniteEmbeddingModelDefinition model,
+        int threadCount,
+        string installationFingerprint)
+    {
+        var modelDirectory = GraniteModelInstallation.GetDirectory(_paths, model);
         var tokenizerPath = Path.Combine(modelDirectory, "tokenizer.json");
         var quantizedSupported = RuntimeInformation.ProcessArchitecture == Architecture.X64 && Avx2.IsSupported;
         var useQuantized = quantizedSupported &&
             !File.Exists(Path.Combine(modelDirectory, "quantization-disabled"));
         var modelFile = useQuantized ? "model_quint8_avx2.onnx" : "model.onnx";
         var modelPath = Path.Combine(modelDirectory, modelFile);
-        var modelSha = useQuantized ? QuantizedSha : Fp32Sha;
-        _policy = new EmbeddingPolicy(ModelId, Revision, modelSha, TokenizerSha,
-            useQuantized ? "quint8-avx2" : "fp32", 768, 384, "cls", "l2-after-matryoshka");
+        var modelSha = useQuantized ? model.QuantizedSha : model.Fp32Sha;
+        var policy = new EmbeddingPolicy(model.ModelId, model.Revision, modelSha, model.TokenizerSha,
+            useQuantized ? "quint8-avx2" : "fp32", model.SourceDimensions, model.Dimensions,
+            model.Pooling, model.Normalization);
 
         // ONNX Runtime stopped publishing Intel macOS binaries after 1.23. The
         // mandated 1.29 package therefore cannot load natively for osx-x64.
@@ -75,20 +102,22 @@ public sealed class GraniteEmbeddingGenerator : IEmbeddingGenerator
         if (OperatingSystem.IsMacOS() && RuntimeInformation.ProcessArchitecture == Architecture.X64)
         {
             ReplaceResources(null, null,
-                "ONNX Runtime 1.29 does not provide an Intel macOS native library; using keyword search on osx-x64.");
+                "ONNX Runtime 1.29 does not provide an Intel macOS native library; using keyword search on osx-x64.",
+                policy, model.Choice, threadCount, installationFingerprint);
             return;
         }
 
         if (!File.Exists(tokenizerPath) || !File.Exists(modelPath))
         {
-            ReplaceResources(null, null, "Semantic-search model is not installed.");
+            ReplaceResources(null, null, $"{model.DisplayName} is not installed.", policy, model.Choice, threadCount,
+                installationFingerprint);
             return;
         }
-        if (quantizedSupported &&
-            !File.Exists(Path.Combine(modelDirectory, "validation.json")) &&
-            !File.Exists(Path.Combine(modelDirectory, "installation-complete")))
+        if (!GraniteModelInstallation.IsComplete(_paths, model, useQuantized) ||
+            (useQuantized && !File.Exists(Path.Combine(modelDirectory, "validation.json"))))
         {
-            ReplaceResources(null, null, "Semantic-search model installation has not finished validation.");
+            ReplaceResources(null, null, "Semantic-search model installation has not finished validation.",
+                policy, model.Choice, threadCount, installationFingerprint);
             return;
         }
 
@@ -105,8 +134,7 @@ public sealed class GraniteEmbeddingGenerator : IEmbeddingGenerator
                 GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL
             };
             session = new InferenceSession(modelPath, options);
-            ReplaceResources(tokenizer, session, null);
-            _configuredThreadCount = threadCount;
+            ReplaceResources(tokenizer, session, null, policy, model.Choice, threadCount, installationFingerprint);
             tokenizer = null;
             session = null;
         }
@@ -114,11 +142,19 @@ public sealed class GraniteEmbeddingGenerator : IEmbeddingGenerator
         {
             tokenizer?.Dispose();
             session?.Dispose();
-            ReplaceResources(null, null, $"Granite initialization failed: {exception.Message}");
+            ReplaceResources(null, null, $"Granite initialization failed: {exception.Message}",
+                policy, model.Choice, threadCount, installationFingerprint);
         }
     }
 
-    private void ReplaceResources(Tokenizer? tokenizer, InferenceSession? session, string? unavailableReason)
+    private void ReplaceResources(
+        Tokenizer? tokenizer,
+        InferenceSession? session,
+        string? unavailableReason,
+        EmbeddingPolicy? policy,
+        EmbeddingModelChoice? loadedModel,
+        int configuredThreadCount,
+        string? installationFingerprint)
     {
         Tokenizer? previousTokenizer;
         InferenceSession? previousSession;
@@ -130,6 +166,10 @@ public sealed class GraniteEmbeddingGenerator : IEmbeddingGenerator
             _session = session;
             _unavailableReason = unavailableReason;
             _isAvailable = tokenizer is not null && session is not null;
+            _policy = policy;
+            _loadedModel = loadedModel;
+            _configuredThreadCount = configuredThreadCount;
+            _installationFingerprint = installationFingerprint;
         }
         previousSession?.Dispose();
         previousTokenizer?.Dispose();
@@ -151,20 +191,25 @@ public sealed class GraniteEmbeddingGenerator : IEmbeddingGenerator
         }
     }
 
-    public Task<IReadOnlyList<float[]>> EmbedPassagesAsync(IReadOnlyList<string> passages, CancellationToken cancellationToken) =>
+    public Task<EmbeddingBatch> EmbedPassagesAsync(IReadOnlyList<string> passages, CancellationToken cancellationToken) =>
         EmbedAsync(passages, 512, cancellationToken);
 
-    public async Task<float[]> EmbedQueryAsync(string query, CancellationToken cancellationToken)
+    public async Task<QueryEmbedding> EmbedQueryAsync(string query, CancellationToken cancellationToken)
     {
         var result = await EmbedAsync([query], 256, cancellationToken).ConfigureAwait(false);
-        return result[0];
+        return new QueryEmbedding(result.Vectors[0], result.Policy);
     }
 
-    private async Task<IReadOnlyList<float[]>> EmbedAsync(IReadOnlyList<string> texts, int maximumTokens, CancellationToken cancellationToken)
+    private async Task<EmbeddingBatch> EmbedAsync(
+        IReadOnlyList<string> texts,
+        int maximumTokens,
+        CancellationToken cancellationToken)
     {
         if (texts.Count == 0)
         {
-            return [];
+            var emptyPolicy = Policy ?? throw new McpIndexException("model_unavailable",
+                UnavailableReason ?? "Granite assets are unavailable.");
+            return new EmbeddingBatch([], emptyPolicy);
         }
 
         var all = new List<float[]>(texts.Count);
@@ -172,17 +217,22 @@ public sealed class GraniteEmbeddingGenerator : IEmbeddingGenerator
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (_configuredThreadCount != cpuCapacity.ThreadCount)
-                LoadCore(cpuCapacity.ThreadCount);
+            _modelSettings.RefreshFromDisk();
+            var selectedModel = GraniteEmbeddingModels.Get(_modelSettings.Model);
+            var installationFingerprint = GetInstallationFingerprint(selectedModel);
+            if (!CanReuseAttempt(selectedModel.Choice, cpuCapacity.ThreadCount, installationFingerprint))
+                LoadCore(selectedModel, cpuCapacity.ThreadCount, installationFingerprint);
 
             Tokenizer? tokenizer;
             InferenceSession? session;
+            EmbeddingPolicy? policy;
             lock (_stateGate)
             {
                 tokenizer = _tokenizer;
                 session = _session;
+                policy = _policy;
             }
-            if (tokenizer is null || session is null)
+            if (tokenizer is null || session is null || policy is null)
             {
                 throw new McpIndexException("model_unavailable", UnavailableReason ?? "Granite assets are unavailable.");
             }
@@ -196,7 +246,7 @@ public sealed class GraniteEmbeddingGenerator : IEmbeddingGenerator
                 {
                     for (var index = 0; index < count; index++)
                     {
-                        var ids = new[] { 2L }.Concat(tokenizer.Encode(texts[offset + index], false).First().Ids
+                        var ids = new[] { selectedModel.BosTokenId }.Concat(tokenizer.Encode(texts[offset + index], false).First().Ids
                             .Take(maximumTokens - 1)
                             .Select(value => (long)value)
                             ).ToArray();
@@ -206,27 +256,31 @@ public sealed class GraniteEmbeddingGenerator : IEmbeddingGenerator
 
                 try
                 {
-                    all.AddRange(RunBatch(session, encoded));
+                    all.AddRange(RunBatch(session, encoded, selectedModel.SourceDimensions, selectedModel.Dimensions));
                 }
                 catch (Exception exception) when (count > 1 && IsMemoryPressure(exception))
                 {
                     foreach (var item in encoded)
                     {
                         cancellationToken.ThrowIfCancellationRequested();
-                        all.Add(RunBatch(session, [item])[0]);
+                        all.Add(RunBatch(session, [item], selectedModel.SourceDimensions, selectedModel.Dimensions)[0]);
                     }
                 }
             }
+
+            return new EmbeddingBatch(all, policy);
         }
         finally
         {
             _gate.Release();
         }
-
-        return all;
     }
 
-    private static IReadOnlyList<float[]> RunBatch(InferenceSession session, IReadOnlyList<long[]> encoded)
+    private static IReadOnlyList<float[]> RunBatch(
+        InferenceSession session,
+        IReadOnlyList<long[]> encoded,
+        int sourceDimensions,
+        int outputDimensions)
     {
         var sequenceLength = encoded.Max(item => item.Length);
         var inputIds = new DenseTensor<long>([encoded.Count, sequenceLength]);
@@ -245,14 +299,15 @@ public sealed class GraniteEmbeddingGenerator : IEmbeddingGenerator
         ]);
         var output = results.First().AsTensor<float>();
         var dimensions = output.Dimensions.ToArray();
-        if (dimensions.Length != 3 || dimensions[0] != encoded.Count || dimensions[2] < 384)
+        if (dimensions.Length != 3 || dimensions[0] != encoded.Count || dimensions[2] != sourceDimensions ||
+            outputDimensions > sourceDimensions)
             throw new McpIndexException("model_output_invalid",
-                $"Expected Granite output [batch,tokens,>=384], received [{string.Join(',', dimensions)}].");
+                $"Expected Granite output [batch,tokens,{sourceDimensions}], received [{string.Join(',', dimensions)}].");
 
         var vectors = new List<float[]>(encoded.Count);
         for (var batch = 0; batch < encoded.Count; batch++)
         {
-            var vector = new float[384];
+            var vector = new float[outputDimensions];
             double squaredNorm = 0;
             for (var dimension = 0; dimension < vector.Length; dimension++)
             {
@@ -272,12 +327,38 @@ public sealed class GraniteEmbeddingGenerator : IEmbeddingGenerator
         exception is OnnxRuntimeException && (exception.Message.Contains("memory", StringComparison.OrdinalIgnoreCase) ||
                                                exception.Message.Contains("alloc", StringComparison.OrdinalIgnoreCase));
 
+    private string GetInstallationFingerprint(GraniteEmbeddingModelDefinition model)
+    {
+        var directory = GraniteModelInstallation.GetDirectory(_paths, model);
+        return string.Join('|',
+            FileFingerprint(Path.Combine(directory, "tokenizer.json")),
+            FileFingerprint(Path.Combine(directory, "model_quint8_avx2.onnx")),
+            FileFingerprint(Path.Combine(directory, "model.onnx")),
+            FileFingerprint(Path.Combine(directory, GraniteModelInstallation.CompletionMarker)),
+            FileFingerprint(Path.Combine(directory, GraniteModelInstallation.RepairMarker)),
+            FileFingerprint(Path.Combine(directory, "validation.json")),
+            FileFingerprint(Path.Combine(directory, "quantization-disabled")));
+    }
+
+    private static string FileFingerprint(string path)
+    {
+        try
+        {
+            var file = new FileInfo(path);
+            return file.Exists ? $"{file.Length}:{file.LastWriteTimeUtc.Ticks}" : "-";
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return $"error:{exception.HResult}";
+        }
+    }
+
     public async ValueTask DisposeAsync()
     {
         await _gate.WaitAsync().ConfigureAwait(false);
         try
         {
-            ReplaceResources(null, null, "Embedding generator is shutting down.");
+            ReplaceResources(null, null, "Embedding generator is shutting down.", null, null, 0, null);
         }
         finally
         {

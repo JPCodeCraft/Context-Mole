@@ -10,11 +10,12 @@
       <StackPanel Spacing="18">
         <StackPanel Spacing="6">
           <TextBlock Text="Add semantic search" Classes="pageTitle" />
-          <TextBlock Text="Find passages with similar meaning across Portuguese, English, Spanish, and other languages. Keyword search already works without this download."
+          <TextBlock x:Name="ModelNameBlock" Text="Granite multilingual embeddings" Classes="sectionTitle" />
+          <TextBlock x:Name="ModelDescriptionBlock" Text="Find passages with similar meaning across Portuguese, English, Spanish, and other languages. Keyword search already works without this download."
                      Classes="muted" TextWrapping="Wrap" />
         </StackPanel>
 
-        <Border Classes="card">
+        <Border x:Name="TermsCard" Classes="card">
           <StackPanel Spacing="10">
             <Grid ColumnDefinitions="Auto,*" ColumnSpacing="12">
               <Border Width="34" Height="34" CornerRadius="10" Background="{DynamicResource AccentSubtleBrush}">
@@ -38,7 +39,7 @@
         <Border Classes="subtleCard">
           <StackPanel Spacing="12">
             <TextBlock Text="Download and validation" Classes="sectionTitle" />
-            <TextBlock Text="The model is stored only on this computer. Downloads are checksum-verified, resumable, and never include your documents."
+            <TextBlock x:Name="DownloadDescriptionBlock" Text="The model is stored only on this computer. Downloads are checksum-verified, resumable, and never include your documents."
                        Classes="muted" TextWrapping="Wrap" />
             <TextBlock x:Name="StatusBlock" Text="Ready to download." TextWrapping="Wrap" />
             <ProgressBar x:Name="DownloadProgress" Minimum="0" Maximum="1" Value="0" Height="7" />

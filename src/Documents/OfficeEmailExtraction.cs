@@ -237,23 +237,43 @@ public sealed partial class DocumentExtractionRegistry
         return result;
     }
 
-    private async Task<ExtractedNode> EmlNodeAsync(byte[] bytes, string name, string? mimeType, string relationship,
-        int depth, ExpansionContext context, CancellationToken cancellationToken)
+    private Task<ExtractedNode> EmlNodeAsync(byte[] bytes, string name, string? mimeType, string relationship,
+        int depth, ExpansionContext context, CancellationToken cancellationToken) =>
+        MimeMessageNodeAsync(bytes, name, mimeType, relationship, depth, context, isWebArchive: false, cancellationToken);
+
+    private Task<ExtractedNode> MhtmlNodeAsync(byte[] bytes, string name, string? mimeType, string relationship,
+        int depth, ExpansionContext context, CancellationToken cancellationToken) =>
+        MimeMessageNodeAsync(bytes, name, mimeType, relationship, depth, context, isWebArchive: true, cancellationToken);
+
+    private async Task<ExtractedNode> MimeMessageNodeAsync(byte[] bytes, string name, string? mimeType,
+        string relationship, int depth, ExpansionContext context, bool isWebArchive,
+        CancellationToken cancellationToken)
     {
         using var input = new MemoryStream(bytes, writable: false);
         var message = await MimeMessage.LoadAsync(input, cancellationToken);
         var sections = new List<ExtractedSection>();
-        var headers = $"From: {message.From}\nTo: {message.To}\nCc: {message.Cc}\nDate: {message.Date:O}\nSubject: {message.Subject}";
-        sections.Add(new ExtractedSection(headers, new SourceLocation(LocationKind.EmailPart, EmailPart: "headers"), ExtractionMethod.Email));
-        var body = message.TextBody;
-        var method = ExtractionMethod.Email;
-        if (string.IsNullOrWhiteSpace(body) && !string.IsNullOrWhiteSpace(message.HtmlBody))
+        if (!isWebArchive)
+        {
+            var headers = $"From: {message.From}\nTo: {message.To}\nCc: {message.Cc}\nDate: {message.Date:O}\nSubject: {message.Subject}";
+            sections.Add(new ExtractedSection(headers,
+                new SourceLocation(LocationKind.EmailPart, EmailPart: "headers"), ExtractionMethod.Email));
+        }
+
+        var hasHtml = !string.IsNullOrWhiteSpace(message.HtmlBody);
+        var body = isWebArchive && hasHtml ? InertHtmlText(message.HtmlBody) : message.TextBody;
+        var method = isWebArchive
+            ? (hasHtml ? ExtractionMethod.Html : ExtractionMethod.NativeText)
+            : ExtractionMethod.Email;
+        if (!isWebArchive && string.IsNullOrWhiteSpace(body) && hasHtml)
         {
             body = InertHtmlText(message.HtmlBody);
             method = ExtractionMethod.Html;
         }
+        var location = isWebArchive
+            ? new SourceLocation(LocationKind.Document)
+            : new SourceLocation(LocationKind.EmailPart, EmailPart: "body");
         if (!string.IsNullOrWhiteSpace(body))
-            sections.Add(new ExtractedSection(body, new SourceLocation(LocationKind.EmailPart, EmailPart: "body"), method));
+            sections.Add(new ExtractedSection(body, location, method));
 
         var attachments = new List<ExtractedNode>();
         var ordinal = 0;
@@ -436,6 +456,7 @@ public sealed partial class DocumentExtractionRegistry
         "application/zip" or "application/x-zip" or "application/x-zip-compressed" => ".zip",
         "application/vnd.rar" or "application/x-rar" or "application/x-rar-compressed" => ".rar",
         "message/rfc822" => ".eml",
+        "multipart/related" or "application/x-mimearchive" => ".mhtml",
         "image/png" => ".png",
         "image/jpeg" => ".jpg",
         "image/gif" => ".gif",

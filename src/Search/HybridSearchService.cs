@@ -73,9 +73,11 @@ public sealed class HybridSearchService(
         if (vectorMetadata.EntryCount > 0)
             await EnsureEmbeddingAvailableAsync(cancellationToken).ConfigureAwait(false);
         var semanticEnabled = _embeddingGenerator.IsAvailable && vectorMetadata.Policy is not null &&
-            vectorMetadata.EntryCount > 0;
+            vectorMetadata.EntryCount > 0 && vectorMetadata.IsComplete;
         if (!_embeddingGenerator.IsAvailable)
             warnings.Add(_embeddingGenerator.UnavailableReason ?? "Granite model assets are unavailable; using keyword search.");
+        else if (vectorMetadata.EntryCount == 0)
+            warnings.Add("No semantic embeddings are currently available for this project; using keyword search.");
         else if (vectorMetadata.Policy is null && vectorMetadata.EntryCount > 0)
             warnings.Add("The project contains incompatible embedding policy generations; using keyword search until re-embedding completes.");
         else if (vectorMetadata.Policy is not null && !string.Equals(vectorMetadata.Policy.Key, _embeddingGenerator.Policy?.Key, StringComparison.Ordinal))
@@ -88,18 +90,22 @@ public sealed class HybridSearchService(
         {
             try
             {
-                var queryVector = await _embeddingGenerator.EmbedQueryAsync(request.Query, cancellationToken).ConfigureAwait(false);
-                if (vectorMetadata.RequiresStreaming)
+                var queryEmbedding = await _embeddingGenerator.EmbedQueryAsync(request.Query, cancellationToken).ConfigureAwait(false);
+                if (!string.Equals(queryEmbedding.Policy.Key, vectorMetadata.Policy!.Key, StringComparison.Ordinal))
+                {
+                    warnings.Add("The embedding model changed during this search; using keyword results while re-embedding completes.");
+                }
+                else if (vectorMetadata.RequiresStreaming)
                 {
                     semanticMatches = (await FlatVectorIndex.SearchStreamingAsync(
                         _store.StreamVectorEntriesAsync(request.ProjectId, vectorMetadata.SearchGeneration, request.Filters, cancellationToken),
-                        queryVector, candidateK, cancellationToken).ConfigureAwait(false)).ToArray();
+                        queryEmbedding.Vector, candidateK, cancellationToken).ConfigureAwait(false)).ToArray();
                 }
                 else
                 {
                     var vectorIndex = await GetVectorIndexAsync(request.ProjectId, vectorMetadata, cancellationToken)
                         .ConfigureAwait(false);
-                    semanticMatches = vectorIndex.Search(queryVector, candidateK, request.Filters).ToArray();
+                    semanticMatches = vectorIndex.Search(queryEmbedding.Vector, candidateK, request.Filters).ToArray();
                 }
             }
             catch (McpIndexException exception) when (exception.Code == "index_changed")
@@ -169,12 +175,10 @@ public sealed class HybridSearchService(
 
     private async Task EnsureEmbeddingAvailableAsync(CancellationToken cancellationToken)
     {
-        if (_embeddingGenerator.IsAvailable) return;
         await _embeddingReloadGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (!_embeddingGenerator.IsAvailable)
-                await _embeddingGenerator.ReloadAsync(cancellationToken).ConfigureAwait(false);
+            await _embeddingGenerator.ReloadAsync(cancellationToken).ConfigureAwait(false);
         }
         finally
         {

@@ -19,11 +19,12 @@ public static class GraniteEmbeddingDiagnostics
 {
     public static GraniteValidationResult ValidateProfiles(
         IAppPaths paths,
+        GraniteEmbeddingModelDefinition model,
         int threadCount,
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var directory = Path.Combine(paths.AssetsDirectory, "granite", GraniteEmbeddingGenerator.Revision);
+        var directory = Path.Combine(paths.AssetsDirectory, "granite", model.Revision);
         var tokenizerPath = Path.Combine(directory, "tokenizer.json");
         var quantizedPath = Path.Combine(directory, "model_quint8_avx2.onnx");
         var fp32Path = Path.Combine(directory, "model.onnx");
@@ -54,7 +55,7 @@ public static class GraniteEmbeddingDiagnostics
         using (var quantized = CreateSession(quantizedPath, threadCount))
         {
             quantWatch.Start();
-            quantVectors = Embed(quantized, tokenizer, all, cancellationToken);
+            quantVectors = Embed(quantized, tokenizer, all, model, cancellationToken);
             quantWatch.Stop();
         }
 
@@ -64,7 +65,7 @@ public static class GraniteEmbeddingDiagnostics
         using (var fp32 = CreateSession(fp32Path, threadCount))
         {
             fpWatch.Start();
-            fpVectors = Embed(fp32, tokenizer, all, cancellationToken);
+            fpVectors = Embed(fp32, tokenizer, all, model, cancellationToken);
             fpWatch.Stop();
         }
 
@@ -107,6 +108,7 @@ public static class GraniteEmbeddingDiagnostics
         InferenceSession session,
         Tokenizer tokenizer,
         IReadOnlyList<string> texts,
+        GraniteEmbeddingModelDefinition model,
         CancellationToken cancellationToken)
     {
         var outputVectors = new List<float[]>(texts.Count);
@@ -114,7 +116,8 @@ public static class GraniteEmbeddingDiagnostics
         {
             cancellationToken.ThrowIfCancellationRequested();
             var batch = texts.Skip(offset).Take(8).Select(text =>
-                new[] { 2L }.Concat(tokenizer.Encode(text, false).First().Ids.Take(511).Select(id => (long)id)).ToArray()).ToArray();
+                new[] { model.BosTokenId }.Concat(tokenizer.Encode(text, false).First().Ids.Take(511)
+                    .Select(id => (long)id)).ToArray()).ToArray();
             var length = batch.Max(ids => ids.Length);
             var inputIds = new DenseTensor<long>([batch.Length, length]);
             var attention = new DenseTensor<long>([batch.Length, length]);
@@ -130,15 +133,22 @@ public static class GraniteEmbeddingDiagnostics
                     NamedOnnxValue.CreateFromTensor("attention_mask", attention)
                 ], cancellationToken);
             var output = results.First().AsTensor<float>();
+            var dimensions = output.Dimensions.ToArray();
+            if (dimensions.Length != 3 || dimensions[0] != batch.Length ||
+                dimensions[2] != model.SourceDimensions || model.Dimensions > model.SourceDimensions)
+                throw new McpIndexException("model_output_invalid",
+                    $"Expected Granite output [batch,tokens,{model.SourceDimensions}], received [{string.Join(',', dimensions)}].");
             for (var row = 0; row < batch.Length; row++)
             {
-                var vector = new float[384];
+                var vector = new float[model.Dimensions];
                 double norm = 0;
                 for (var dimension = 0; dimension < vector.Length; dimension++)
                 {
                     vector[dimension] = output[row, 0, dimension];
                     norm += vector[dimension] * vector[dimension];
                 }
+                if (norm <= double.Epsilon)
+                    throw new McpIndexException("model_output_invalid", "Granite produced a zero-length embedding.");
                 var divisor = (float)Math.Sqrt(norm);
                 for (var dimension = 0; dimension < vector.Length; dimension++) vector[dimension] /= divisor;
                 outputVectors.Add(vector);

@@ -4,19 +4,25 @@
 
 using MCPIndexSearch.Infrastructure;
 
+var paths = new AppPaths();
+var modelSettings = new EmbeddingModelSettings(paths);
+var model = GraniteEmbeddingModels.Get(modelSettings.Model);
 Console.WriteLine("MCPIndexSearch semantic-search model setup");
-Console.WriteLine("The Granite model is Apache 2.0. Its derived tokenizer is subject to the Gemma Terms of Use:");
-Console.WriteLine(GraniteModelInstaller.GemmaTermsUrl);
-if (!args.Contains("--accept-gemma-terms", StringComparer.Ordinal))
+Console.WriteLine($"Selected model: {model.DisplayName}");
+if (model.RequiresGemmaTerms)
 {
-    Console.Error.WriteLine("Review the terms, then rerun with --accept-gemma-terms. Desktop users can instead use Set up inside MCPIndexSearch.");
-    return 2;
+    Console.WriteLine("Its derived tokenizer is subject to the Gemma Terms of Use:");
+    Console.WriteLine(GraniteModelInstaller.GemmaTermsUrl);
+    if (!args.Contains("--accept-gemma-terms", StringComparer.Ordinal))
+    {
+        Console.Error.WriteLine("Review the terms, then rerun with --accept-gemma-terms. Desktop users can instead use Set up inside MCPIndexSearch.");
+        return 2;
+    }
 }
 
-var paths = new AppPaths();
 var settings = new CpuUsageSettings(paths);
 using var cpuBudget = new GlobalCpuBudget(settings);
-using var installer = new GraniteModelInstaller(paths, cpuBudget);
+using var installer = new GraniteModelInstaller(paths, modelSettings, cpuBudget);
 if (!installer.IsSupported)
 {
     Console.Error.WriteLine("Semantic search is unavailable on Intel macOS with the pinned ONNX Runtime 1.29 package.");

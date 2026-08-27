@@ -163,6 +163,7 @@ public sealed partial class ContentMaterializationService(
             ".xlsx" => await ExtractSpreadsheetChildAsync(containerBytes, ordinal, cancellationToken).ConfigureAwait(false),
             ".pptx" => await ExtractPresentationChildAsync(containerBytes, ordinal, cancellationToken).ConfigureAwait(false),
             ".eml" => await ExtractEmlChildAsync(containerBytes, ordinal, cancellationToken).ConfigureAwait(false),
+            ".mht" or ".mhtml" => await ExtractEmlChildAsync(containerBytes, ordinal, cancellationToken).ConfigureAwait(false),
             ".msg" => ExtractMsgChild(containerBytes, ordinal),
             ".zip" or ".rar" => await ExtractArchiveChildAsync(containerBytes, extension, ordinal, cancellationToken).ConfigureAwait(false),
             _ => throw new McpIndexException("unsupported_container", "The indexed parent content is not a supported attachment container.")
@@ -511,6 +512,7 @@ public sealed partial class ContentMaterializationService(
         "application/vnd.rar" or "application/x-rar" or "application/x-rar-compressed" => ".rar",
         "application/vnd.ms-outlook" => ".msg",
         "message/rfc822" => ".eml",
+        "multipart/related" or "application/x-mimearchive" => ".mhtml",
         "text/plain" => ".txt",
         "text/html" => ".html",
         "text/markdown" => ".md",
@@ -532,6 +534,7 @@ public sealed partial class ContentMaterializationService(
         ".xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         ".pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
         ".eml" => "message/rfc822",
+        ".mht" or ".mhtml" => "multipart/related",
         ".msg" => "application/vnd.ms-outlook",
         ".zip" => "application/zip",
         ".rar" => "application/vnd.rar",

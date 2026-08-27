@@ -27,8 +27,53 @@ if (changes != 1)
 if (new CpuUsageSettings(paths).Profile != CpuUsageProfile.Heavy)
     throw new InvalidOperationException("The persisted CPU profile was not restored.");
 
+var embeddingSettings = new EmbeddingModelSettings(paths);
+if (embeddingSettings.Model != EmbeddingModelChoice.Granite311M)
+    throw new InvalidOperationException("The first-run embedding model was not Granite 311M.");
+var embeddingChanges = 0;
+embeddingSettings.Changed += (_, _) => embeddingChanges++;
+embeddingSettings.SetModel(EmbeddingModelChoice.Granite97M);
+embeddingSettings.SetModel(EmbeddingModelChoice.Granite97M);
+if (embeddingChanges != 1 || new EmbeddingModelSettings(paths).Model != EmbeddingModelChoice.Granite97M)
+    throw new InvalidOperationException("The global embedding model selection was not persisted exactly once.");
+var externalEmbeddingSettings = new EmbeddingModelSettings(paths);
+externalEmbeddingSettings.SetModel(EmbeddingModelChoice.Granite311M);
+if (!embeddingSettings.RefreshFromDisk() || embeddingSettings.Model != EmbeddingModelChoice.Granite311M)
+    throw new InvalidOperationException("A long-running process did not refresh an external model selection.");
+File.WriteAllText(Path.Combine(paths.DataDirectory, "ui-state", "embedding-model.txt"), "partial-value");
+if (embeddingSettings.RefreshFromDisk() || embeddingSettings.Model != EmbeddingModelChoice.Granite311M)
+    throw new InvalidOperationException("An invalid settings write replaced the last known-good embedding model.");
+var compactModel = GraniteEmbeddingModels.Get(EmbeddingModelChoice.Granite97M);
+if (compactModel.SourceDimensions != 384 || compactModel.Dimensions != 384 || compactModel.BosTokenId != 179934)
+    throw new InvalidOperationException("The compact Granite model definition is incompatible with the vector pipeline.");
+
 var dynamicSettings = new FixedCpuSettings(CpuUsageProfile.Light, 10);
 using var budget = new GlobalCpuBudget(dynamicSettings);
+var fullModel = GraniteEmbeddingModels.Get(EmbeddingModelChoice.Granite311M);
+var legacyModelDirectory = Path.Combine(paths.AssetsDirectory, "granite", fullModel.Revision);
+Directory.CreateDirectory(legacyModelDirectory);
+File.WriteAllText(Path.Combine(legacyModelDirectory, "tokenizer.json"), string.Empty);
+File.WriteAllText(Path.Combine(legacyModelDirectory, "model.onnx"), string.Empty);
+File.WriteAllText(Path.Combine(legacyModelDirectory, "model_quint8_avx2.onnx"), string.Empty);
+File.WriteAllText(Path.Combine(legacyModelDirectory, "validation.json"), "{}");
+File.WriteAllText(Path.Combine(paths.AssetsDirectory, "gemma-terms-acceptance.json"), $$"""
+    {
+      "terms": "{{GraniteModelInstaller.GemmaTermsUrl}}",
+      "model_id": "{{fullModel.ModelId}}",
+      "granite_revision": "{{fullModel.Revision}}",
+      "files": [
+        { "name": "tokenizer.json", "sha256": "{{fullModel.TokenizerSha}}" },
+        { "name": "model.onnx", "sha256": "{{fullModel.Fp32Sha}}" },
+        { "name": "model_quint8_avx2.onnx", "sha256": "{{fullModel.QuantizedSha}}" }
+      ]
+    }
+    """);
+using var legacyInstaller = new GraniteModelInstaller(paths, embeddingSettings, budget);
+if (!legacyInstaller.IsModelInstalled(EmbeddingModelChoice.Granite311M))
+    throw new InvalidOperationException("A verified legacy 311M installation was not preserved during upgrade.");
+legacyInstaller.MarkModelForRepair(EmbeddingModelChoice.Granite311M, "smoke test");
+if (legacyInstaller.IsModelInstalled(EmbeddingModelChoice.Granite311M))
+    throw new InvalidOperationException("A model marked for repair was still treated as installed.");
 using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
 
 var first = await budget.AcquireWorkerAsync(timeout.Token);
@@ -116,7 +161,7 @@ using var heavyCapacity = await budget.AcquireFullCapacityAsync(timeout.Token);
 if (heavyCapacity.ThreadCount != 8)
     throw new InvalidOperationException($"Heavy full-capacity inference received {heavyCapacity.ThreadCount} threads instead of eight.");
 
-Console.WriteLine("CPU_USAGE_POLICY_SMOKE_OK persisted=Heavy light=2/10 normal=4/10 heavy=8/10 lone_job=full_budget global_exclusivity=verified");
+Console.WriteLine("CPU_USAGE_POLICY_SMOKE_OK persisted=Heavy embedding_model=global+refreshable light=2/10 normal=4/10 heavy=8/10 lone_job=full_budget global_exclusivity=verified");
 
 static void AssertLimit(CpuUsageProfile profile, int processors, int expected)
 {

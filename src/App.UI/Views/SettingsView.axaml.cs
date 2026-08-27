@@ -12,6 +12,8 @@ namespace MCPIndexSearch.App.UI.Views;
 
 public partial class SettingsView : UserControl
 {
+    private bool _changingEmbeddingModel;
+
     public SettingsView()
     {
         InitializeComponent();
@@ -52,6 +54,55 @@ public partial class SettingsView : UserControl
         await RunUiActionAsync(() => ViewModel.SetCpuUsageProfileAsync(profile));
     }
 
+    private async void EmbeddingModelChanged(object? sender, SelectionChangedEventArgs args)
+    {
+        if (_changingEmbeddingModel ||
+            sender is not ComboBox { SelectedItem: GraniteEmbeddingModelDefinition model } comboBox ||
+            model.Choice == ViewModel.SelectedEmbeddingModel.Choice) return;
+
+        _changingEmbeddingModel = true;
+        var previous = ViewModel.SelectedEmbeddingModel;
+        var installer = Program.Services.GetRequiredService<GraniteModelInstaller>();
+        try
+        {
+            var confirmed = await ConfirmWindow.AskAsync(
+                Owner,
+                "Switch embedding model?",
+                $"Switching from {previous.DisplayName} to {model.DisplayName} will discard the existing semantic embeddings and rebuild them for every active project. This can take a while for large projects.\n\n" +
+                "Semantic search will be unavailable until the rebuild finishes. Keyword search will remain available throughout. Paused projects will be updated after you resume them.",
+                "Switch model");
+            if (!confirmed)
+            {
+                comboBox.SelectedItem = previous;
+                return;
+            }
+
+            if (!installer.IsModelInstalled(model.Choice))
+            {
+                var installed = await new ModelSetupWindow(installer, model).ShowDialog<bool>(Owner);
+                if (!installed)
+                {
+                    comboBox.SelectedItem = previous;
+                    return;
+                }
+            }
+
+            await ViewModel.SetEmbeddingModelAsync(model);
+        }
+        catch (Exception exception)
+        {
+            comboBox.SelectedItem = ViewModel.SelectedEmbeddingModel;
+            var message = installer.IsModelInstalled(model.Choice)
+                ? exception.Message
+                : $"{exception.Message}\n\nSelect {model.DisplayName} again to verify and repair its local files.";
+            await ConfirmWindow.ShowErrorAsync(Owner, message);
+        }
+        finally
+        {
+            _changingEmbeddingModel = false;
+        }
+    }
+
     private async void StartWithWindowsChanged(object? sender, RoutedEventArgs args)
     {
         if (sender is not CheckBox checkBox) return;
@@ -70,12 +121,23 @@ public partial class SettingsView : UserControl
     {
         var installer = Program.Services.GetRequiredService<GraniteModelInstaller>();
         if (!installer.IsSupported) return;
-        var generator = Program.Services.GetRequiredService<IEmbeddingGenerator>();
-        var installed = await new ModelSetupWindow(installer, generator).ShowDialog<bool>(Owner);
-        ViewModel.RefreshAssetAvailability();
-        if (installed)
+        var model = ViewModel.SelectedEmbeddingModel;
+        try
         {
-            ViewModel.StatusMessage = "Semantic search is enabled. Existing projects will be re-embedded in the background.";
+            if (!installer.IsModelInstalled(model.Choice) || ViewModel.IsSemanticSearchUnavailable)
+            {
+                var installed = await new ModelSetupWindow(installer, model).ShowDialog<bool>(Owner);
+                if (!installed) return;
+            }
+
+            await ViewModel.SetEmbeddingModelAsync(model);
+        }
+        catch (Exception exception)
+        {
+            var message = installer.IsModelInstalled(model.Choice)
+                ? exception.Message
+                : $"{exception.Message}\n\nUse Download selected model again to verify and repair its local files.";
+            await ConfirmWindow.ShowErrorAsync(Owner, message);
         }
     }
 

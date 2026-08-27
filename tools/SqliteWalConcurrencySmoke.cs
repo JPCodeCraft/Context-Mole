@@ -54,9 +54,28 @@ project = (await store.ListProjectsAsync()).Single(item => item.Id == projectId)
 if (project.PendingCount != 0 || project.ErrorCount != 0 || project.IndexedCount != 1)
     throw new InvalidOperationException($"Unexpected final state: pending={project.PendingCount}, errors={project.ErrorCount}, indexed={project.IndexedCount}.");
 
+var generationBeforeMigration = project.SearchGeneration;
+var migrationPolicy = new EmbeddingPolicy("smoke-small", "2", "model-small", "tokenizer", "fp32", 384, 384,
+    "mean", "l2");
+await writer.RequestEmbeddingRefreshAsync(projectId, migrationPolicy, retryFailed: false);
+var clearedMetadata = await store.LoadVectorSnapshotMetadataAsync(projectId);
+if (clearedMetadata.EntryCount != 0 || clearedMetadata.SearchGeneration <= generationBeforeMigration)
+    throw new InvalidOperationException("Embedding-policy migration did not retire the previous vectors and generation.");
+var keywordAfterClear = await store.KeywordSearchAsync(projectId, "second", 10, null);
+if (keywordAfterClear.Candidates.Count != 1)
+    throw new InvalidOperationException("Embedding-policy migration removed the active keyword index.");
+
+var failedMigration = await writer.LeaseNextJobAsync(TimeSpan.FromMinutes(1))
+    ?? throw new InvalidOperationException("The embedding migration job was not leased.");
+await writer.FailJobAsync(failedMigration, "migration_smoke", "Deliberate non-retryable migration failure.", retryable: false);
+var metadataAfterFailure = await store.LoadVectorSnapshotMetadataAsync(projectId);
+if (metadataAfterFailure.EntryCount != 0 ||
+    (await store.KeywordSearchAsync(projectId, "second", 10, null)).Candidates.Count != 1)
+    throw new InvalidOperationException("A failed embedding migration stranded or removed keyword search.");
+
 await writer.RemoveProjectAsync(projectId);
 await host.StopAsync();
-Console.WriteLine("SQLITE_WAL_CONCURRENCY_SMOKE_OK reader_snapshot=held revision_write=committed");
+Console.WriteLine("SQLITE_WAL_CONCURRENCY_SMOKE_OK reader_snapshot=held revision_write=committed embedding_migration=failure_safe");
 
 static async Task CommitNextAsync(IIndexWriter writer, string hash, long size, DateTimeOffset modified, string text)
 {

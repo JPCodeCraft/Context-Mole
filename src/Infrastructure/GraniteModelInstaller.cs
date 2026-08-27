@@ -25,15 +25,20 @@ public sealed class GraniteModelInstaller : IDisposable
 {
     public const string GemmaTermsUrl = "https://ai.google.dev/gemma/terms";
     private readonly IAppPaths _paths;
+    private readonly IEmbeddingModelSettings _modelSettings;
     private readonly IGlobalCpuBudget _cpuBudget;
     private readonly HttpClient _client;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly CancellationTokenSource _lifetime = new();
     private int _disposed;
 
-    public GraniteModelInstaller(IAppPaths paths, IGlobalCpuBudget cpuBudget)
+    public GraniteModelInstaller(
+        IAppPaths paths,
+        IEmbeddingModelSettings modelSettings,
+        IGlobalCpuBudget cpuBudget)
     {
         _paths = paths;
+        _modelSettings = modelSettings;
         _cpuBudget = cpuBudget;
         _client = new HttpClient { Timeout = TimeSpan.FromHours(2) };
         _client.DefaultRequestHeaders.UserAgent.ParseAdd("MCPIndexSearch/1.0");
@@ -51,8 +56,7 @@ public sealed class GraniteModelInstaller : IDisposable
             {
                 using var document = JsonDocument.Parse(File.ReadAllText(path));
                 var root = document.RootElement;
-                return root.TryGetProperty("terms", out var terms) && terms.GetString() == GemmaTermsUrl &&
-                       root.TryGetProperty("granite_revision", out var revision) && revision.GetString() == GraniteEmbeddingGenerator.Revision;
+                return root.TryGetProperty("terms", out var terms) && terms.GetString() == GemmaTermsUrl;
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException)
             {
@@ -61,13 +65,37 @@ public sealed class GraniteModelInstaller : IDisposable
         }
     }
 
+    public bool IsModelInstalled(EmbeddingModelChoice choice)
+    {
+        var model = GraniteEmbeddingModels.Get(choice);
+        var directory = GraniteModelInstallation.GetDirectory(_paths, model);
+        var useQuantized = System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture ==
+            System.Runtime.InteropServices.Architecture.X64 && Avx2.IsSupported &&
+            !File.Exists(Path.Combine(directory, "quantization-disabled"));
+        var modelPath = Path.Combine(directory, useQuantized ? "model_quint8_avx2.onnx" : "model.onnx");
+        return File.Exists(Path.Combine(directory, "tokenizer.json")) && File.Exists(modelPath) &&
+               GraniteModelInstallation.IsComplete(_paths, model, useQuantized) &&
+               (!useQuantized || File.Exists(Path.Combine(directory, "validation.json")));
+    }
+
+    public void MarkModelForRepair(EmbeddingModelChoice choice, string reason) =>
+        GraniteModelInstallation.MarkForRepair(_paths, GraniteEmbeddingModels.Get(choice), reason);
+
+    public Task<ModelInstallResult> InstallAsync(
+        bool gemmaTermsAccepted,
+        IProgress<ModelInstallProgress>? progress = null,
+        CancellationToken cancellationToken = default) =>
+        InstallAsync(_modelSettings.Model, gemmaTermsAccepted, progress, cancellationToken);
+
     public async Task<ModelInstallResult> InstallAsync(
+        EmbeddingModelChoice choice,
         bool gemmaTermsAccepted,
         IProgress<ModelInstallProgress>? progress = null,
         CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
-        if (!gemmaTermsAccepted && !HasRecordedTermsAcceptance)
+        var model = GraniteEmbeddingModels.Get(choice);
+        if (model.RequiresGemmaTerms && !gemmaTermsAccepted && !HasRecordedTermsAcceptance)
             throw new McpIndexException("terms_not_accepted", "The Gemma terms must be accepted before installing this tokenizer.");
         if (!IsSupported)
             throw new McpIndexException("model_platform_unsupported", "ONNX Runtime 1.29 does not provide an Intel macOS native library.");
@@ -78,11 +106,11 @@ public sealed class GraniteModelInstaller : IDisposable
         try
         {
             ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
-            var directory = Path.Combine(_paths.AssetsDirectory, "granite", GraniteEmbeddingGenerator.Revision);
+            var directory = GraniteModelInstallation.GetDirectory(_paths, model);
             Directory.CreateDirectory(directory);
             var useQuantized = System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture ==
                 System.Runtime.InteropServices.Architecture.X64 && Avx2.IsSupported;
-            var assets = BuildAssets(directory, useQuantized);
+            var assets = BuildAssets(model, directory, useQuantized);
 
             foreach (var asset in assets)
             {
@@ -95,13 +123,13 @@ public sealed class GraniteModelInstaller : IDisposable
                 progress?.Report(new ModelInstallProgress("validating", "Comparing optimized and full-precision models"));
                 using var cpuCapacity = await _cpuBudget.AcquireFullCapacityAsync(operationToken).ConfigureAwait(false);
                 validation = await Task.Run(
-                    () => GraniteEmbeddingDiagnostics.ValidateProfiles(_paths, cpuCapacity.ThreadCount, operationToken),
+                    () => GraniteEmbeddingDiagnostics.ValidateProfiles(_paths, model, cpuCapacity.ThreadCount, operationToken),
                     operationToken).ConfigureAwait(false);
                 await WriteValidationAsync(directory, validation, operationToken).ConfigureAwait(false);
             }
 
-            await WriteAcceptanceAsync(directory, assets, operationToken).ConfigureAwait(false);
-            progress?.Report(new ModelInstallProgress("complete", "Semantic-search model is ready"));
+            await WriteInstallationMetadataAsync(model, directory, assets, operationToken).ConfigureAwait(false);
+            progress?.Report(new ModelInstallProgress("complete", $"{model.DisplayName} is ready"));
             return new ModelInstallResult(directory, validation);
         }
         finally
@@ -110,20 +138,25 @@ public sealed class GraniteModelInstaller : IDisposable
         }
     }
 
-    private static IReadOnlyList<DownloadAsset> BuildAssets(string directory, bool useQuantized)
+    private static IReadOnlyList<DownloadAsset> BuildAssets(
+        GraniteEmbeddingModelDefinition model,
+        string directory,
+        bool useQuantized)
     {
-        var root = $"https://huggingface.co/{GraniteEmbeddingGenerator.ModelId}/resolve/{GraniteEmbeddingGenerator.Revision}";
+        var root = $"https://huggingface.co/{model.ModelId}/resolve/{model.Revision}";
         var assets = new List<DownloadAsset>
         {
-            new("Granite tokenizer", $"{root}/tokenizer.json?download=true", Path.Combine(directory, "tokenizer.json"), GraniteEmbeddingGenerator.TokenizerSha)
+            new($"{model.DisplayName} tokenizer", $"{root}/tokenizer.json?download=true",
+                Path.Combine(directory, "tokenizer.json"), model.TokenizerSha)
         };
         if (useQuantized)
         {
-            assets.Add(new DownloadAsset("Granite optimized model", $"{root}/onnx/model_quint8_avx2.onnx?download=true",
-                Path.Combine(directory, "model_quint8_avx2.onnx"), GraniteEmbeddingGenerator.QuantizedSha));
+            assets.Add(new DownloadAsset($"{model.DisplayName} optimized model",
+                $"{root}/onnx/model_quint8_avx2.onnx?download=true",
+                Path.Combine(directory, "model_quint8_avx2.onnx"), model.QuantizedSha));
         }
-        assets.Add(new DownloadAsset("Granite full-precision model", $"{root}/onnx/model.onnx?download=true",
-            Path.Combine(directory, "model.onnx"), GraniteEmbeddingGenerator.Fp32Sha));
+        assets.Add(new DownloadAsset($"{model.DisplayName} full-precision model", $"{root}/onnx/model.onnx?download=true",
+            Path.Combine(directory, "model.onnx"), model.Fp32Sha));
         return assets;
     }
 
@@ -158,6 +191,13 @@ public sealed class GraniteModelInstaller : IDisposable
         using var request = new HttpRequestMessage(HttpMethod.Get, asset.Url);
         if (existingLength > 0) request.Headers.Range = new RangeHeaderValue(existingLength, null);
         using var response = await _client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+        if (existingLength > 0 && response.StatusCode == HttpStatusCode.RequestedRangeNotSatisfiable)
+        {
+            File.Delete(partial);
+            progress?.Report(new ModelInstallProgress("downloading", $"Restarting {asset.Name} from the beginning"));
+            await DownloadVerifiedAsync(asset, progress, cancellationToken).ConfigureAwait(false);
+            return;
+        }
         response.EnsureSuccessStatusCode();
 
         var append = existingLength > 0 && response.StatusCode == HttpStatusCode.PartialContent;
@@ -195,27 +235,35 @@ public sealed class GraniteModelInstaller : IDisposable
         File.Move(partial, asset.Target, true);
     }
 
-    private async Task WriteAcceptanceAsync(
+    private async Task WriteInstallationMetadataAsync(
+        GraniteEmbeddingModelDefinition model,
         string modelDirectory,
         IReadOnlyList<DownloadAsset> assets,
         CancellationToken cancellationToken)
     {
-        var acceptance = new
+        if (model.RequiresGemmaTerms)
         {
-            terms = GemmaTermsUrl,
-            accepted_utc = DateTimeOffset.UtcNow,
-            model_id = GraniteEmbeddingGenerator.ModelId,
-            granite_revision = GraniteEmbeddingGenerator.Revision,
-            files = assets.Select(asset => new { name = Path.GetFileName(asset.Target), sha256 = asset.Sha256 }).ToArray()
-        };
-        await WriteAtomicTextAsync(Path.Combine(_paths.AssetsDirectory, "gemma-terms-acceptance.json"),
-            JsonSerializer.Serialize(acceptance, new JsonSerializerOptions { WriteIndented = true }), cancellationToken).ConfigureAwait(false);
+            var acceptance = new
+            {
+                terms = GemmaTermsUrl,
+                accepted_utc = DateTimeOffset.UtcNow,
+                model_id = model.ModelId,
+                granite_revision = model.Revision,
+                files = assets.Select(asset => new { name = Path.GetFileName(asset.Target), sha256 = asset.Sha256 }).ToArray()
+            };
+            await WriteAtomicTextAsync(Path.Combine(_paths.AssetsDirectory, "gemma-terms-acceptance.json"),
+                JsonSerializer.Serialize(acceptance, new JsonSerializerOptions { WriteIndented = true }), cancellationToken)
+                .ConfigureAwait(false);
+        }
+
         await WriteAtomicTextAsync(Path.Combine(_paths.AssetsDirectory, "THIRD-PARTY-NOTICES.txt"),
-            "IBM Granite Embedding model: Apache License 2.0.\n" +
-            $"The derived tokenizer is subject to the Gemma Terms of Use: {GemmaTermsUrl}\n" +
-            $"Model revision: {GraniteEmbeddingGenerator.Revision}\n", cancellationToken).ConfigureAwait(false);
-        await WriteAtomicTextAsync(Path.Combine(modelDirectory, "installation-complete"),
-            GraniteEmbeddingGenerator.Revision, cancellationToken).ConfigureAwait(false);
+            "IBM Granite Embedding models: Apache License 2.0.\n" +
+            $"The Granite 311M tokenizer is subject to the Gemma Terms of Use: {GemmaTermsUrl}\n",
+            cancellationToken).ConfigureAwait(false);
+        await WriteAtomicTextAsync(Path.Combine(modelDirectory, GraniteModelInstallation.CompletionMarker),
+            model.Revision, cancellationToken).ConfigureAwait(false);
+        var repairMarker = Path.Combine(modelDirectory, GraniteModelInstallation.RepairMarker);
+        if (File.Exists(repairMarker)) File.Delete(repairMarker);
     }
 
     private static Task WriteValidationAsync(string directory, GraniteValidationResult validation, CancellationToken cancellationToken) =>

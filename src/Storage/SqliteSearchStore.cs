@@ -454,39 +454,65 @@ public sealed class SqliteSearchStore : ISearchStore
         await using var metadata = connection.CreateCommand();
         metadata.Transaction = transaction;
         metadata.CommandText = """
-            SELECT COUNT(*),COUNT(DISTINCT r.embedding_policy_json),MIN(r.embedding_policy_json),
-                   COUNT(DISTINCT e.policy_key),MIN(e.policy_key),
-                   COALESCE(AVG(LENGTH(d.path) + LENGTH(d.extension)),0)
-            FROM embeddings e
-            JOIN document_revisions r ON r.id=e.revision_id AND r.status='active'
-            JOIN documents d ON d.id=r.document_id AND d.active_revision_id=r.id AND d.tombstoned=0
-            WHERE d.project_id=$project;
+            WITH active_revisions AS (
+              SELECT r.id,r.embedding_policy_json,d.path,d.extension
+              FROM documents d
+              JOIN document_revisions r ON r.id=d.active_revision_id AND r.status='active'
+              WHERE d.project_id=$project AND d.tombstoned=0
+            )
+            SELECT
+              (SELECT COUNT(*) FROM embeddings e JOIN active_revisions r ON r.id=e.revision_id),
+              (SELECT COUNT(DISTINCT e.policy_key) FROM embeddings e JOIN active_revisions r ON r.id=e.revision_id),
+              (SELECT MIN(e.policy_key) FROM embeddings e JOIN active_revisions r ON r.id=e.revision_id),
+              COALESCE((SELECT AVG(LENGTH(r.path) + LENGTH(r.extension)) FROM active_revisions r),0),
+              (SELECT COUNT(*) FROM active_revisions),
+              (SELECT COUNT(DISTINCT r.embedding_policy_json) FROM active_revisions r),
+              (SELECT MIN(r.embedding_policy_json) FROM active_revisions r),
+              (SELECT COUNT(*) FROM active_revisions r WHERE r.embedding_policy_json IS NULL),
+              (SELECT COUNT(*) FROM passages p JOIN active_revisions r ON r.id=p.revision_id);
             """;
         metadata.Parameters.AddWithValue("$project", projectId.ToString());
         long total;
-        int policyCount;
-        EmbeddingPolicy? policy;
         int policyKeyCount;
         string? policyKey;
         double averageStringChars;
+        long revisionCount;
+        int revisionPolicyCount;
+        string? revisionPolicyJson;
+        long revisionsWithoutPolicy;
+        long passageCount;
         await using (var metadataReader = await metadata.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
         {
             await metadataReader.ReadAsync(cancellationToken).ConfigureAwait(false);
             total = metadataReader.GetInt64(0);
-            policyCount = metadataReader.GetInt32(1);
-            policy = metadataReader.IsDBNull(2)
-                ? null
-                : JsonSerializer.Deserialize<EmbeddingPolicy>(metadataReader.GetString(2), StorageJsonOptions);
-            policyKeyCount = metadataReader.GetInt32(3);
-            policyKey = metadataReader.IsDBNull(4) ? null : metadataReader.GetString(4);
-            averageStringChars = metadataReader.GetDouble(5);
+            policyKeyCount = metadataReader.GetInt32(1);
+            policyKey = metadataReader.IsDBNull(2) ? null : metadataReader.GetString(2);
+            averageStringChars = metadataReader.GetDouble(3);
+            revisionCount = metadataReader.GetInt64(4);
+            revisionPolicyCount = metadataReader.GetInt32(5);
+            revisionPolicyJson = metadataReader.IsDBNull(6) ? null : metadataReader.GetString(6);
+            revisionsWithoutPolicy = metadataReader.GetInt64(7);
+            passageCount = metadataReader.GetInt64(8);
         }
-        if (total == 0)
-            return new VectorSnapshotMetadata(generation, null, 0);
-        if (policyCount != 1 || policy is null || policyKeyCount != 1 ||
-            !string.Equals(policy.Key, policyKey, StringComparison.Ordinal))
+
+        var policy = revisionCount > 0 && revisionsWithoutPolicy == 0 && revisionPolicyCount == 1 &&
+                     revisionPolicyJson is not null
+            ? JsonSerializer.Deserialize<EmbeddingPolicy>(revisionPolicyJson, StorageJsonOptions)
+            : null;
+        var mixedRevisionPolicies = revisionPolicyCount > 1 ||
+                                    revisionPolicyCount > 0 && revisionsWithoutPolicy > 0;
+        var invalidEmbeddingPolicy = total > 0 && (policy is null || policyKeyCount != 1 ||
+            !string.Equals(policy.Key, policyKey, StringComparison.Ordinal));
+        if (mixedRevisionPolicies || invalidEmbeddingPolicy)
             return new VectorSnapshotMetadata(generation, null, total,
-                Warning: "The active project contains incompatible embedding policy generations.");
+                Warning: "The active project contains incompatible embedding policy generations.",
+                IsComplete: false);
+        if (total != passageCount)
+            return new VectorSnapshotMetadata(generation, policy, total,
+                Warning: "Semantic embeddings are incomplete while background re-embedding continues.",
+                IsComplete: false);
+        if (total == 0)
+            return new VectorSnapshotMetadata(generation, policy, 0);
         var estimatedEntryBytes = VectorEntryBaseBytes + averageStringChars * sizeof(char);
         if (total > VectorCacheBudgetBytes / estimatedEntryBytes)
             return new VectorSnapshotMetadata(generation, policy, total, RequiresStreaming: true);

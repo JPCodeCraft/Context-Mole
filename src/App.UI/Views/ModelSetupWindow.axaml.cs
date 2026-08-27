@@ -11,22 +11,31 @@ namespace MCPIndexSearch.App.UI.Views;
 public partial class ModelSetupWindow : Window
 {
     private readonly GraniteModelInstaller _installer;
-    private readonly IEmbeddingGenerator _embeddingGenerator;
+    private readonly GraniteEmbeddingModelDefinition _model;
     private CancellationTokenSource? _installation;
     private bool _installing;
 
     public ModelSetupWindow() : this(
         Program.Services.GetRequiredService<GraniteModelInstaller>(),
-        Program.Services.GetRequiredService<IEmbeddingGenerator>())
+        GraniteEmbeddingModels.Get(Program.Services.GetRequiredService<IEmbeddingModelSettings>().Model))
     {
     }
 
-    public ModelSetupWindow(GraniteModelInstaller installer, IEmbeddingGenerator embeddingGenerator)
+    public ModelSetupWindow(GraniteModelInstaller installer, GraniteEmbeddingModelDefinition model)
     {
         _installer = installer;
-        _embeddingGenerator = embeddingGenerator;
+        _model = model;
         InitializeComponent();
-        if (_installer.HasRecordedTermsAcceptance)
+        ModelNameBlock.Text = _model.DisplayName;
+        ModelDescriptionBlock.Text = $"{_model.Description}. It supports Portuguese, English, Spanish, and 200+ languages. Keyword search remains available without this download.";
+        DownloadDescriptionBlock.Text = $"{_model.DisplayName} is stored only on this computer. Downloads are checksum-verified, resumable, and never include your documents.";
+
+        if (!_model.RequiresGemmaTerms)
+        {
+            TermsCard.IsVisible = false;
+            InstallButton.IsEnabled = true;
+        }
+        else if (_installer.HasRecordedTermsAcceptance)
         {
             AcceptTermsCheckBox.IsChecked = true;
             AcceptTermsCheckBox.IsEnabled = false;
@@ -47,11 +56,11 @@ public partial class ModelSetupWindow : Window
     }
 
     private void AcceptanceChanged(object? sender, RoutedEventArgs args) =>
-        InstallButton.IsEnabled = !_installing && AcceptTermsCheckBox.IsChecked == true;
+        InstallButton.IsEnabled = !_installing && (!_model.RequiresGemmaTerms || AcceptTermsCheckBox.IsChecked == true);
 
     private async void Install(object? sender, RoutedEventArgs args)
     {
-        if (_installing || AcceptTermsCheckBox.IsChecked != true) return;
+        if (_installing || (_model.RequiresGemmaTerms && AcceptTermsCheckBox.IsChecked != true)) return;
         _installing = true;
         _installation = new CancellationTokenSource();
         AcceptTermsCheckBox.IsEnabled = false;
@@ -60,12 +69,9 @@ public partial class ModelSetupWindow : Window
         var progress = new Progress<ModelInstallProgress>(value => Dispatcher.UIThread.Post(() => ShowProgress(value)));
         try
         {
-            await _installer.InstallAsync(true, progress, _installation.Token);
-            StatusBlock.Text = "Loading the model…";
+            await _installer.InstallAsync(_model.Choice, AcceptTermsCheckBox.IsChecked == true, progress, _installation.Token);
+            StatusBlock.Text = "Finalizing setup…";
             DownloadProgress.IsIndeterminate = true;
-            await _embeddingGenerator.ReloadAsync(_installation.Token);
-            if (!_embeddingGenerator.IsAvailable)
-                throw new InvalidOperationException(_embeddingGenerator.UnavailableReason ?? "The model could not be loaded.");
             _installing = false;
             DownloadProgress.IsIndeterminate = false;
             DownloadProgress.Value = 1;
@@ -82,8 +88,8 @@ public partial class ModelSetupWindow : Window
             StatusBlock.Text = $"Setup failed: {exception.Message}";
             BytesBlock.Text = "The verified part of the download is retained so setup can resume.";
             DownloadProgress.IsIndeterminate = false;
-            AcceptTermsCheckBox.IsEnabled = true;
-            InstallButton.IsEnabled = AcceptTermsCheckBox.IsChecked == true;
+            AcceptTermsCheckBox.IsEnabled = _model.RequiresGemmaTerms && !_installer.HasRecordedTermsAcceptance;
+            InstallButton.IsEnabled = !_model.RequiresGemmaTerms || AcceptTermsCheckBox.IsChecked == true;
             CancelButton.Content = "Close";
         }
         finally

@@ -24,4 +24,8 @@
   <Folder Name="/src/Storage/">
     <Project Path="src/Storage/MCPIndexSearch.Storage.csproj" />
   </Folder>
+  <Folder Name="/tests/" />
+  <Folder Name="/tests/MCPIndexSearch.Tests/">
+    <Project Path="tests/MCPIndexSearch.Tests/MCPIndexSearch.Tests.csproj" />
+  </Folder>
 </Solution>

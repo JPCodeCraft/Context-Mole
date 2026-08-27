@@ -102,6 +102,7 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
                 ".xlsx" => await SpreadsheetNodeAsync(bytes, name, mimeType, relationship, depth, context, cancellationToken),
                 ".pptx" => await PresentationNodeAsync(bytes, name, mimeType, relationship, depth, context, cancellationToken),
                 ".eml" => await EmlNodeAsync(bytes, name, mimeType, relationship, depth, context, cancellationToken),
+                ".mht" or ".mhtml" => await MhtmlNodeAsync(bytes, name, mimeType, relationship, depth, context, cancellationToken),
                 ".msg" => await MsgNodeAsync(bytes, name, mimeType, relationship, depth, context, cancellationToken),
                 ".zip" or ".rar" => await ArchiveNodeAsync(bytes, name, mimeType, relationship, extension, depth, context, cancellationToken),
                 ".png" or ".jpg" or ".jpeg" or ".bmp" or ".gif" or ".webp" or ".tif" or ".tiff" =>
@@ -352,6 +353,7 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
             "application/zip" or "application/x-zip" or "application/x-zip-compressed" => ".zip",
             "application/vnd.rar" or "application/x-rar" or "application/x-rar-compressed" => ".rar",
             "message/rfc822" => ".eml",
+            "multipart/related" or "application/x-mimearchive" => ".mhtml",
             "text/plain" => ".txt",
             "text/html" => ".html",
             "image/png" => ".png",
@@ -410,6 +412,7 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
         ".xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         ".pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
         ".eml" => "message/rfc822",
+        ".mht" or ".mhtml" => "multipart/related",
         ".msg" => "application/vnd.ms-outlook",
         ".zip" => "application/zip",
         ".rar" => "application/vnd.rar",

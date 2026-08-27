@@ -161,6 +161,9 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
         }, cancellationToken);
 
     public Task RequestReindexAsync(Guid projectId, CancellationToken cancellationToken = default) =>
+        QueueReindexAsync(projectId, cancellationToken);
+
+    private Task QueueReindexAsync(Guid projectId, CancellationToken cancellationToken) =>
         EnqueueAsync<object?>(async (connection, token) =>
         {
             using var transaction = connection.BeginTransaction();
@@ -197,6 +200,80 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
             return null;
         }, cancellationToken);
 
+    public Task RequestEmbeddingRefreshAsync(Guid projectId, EmbeddingPolicy targetPolicy, bool retryFailed,
+        CancellationToken cancellationToken = default) =>
+        EnqueueAsync<object?>(async (connection, token) =>
+        {
+            using var transaction = connection.BeginTransaction();
+            var state = await GetProjectStateAsync(connection, transaction, projectId, token).ConfigureAwait(false);
+            if (state == ProjectState.Paused)
+            {
+                throw new McpIndexException("project_paused", "Resume the project before requesting an embedding refresh.");
+            }
+
+            var policyJson = JsonSerializer.Serialize(targetPolicy, StorageJsonOptions);
+            await using var select = connection.CreateCommand();
+            select.Transaction = transaction;
+            select.CommandText =
+                """
+                SELECT d.id,d.observation_epoch,r.id
+                FROM documents d
+                JOIN document_revisions r ON r.id=d.active_revision_id AND r.status='active'
+                WHERE d.project_id=$project AND d.tombstoned=0
+                  AND ($retry_failed=1 OR COALESCE((
+                    SELECT CASE WHEN j.kind=$embedding_refresh AND j.state='failed' THEN 1 ELSE 0 END
+                    FROM index_jobs j
+                    WHERE j.project_id=$project AND j.document_id=d.id
+                    ORDER BY j.updated_utc DESC,j.id DESC LIMIT 1
+                  ),0)=0)
+                  AND (
+                    r.embedding_policy_json IS NULL OR r.embedding_policy_json<>$policy
+                    OR EXISTS(
+                      SELECT 1 FROM embeddings e
+                      WHERE e.revision_id=r.id AND e.policy_key<>$policy_key
+                    )
+                    OR (SELECT COUNT(*) FROM passages p WHERE p.revision_id=r.id)<>
+                       (SELECT COUNT(*) FROM embeddings e WHERE e.revision_id=r.id AND e.policy_key=$policy_key)
+                  )
+                ORDER BY d.path_key,d.id;
+                """;
+            select.Parameters.AddWithValue("$project", projectId.ToString());
+            select.Parameters.AddWithValue("$policy", policyJson);
+            select.Parameters.AddWithValue("$policy_key", targetPolicy.Key);
+            select.Parameters.AddWithValue("$retry_failed", retryFailed ? 1 : 0);
+            select.Parameters.AddWithValue("$embedding_refresh", (int)IndexJobKind.EmbeddingRefresh);
+            var documents = new List<(Guid Id, long Epoch, Guid RevisionId)>();
+            await using (var reader = await select.ExecuteReaderAsync(token).ConfigureAwait(false))
+            {
+                while (await reader.ReadAsync(token).ConfigureAwait(false))
+                {
+                    documents.Add((Guid.Parse(reader.GetString(0)), reader.GetInt64(1),
+                        Guid.Parse(reader.GetString(2))));
+                }
+            }
+
+            var now = DateTimeOffset.UtcNow.ToString("O");
+            var cleared = 0;
+            foreach (var document in documents)
+            {
+                cleared += await ExecuteAsync(connection, transaction,
+                    "DELETE FROM embeddings WHERE revision_id=$revision;",
+                    [new("$revision", document.RevisionId.ToString())], token).ConfigureAwait(false);
+                await UpsertOpenJobAsync(connection, transaction, projectId, document.Id, document.Epoch,
+                    IndexJobKind.EmbeddingRefresh, now, token).ConfigureAwait(false);
+            }
+
+            if (cleared > 0)
+            {
+                await ExecuteAsync(connection, transaction,
+                    "UPDATE projects SET search_generation=search_generation+1,updated_utc=$now WHERE id=$project;",
+                    [new("$now", now), new("$project", projectId.ToString())], token).ConfigureAwait(false);
+            }
+
+            await transaction.CommitAsync(token).ConfigureAwait(false);
+            return null;
+        }, cancellationToken);
+
     public Task<int> RetryFailedFilesAsync(Guid projectId, CancellationToken cancellationToken = default) =>
         EnqueueAsync(async (connection, token) =>
         {
@@ -211,8 +288,20 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
             select.Transaction = transaction;
             select.CommandText =
                 """
-                SELECT d.id,d.observation_epoch
+                WITH ranked_jobs AS (
+                  SELECT document_id,state,kind,
+                    ROW_NUMBER() OVER (PARTITION BY document_id ORDER BY updated_utc DESC,id DESC) AS job_rank
+                  FROM index_jobs
+                  WHERE project_id=$project
+                ),
+                latest_jobs AS (
+                  SELECT document_id,state,kind FROM ranked_jobs WHERE job_rank=1
+                )
+                SELECT d.id,d.observation_epoch,
+                  CASE WHEN latest.state='failed' AND latest.kind=$embedding_refresh
+                    THEN $embedding_refresh ELSE $reindex END
                 FROM documents d
+                LEFT JOIN latest_jobs latest ON latest.document_id=d.id
                 WHERE d.project_id=$project AND d.tombstoned=0
                   AND NOT EXISTS(
                     SELECT 1 FROM index_jobs open_job
@@ -221,34 +310,38 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                   )
                   AND (
                   EXISTS(SELECT 1 FROM project_errors e WHERE e.project_id=$project AND e.document_id=d.id)
-                  OR COALESCE((
-                    SELECT j.state FROM index_jobs j
-                    WHERE j.project_id=$project AND j.document_id=d.id
-                    ORDER BY j.updated_utc DESC,j.id DESC LIMIT 1
-                  ),'')='failed'
+                  OR COALESCE(latest.state,'')='failed'
                 )
                 ORDER BY d.path_key,d.id;
                 """;
             select.Parameters.AddWithValue("$project", projectId.ToString());
-            var documents = new List<(Guid Id, long Epoch)>();
+            select.Parameters.AddWithValue("$embedding_refresh", (int)IndexJobKind.EmbeddingRefresh);
+            select.Parameters.AddWithValue("$reindex", (int)IndexJobKind.Reindex);
+            var documents = new List<(Guid Id, long Epoch, IndexJobKind Kind)>();
             await using (var reader = await select.ExecuteReaderAsync(token).ConfigureAwait(false))
             {
                 while (await reader.ReadAsync(token).ConfigureAwait(false))
                 {
-                    documents.Add((Guid.Parse(reader.GetString(0)), reader.GetInt64(1)));
+                    documents.Add((Guid.Parse(reader.GetString(0)), reader.GetInt64(1),
+                        (IndexJobKind)reader.GetInt32(2)));
                 }
             }
 
             var now = DateTimeOffset.UtcNow.ToString("O");
             foreach (var document in documents)
             {
-                var nextEpoch = document.Epoch + 1;
-                await ExecuteAsync(connection, transaction,
-                    "UPDATE documents SET observation_epoch=$epoch,updated_utc=$now WHERE id=$document;",
-                    [new("$epoch", nextEpoch), new("$now", now), new("$document", document.Id.ToString())], token)
-                    .ConfigureAwait(false);
+                var nextEpoch = document.Kind == IndexJobKind.EmbeddingRefresh
+                    ? document.Epoch
+                    : document.Epoch + 1;
+                if (nextEpoch != document.Epoch)
+                {
+                    await ExecuteAsync(connection, transaction,
+                        "UPDATE documents SET observation_epoch=$epoch,updated_utc=$now WHERE id=$document;",
+                        [new("$epoch", nextEpoch), new("$now", now), new("$document", document.Id.ToString())], token)
+                        .ConfigureAwait(false);
+                }
                 await UpsertOpenJobAsync(connection, transaction, projectId, document.Id, nextEpoch,
-                    IndexJobKind.Reindex, now, token).ConfigureAwait(false);
+                    document.Kind, now, token).ConfigureAwait(false);
             }
 
             await transaction.CommitAsync(token).ConfigureAwait(false);
@@ -518,7 +611,7 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
             if (epoch != job.ExpectedObservationEpoch)
             {
                 await CompleteOrRequeueSupersededJobAsync(connection, transaction, job.JobId,
-                    job.ExpectedObservationEpoch, token).ConfigureAwait(false);
+                    job.ExpectedObservationEpoch, token, job.Kind).ConfigureAwait(false);
                 await transaction.CommitAsync(token).ConfigureAwait(false);
                 return new BeginRevisionResult(false, true, null, "A newer file observation superseded this job.");
             }
@@ -766,6 +859,166 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
             return true;
         }, cancellationToken);
 
+    public Task<EmbeddingRefreshSource?> LoadEmbeddingRefreshSourceAsync(IndexJobLease job,
+        CancellationToken cancellationToken = default) =>
+        EnqueueAsync<EmbeddingRefreshSource?>(async (connection, token) =>
+        {
+            if (job.Kind != IndexJobKind.EmbeddingRefresh)
+                throw new ArgumentException("The leased job is not an embedding refresh.", nameof(job));
+
+            using var transaction = connection.BeginTransaction();
+            Guid? revisionId = null;
+            var isCurrent = false;
+            await using (var select = connection.CreateCommand())
+            {
+                select.Transaction = transaction;
+                select.CommandText =
+                    """
+                    SELECT j.state,j.kind,j.expected_epoch,d.observation_epoch,d.active_revision_id
+                    FROM index_jobs j
+                    JOIN documents d ON d.id=j.document_id
+                    WHERE j.id=$job AND j.project_id=$project AND j.document_id=$document
+                      AND d.tombstoned=0;
+                    """;
+                select.Parameters.AddWithValue("$job", job.JobId.ToString());
+                select.Parameters.AddWithValue("$project", job.ProjectId.ToString());
+                select.Parameters.AddWithValue("$document", job.DocumentId.ToString());
+                await using var reader = await select.ExecuteReaderAsync(token).ConfigureAwait(false);
+                if (await reader.ReadAsync(token).ConfigureAwait(false))
+                {
+                    isCurrent = string.Equals(reader.GetString(0), "running", StringComparison.Ordinal) &&
+                                (IndexJobKind)reader.GetInt32(1) == IndexJobKind.EmbeddingRefresh &&
+                                reader.GetInt64(2) == job.ExpectedObservationEpoch &&
+                                reader.GetInt64(3) == job.ExpectedObservationEpoch &&
+                                !reader.IsDBNull(4);
+                    if (isCurrent) revisionId = Guid.Parse(reader.GetString(4));
+                }
+            }
+
+            if (!isCurrent || revisionId is null)
+            {
+                await CompleteOrRequeueSupersededJobAsync(connection, transaction, job.JobId,
+                    job.ExpectedObservationEpoch, token, job.Kind).ConfigureAwait(false);
+                await transaction.CommitAsync(token).ConfigureAwait(false);
+                return null;
+            }
+
+            var passages = new List<EmbeddingRefreshPassage>();
+            await using (var passagesCommand = connection.CreateCommand())
+            {
+                passagesCommand.Transaction = transaction;
+                passagesCommand.CommandText =
+                    "SELECT id,search_text FROM passages WHERE revision_id=$revision ORDER BY rowid;";
+                passagesCommand.Parameters.AddWithValue("$revision", revisionId.Value.ToString());
+                await using var reader = await passagesCommand.ExecuteReaderAsync(token).ConfigureAwait(false);
+                while (await reader.ReadAsync(token).ConfigureAwait(false))
+                    passages.Add(new EmbeddingRefreshPassage(Guid.Parse(reader.GetString(0)), reader.GetString(1)));
+            }
+
+            await transaction.CommitAsync(token).ConfigureAwait(false);
+            return new EmbeddingRefreshSource(revisionId.Value, passages);
+        }, cancellationToken);
+
+    public Task<bool> CommitEmbeddingRefreshAsync(EmbeddingRefreshCommitRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        if (request.Embeddings.Any(item => item.Vector.Length != 384))
+            throw new ArgumentException("Embedding refresh vectors must contain exactly 384 values.", nameof(request));
+        if (request.Embeddings.Select(item => item.PassageId).Distinct().Count() != request.Embeddings.Count)
+            throw new ArgumentException("Embedding refresh passage IDs must be unique.", nameof(request));
+
+        return EnqueueAsync(async (connection, token) =>
+        {
+            using var transaction = connection.BeginTransaction();
+            var isCurrent = false;
+            await using (var select = connection.CreateCommand())
+            {
+                select.Transaction = transaction;
+                select.CommandText =
+                    """
+                    SELECT j.state,j.kind,j.expected_epoch,d.observation_epoch,d.active_revision_id,r.status
+                    FROM index_jobs j
+                    JOIN documents d ON d.id=j.document_id
+                    LEFT JOIN document_revisions r ON r.id=d.active_revision_id
+                    WHERE j.id=$job AND j.project_id=$project AND j.document_id=$document
+                      AND d.tombstoned=0;
+                    """;
+                select.Parameters.AddWithValue("$job", request.JobId.ToString());
+                select.Parameters.AddWithValue("$project", request.ProjectId.ToString());
+                select.Parameters.AddWithValue("$document", request.DocumentId.ToString());
+                await using var reader = await select.ExecuteReaderAsync(token).ConfigureAwait(false);
+                if (await reader.ReadAsync(token).ConfigureAwait(false))
+                {
+                    isCurrent = string.Equals(reader.GetString(0), "running", StringComparison.Ordinal) &&
+                                (IndexJobKind)reader.GetInt32(1) == IndexJobKind.EmbeddingRefresh &&
+                                reader.GetInt64(2) == request.ExpectedObservationEpoch &&
+                                reader.GetInt64(3) == request.ExpectedObservationEpoch &&
+                                !reader.IsDBNull(4) && Guid.Parse(reader.GetString(4)) == request.RevisionId &&
+                                !reader.IsDBNull(5) && string.Equals(reader.GetString(5), "active", StringComparison.Ordinal);
+                }
+            }
+
+            if (!isCurrent)
+            {
+                await CompleteOrRequeueSupersededJobAsync(connection, transaction, request.JobId,
+                    request.ExpectedObservationEpoch, token, IndexJobKind.EmbeddingRefresh).ConfigureAwait(false);
+                await transaction.CommitAsync(token).ConfigureAwait(false);
+                return false;
+            }
+
+            await using (var passageCount = connection.CreateCommand())
+            {
+                passageCount.Transaction = transaction;
+                passageCount.CommandText = "SELECT COUNT(*) FROM passages WHERE revision_id=$revision;";
+                passageCount.Parameters.AddWithValue("$revision", request.RevisionId.ToString());
+                var expectedCount = Convert.ToInt32(await passageCount.ExecuteScalarAsync(token).ConfigureAwait(false));
+                if (expectedCount != request.Embeddings.Count)
+                    throw new InvalidOperationException("The active passage set changed during embedding refresh.");
+            }
+
+            await ExecuteAsync(connection, transaction, "DELETE FROM embeddings WHERE revision_id=$revision;",
+                [new("$revision", request.RevisionId.ToString())], token).ConfigureAwait(false);
+            foreach (var embedding in request.Embeddings)
+            {
+                var bytes = MemoryMarshal.AsBytes(embedding.Vector.AsSpan()).ToArray();
+                var inserted = await ExecuteAsync(connection, transaction,
+                    """
+                    INSERT INTO embeddings(passage_rowid,passage_id,revision_id,vector,policy_key)
+                    SELECT p.rowid,p.id,p.revision_id,$vector,$policy
+                    FROM passages p
+                    WHERE p.id=$passage AND p.revision_id=$revision;
+                    """,
+                    [new("$vector", bytes), new("$policy", request.Policy.Key),
+                     new("$passage", embedding.PassageId.ToString()), new("$revision", request.RevisionId.ToString())],
+                    token).ConfigureAwait(false);
+                if (inserted != 1)
+                    throw new InvalidOperationException("A persisted passage disappeared during embedding refresh.");
+            }
+
+            var now = DateTimeOffset.UtcNow.ToString("O");
+            var policyJson = JsonSerializer.Serialize(request.Policy, StorageJsonOptions);
+            await ExecuteAsync(connection, transaction,
+                "UPDATE document_revisions SET embedding_policy_json=$policy WHERE id=$revision AND status='active';",
+                [new("$policy", policyJson), new("$revision", request.RevisionId.ToString())], token).ConfigureAwait(false);
+            await ExecuteAsync(connection, transaction,
+                "UPDATE projects SET search_generation=search_generation+1,updated_utc=$now WHERE id=$project;",
+                [new("$now", now), new("$project", request.ProjectId.ToString())], token).ConfigureAwait(false);
+            await ExecuteAsync(connection, transaction,
+                "UPDATE index_jobs SET state='completed',lease_until_utc=NULL,last_error=NULL,updated_utc=$now WHERE id=$job;",
+                [new("$now", now), new("$job", request.JobId.ToString())], token).ConfigureAwait(false);
+            await ExecuteAsync(connection, transaction,
+                "INSERT INTO index_runs(id,project_id,document_id,started_utc,completed_utc,state) VALUES($id,$project,$document,$now,$now,'completed');",
+                [new("$id", Guid.CreateVersion7().ToString()), new("$project", request.ProjectId.ToString()),
+                 new("$document", request.DocumentId.ToString()), new("$now", now)], token).ConfigureAwait(false);
+            await ExecuteAsync(connection, transaction,
+                "DELETE FROM project_errors WHERE project_id=$project AND document_id=$document AND code='embedding_refresh_failed';",
+                [new("$project", request.ProjectId.ToString()), new("$document", request.DocumentId.ToString())], token)
+                .ConfigureAwait(false);
+            await transaction.CommitAsync(token).ConfigureAwait(false);
+            return true;
+        }, cancellationToken);
+    }
+
     public Task FailJobAsync(IndexJobLease job, string code, string message, bool retryable, CancellationToken cancellationToken = default) =>
         EnqueueAsync<object?>(async (connection, token) =>
         {
@@ -784,7 +1037,7 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
             await using (var currentJob = connection.CreateCommand())
             {
                 currentJob.Transaction = transaction;
-                currentJob.CommandText = "SELECT state,expected_epoch FROM index_jobs WHERE id=$id;";
+                currentJob.CommandText = "SELECT state,expected_epoch,kind FROM index_jobs WHERE id=$id;";
                 currentJob.Parameters.AddWithValue("$id", job.JobId.ToString());
                 await using var reader = await currentJob.ExecuteReaderAsync(token).ConfigureAwait(false);
                 if (!await reader.ReadAsync(token).ConfigureAwait(false) ||
@@ -794,11 +1047,12 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                     return null;
                 }
 
-                if (reader.GetInt64(1) > job.ExpectedObservationEpoch)
+                if (reader.GetInt64(1) > job.ExpectedObservationEpoch ||
+                    (IndexJobKind)reader.GetInt32(2) != job.Kind)
                 {
                     await reader.DisposeAsync().ConfigureAwait(false);
                     await CompleteOrRequeueSupersededJobAsync(connection, transaction, job.JobId,
-                        job.ExpectedObservationEpoch, token).ConfigureAwait(false);
+                        job.ExpectedObservationEpoch, token, job.Kind).ConfigureAwait(false);
                     await ExecuteAsync(connection, transaction,
                         "DELETE FROM document_revisions WHERE document_id=$document AND status='staging';",
                         [new("$document", job.DocumentId.ToString())], token).ConfigureAwait(false);
@@ -908,10 +1162,31 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
     private static async Task UpsertOpenJobAsync(SqliteConnection connection, SqliteTransaction transaction, Guid projectId,
         Guid documentId, long epoch, IndexJobKind kind, string now, CancellationToken cancellationToken)
     {
+        if (kind == IndexJobKind.EmbeddingRefresh)
+        {
+            await ExecuteAsync(connection, transaction,
+                """
+                INSERT INTO index_jobs(id,project_id,document_id,kind,state,expected_epoch,not_before_utc,created_utc,updated_utc)
+                SELECT $id,$project,$document,$kind,'queued',$epoch,$now,$now,$now
+                WHERE NOT EXISTS(
+                  SELECT 1 FROM index_jobs
+                  WHERE document_id=$document AND state IN ('queued','retry_wait','running')
+                );
+                """,
+                [new("$id", Guid.CreateVersion7().ToString()), new("$project", projectId.ToString()),
+                 new("$document", documentId.ToString()), new("$kind", (int)kind), new("$epoch", epoch),
+                 new("$now", now)], cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
         var updated = await ExecuteAsync(connection, transaction,
             """
             UPDATE index_jobs SET
-                kind=CASE WHEN $kind=$reindex THEN $reindex ELSE kind END,
+                kind=CASE
+                    WHEN $kind=$reindex THEN $reindex
+                    WHEN $kind=$index AND kind=$embedding_refresh THEN $index
+                    ELSE kind
+                END,
                 state=CASE WHEN state='running' THEN state ELSE 'queued' END,
                 expected_epoch=$epoch,
                 attempt=CASE WHEN state='running' THEN attempt ELSE 0 END,
@@ -921,7 +1196,9 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                 updated_utc=$now
             WHERE document_id=$document AND state IN ('queued','retry_wait','running');
             """,
-            [new("$kind", (int)kind), new("$reindex", (int)IndexJobKind.Reindex), new("$epoch", epoch),
+            [new("$kind", (int)kind), new("$reindex", (int)IndexJobKind.Reindex),
+             new("$index", (object)(int)IndexJobKind.Index),
+             new("$embedding_refresh", (int)IndexJobKind.EmbeddingRefresh), new("$epoch", epoch),
              new("$now", now), new("$document", documentId.ToString())], cancellationToken).ConfigureAwait(false);
         if (updated == 0)
         {
@@ -933,21 +1210,32 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
     }
 
     private static Task<int> CompleteOrRequeueSupersededJobAsync(SqliteConnection connection,
-        SqliteTransaction transaction, Guid jobId, long leasedEpoch, CancellationToken cancellationToken)
+        SqliteTransaction transaction, Guid jobId, long leasedEpoch, CancellationToken cancellationToken,
+        IndexJobKind? leasedKind = null)
     {
         var now = DateTimeOffset.UtcNow.ToString("O");
         return ExecuteAsync(connection, transaction,
             """
             UPDATE index_jobs SET
-                state=CASE WHEN expected_epoch>$leased_epoch THEN 'queued' ELSE 'completed' END,
-                attempt=CASE WHEN expected_epoch>$leased_epoch THEN 0 ELSE attempt END,
+                state=CASE
+                    WHEN expected_epoch>$leased_epoch OR ($leased_kind IS NOT NULL AND kind<>$leased_kind)
+                    THEN 'queued' ELSE 'completed'
+                END,
+                attempt=CASE
+                    WHEN expected_epoch>$leased_epoch OR ($leased_kind IS NOT NULL AND kind<>$leased_kind)
+                    THEN 0 ELSE attempt
+                END,
                 not_before_utc=$now,
                 lease_until_utc=NULL,
-                last_error=CASE WHEN expected_epoch>$leased_epoch THEN NULL ELSE last_error END,
+                last_error=CASE
+                    WHEN expected_epoch>$leased_epoch OR ($leased_kind IS NOT NULL AND kind<>$leased_kind)
+                    THEN NULL ELSE last_error
+                END,
                 updated_utc=$now
             WHERE id=$id;
             """,
-            [new("$leased_epoch", leasedEpoch), new("$now", now), new("$id", jobId.ToString())], cancellationToken);
+            [new("$leased_epoch", leasedEpoch), new("$leased_kind", (object?)(int?)leasedKind ?? DBNull.Value),
+             new("$now", now), new("$id", jobId.ToString())], cancellationToken);
     }
 
     private static async Task DeleteFtsRevisionAsync(SqliteConnection connection, SqliteTransaction transaction,

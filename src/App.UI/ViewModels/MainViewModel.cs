@@ -22,11 +22,13 @@ internal partial class MainViewModel : ViewModelBase
     private readonly ISearchStore _store;
     private readonly IOcrEngine _ocrEngine;
     private readonly IEmbeddingGenerator _embeddingGenerator;
+    private readonly IEmbeddingModelSettings _embeddingModelSettings;
     private readonly ICpuUsageSettings _cpuUsageSettings;
     private readonly WindowsStartupService _windowsStartup;
     private readonly GraniteModelInstaller _modelInstaller;
     private readonly CodexMcpConfigurationService _codexConfiguration;
     private readonly IndexingActivityTracker _indexingActivities;
+    private readonly EmbeddingPolicyRefreshTracker _embeddingPolicyRefreshes;
     private readonly ApplicationUpdateService _applicationUpdates;
     private readonly SemaphoreSlim _refreshGate = new(1, 1);
     private CancellationTokenSource? _polling;
@@ -44,33 +46,39 @@ internal partial class MainViewModel : ViewModelBase
         ISearchStore store,
         IOcrEngine ocrEngine,
         IEmbeddingGenerator embeddingGenerator,
+        IEmbeddingModelSettings embeddingModelSettings,
         ICpuUsageSettings cpuUsageSettings,
         WindowsStartupService windowsStartup,
         GraniteModelInstaller modelInstaller,
         CodexMcpConfigurationService codexConfiguration,
         IndexingActivityTracker indexingActivities,
+        EmbeddingPolicyRefreshTracker embeddingPolicyRefreshes,
         ApplicationUpdateService applicationUpdates)
     {
         _writer = writer;
         _store = store;
         _ocrEngine = ocrEngine;
         _embeddingGenerator = embeddingGenerator;
+        _embeddingModelSettings = embeddingModelSettings;
         _cpuUsageSettings = cpuUsageSettings;
         _windowsStartup = windowsStartup;
         _windowsStartup.Initialize();
         _modelInstaller = modelInstaller;
         _codexConfiguration = codexConfiguration;
         _indexingActivities = indexingActivities;
+        _embeddingPolicyRefreshes = embeddingPolicyRefreshes;
         _applicationUpdates = applicationUpdates;
         _applicationUpdates.SnapshotChanged += OnApplicationUpdateSnapshotChanged;
         ApplicationUpdate = _applicationUpdates.Snapshot;
         SelectedCpuUsageProfile = _cpuUsageSettings.Profile;
+        SelectedEmbeddingModel = GraniteEmbeddingModels.Get(_embeddingModelSettings.Model);
         StartWithWindowsEnabled = _windowsStartup.IsEnabled;
     }
 
     public ObservableCollection<ProjectItemViewModel> Projects { get; } = [];
     public ObservableCollection<IndexingActivityItemViewModel> ActiveIndexingItems { get; } = [];
     public IReadOnlyList<CpuUsageProfile> CpuUsageProfiles { get; } = Enum.GetValues<CpuUsageProfile>();
+    public IReadOnlyList<GraniteEmbeddingModelDefinition> EmbeddingModelChoices { get; } = GraniteEmbeddingModels.All;
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(HasSelection))]
@@ -108,6 +116,23 @@ internal partial class MainViewModel : ViewModelBase
     public partial CpuUsageProfile SelectedCpuUsageProfile { get; set; } = CpuUsageProfile.Normal;
 
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(EmbeddingModelSummary))]
+    [NotifyPropertyChangedFor(nameof(SemanticSearchStatusMessage))]
+    public partial GraniteEmbeddingModelDefinition SelectedEmbeddingModel { get; set; } = GraniteEmbeddingModels.All[0];
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CanChangeEmbeddingModel))]
+    [NotifyPropertyChangedFor(nameof(CanSetUpSemanticSearch))]
+    public partial bool IsChangingEmbeddingModel { get; set; }
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CanChangeEmbeddingModel))]
+    [NotifyPropertyChangedFor(nameof(CanSetUpSemanticSearch))]
+    [NotifyPropertyChangedFor(nameof(SemanticSearchStatusLabel))]
+    [NotifyPropertyChangedFor(nameof(SemanticSearchStatusMessage))]
+    public partial bool IsPreparingEmbeddingModel { get; set; } = true;
+
+    [ObservableProperty]
     public partial bool StartWithWindowsEnabled { get; set; }
 
     [ObservableProperty]
@@ -139,13 +164,20 @@ internal partial class MainViewModel : ViewModelBase
     public string OcrStatusMessage => _ocrEngine.UnavailableReason ?? "Local PP-OCRv6 medium OCR is ready.";
     public bool IsSemanticSearchUnavailable => !_embeddingGenerator.IsAvailable;
     public bool CanInstallSemanticModel => _modelInstaller.IsSupported;
-    public bool CanSetUpSemanticSearch => IsSemanticSearchUnavailable && CanInstallSemanticModel;
-    public string SemanticSearchStatusLabel => IsSemanticSearchUnavailable ? "Optional" : "Ready";
-    public string SemanticSearchStatusMessage => !IsSemanticSearchUnavailable
-        ? "The local Granite model is ready for multilingual meaning-based search."
+    public bool CanSetUpSemanticSearch => IsSemanticSearchUnavailable && CanInstallSemanticModel &&
+        !IsChangingEmbeddingModel && !IsPreparingEmbeddingModel;
+    public bool CanChangeEmbeddingModel => CanInstallSemanticModel &&
+        !IsChangingEmbeddingModel && !IsPreparingEmbeddingModel;
+    public string EmbeddingModelSummary => $"{SelectedEmbeddingModel.Description}. Both choices support multilingual search and use the same 384-dimensional index format.";
+    public string SemanticSearchStatusLabel => IsPreparingEmbeddingModel ? "Loading"
+        : IsSemanticSearchUnavailable ? "Optional" : "Ready";
+    public string SemanticSearchStatusMessage => IsPreparingEmbeddingModel
+        ? $"Loading {SelectedEmbeddingModel.DisplayName} in the background."
+        : !IsSemanticSearchUnavailable
+        ? $"{SelectedEmbeddingModel.DisplayName} is ready for multilingual meaning-based search."
         : !_modelInstaller.IsSupported
             ? _embeddingGenerator.UnavailableReason ?? "Semantic search is unavailable on this platform."
-            : "Keyword search is ready. Install the optional local Granite model to add multilingual meaning-based search.";
+            : $"Keyword search is ready. Download {SelectedEmbeddingModel.DisplayName} to add multilingual meaning-based search.";
     public bool HasSelection => SelectedProject is not null;
     public bool HasNoSelection => SelectedProject is null;
     public bool IsProjectsSection => CurrentSection == MainSection.Projects;
@@ -187,10 +219,13 @@ internal partial class MainViewModel : ViewModelBase
 
     public void RefreshAssetAvailability()
     {
+        SelectedEmbeddingModel = GraniteEmbeddingModels.Get(_embeddingModelSettings.Model);
         RefreshOcrAvailability();
         OnPropertyChanged(nameof(IsSemanticSearchUnavailable));
         OnPropertyChanged(nameof(CanInstallSemanticModel));
         OnPropertyChanged(nameof(CanSetUpSemanticSearch));
+        OnPropertyChanged(nameof(CanChangeEmbeddingModel));
+        OnPropertyChanged(nameof(EmbeddingModelSummary));
         OnPropertyChanged(nameof(SemanticSearchStatusLabel));
         OnPropertyChanged(nameof(SemanticSearchStatusMessage));
     }
@@ -211,6 +246,7 @@ internal partial class MainViewModel : ViewModelBase
         _polling = new CancellationTokenSource();
         _applicationUpdates.Start();
         _pollingTask = Task.WhenAll(
+            PrepareEmbeddingModelAsync(_polling.Token),
             PrepareOcrAsync(_polling.Token),
             RefreshCodexConnectionAsync(_polling.Token),
             PollAsync(_polling.Token));
@@ -280,6 +316,103 @@ internal partial class MainViewModel : ViewModelBase
         SelectedCpuUsageProfile = _cpuUsageSettings.Profile;
         StatusMessage = $"CPU usage is now {SelectedCpuUsageProfile}. {CpuUsageSummary}";
         return Task.CompletedTask;
+    }
+
+    public async Task SetEmbeddingModelAsync(GraniteEmbeddingModelDefinition model)
+    {
+        if (!_modelInstaller.IsModelInstalled(model.Choice))
+            throw new McpIndexException("model_unavailable", $"Download {model.DisplayName} before selecting it.");
+
+        IsChangingEmbeddingModel = true;
+        try
+        {
+            await _embeddingPolicyRefreshes.RunExclusiveAsync(() => SetEmbeddingModelCoreAsync(model));
+        }
+        finally
+        {
+            IsChangingEmbeddingModel = false;
+        }
+    }
+
+    private async Task SetEmbeddingModelCoreAsync(GraniteEmbeddingModelDefinition model)
+    {
+        var previousChoice = _embeddingModelSettings.Model;
+        try
+        {
+            _embeddingModelSettings.SetModel(model.Choice);
+            await _embeddingGenerator.ReloadAsync();
+            if (!_embeddingGenerator.IsAvailable ||
+                !string.Equals(_embeddingGenerator.Policy?.ModelId, model.ModelId, StringComparison.Ordinal))
+                throw new McpIndexException("model_unavailable",
+                    _embeddingGenerator.UnavailableReason ?? $"{model.DisplayName} could not be loaded.");
+
+            SelectedEmbeddingModel = GraniteEmbeddingModels.Get(_embeddingModelSettings.Model);
+            RefreshAssetAvailability();
+        }
+        catch
+        {
+            if (!_embeddingGenerator.IsAvailable &&
+                string.Equals(_embeddingGenerator.Policy?.ModelId, model.ModelId, StringComparison.Ordinal))
+            {
+                try
+                {
+                    _modelInstaller.MarkModelForRepair(model.Choice,
+                        _embeddingGenerator.UnavailableReason ?? "The model could not be loaded.");
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                {
+                }
+            }
+
+            if (_embeddingModelSettings.Model != previousChoice)
+            {
+                _embeddingModelSettings.SetModel(previousChoice);
+                await _embeddingGenerator.ReloadAsync();
+            }
+            SelectedEmbeddingModel = GraniteEmbeddingModels.Get(previousChoice);
+            RefreshAssetAvailability();
+            throw;
+        }
+
+        var queuedProjects = 0;
+        var policy = _embeddingGenerator.Policy!;
+        try
+        {
+            foreach (var project in await _store.ListProjectsAsync())
+            {
+                if (project.IndexedCount == 0 || project.State == ProjectState.Paused) continue;
+                _embeddingPolicyRefreshes.CancelRefresh(project.Id, policy.Key);
+                if (!_embeddingPolicyRefreshes.TryBeginRefresh(project.Id, policy.Key)) continue;
+                try
+                {
+                    var metadata = await _store.LoadVectorSnapshotMetadataAsync(project.Id);
+                    if (!metadata.IsComplete ||
+                        !string.Equals(metadata.Policy?.Key, policy.Key, StringComparison.Ordinal))
+                    {
+                        await _writer.RequestEmbeddingRefreshAsync(project.Id, policy, retryFailed: true);
+                        queuedProjects++;
+                    }
+                    else
+                    {
+                        _embeddingPolicyRefreshes.CancelRefresh(project.Id, policy.Key);
+                    }
+                }
+                catch
+                {
+                    _embeddingPolicyRefreshes.CancelRefresh(project.Id, policy.Key);
+                    throw;
+                }
+            }
+        }
+        catch (Exception exception)
+        {
+            StatusMessage = $"{model.DisplayName} is active. Automatic re-embedding will retry shortly: {exception.Message}";
+            return;
+        }
+
+        StatusMessage = queuedProjects == 0
+            ? $"{model.DisplayName} is active."
+            : $"{model.DisplayName} is active. Re-embedding {queuedProjects} project{(queuedProjects == 1 ? string.Empty : "s")} in the background.";
     }
 
     public void SetStartWithWindows(bool enabled)
@@ -394,6 +527,33 @@ internal partial class MainViewModel : ViewModelBase
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
+        }
+    }
+
+    private async Task PrepareEmbeddingModelAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _embeddingGenerator.ReloadAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return;
+        }
+        catch (Exception exception)
+        {
+            await Dispatcher.UIThread.InvokeAsync(() => StatusMessage = $"Semantic search setup: {exception.Message}");
+        }
+        finally
+        {
+            if (!cancellationToken.IsCancellationRequested)
+            {
+                await Dispatcher.UIThread.InvokeAsync(() =>
+                {
+                    IsPreparingEmbeddingModel = false;
+                    RefreshAssetAvailability();
+                });
+            }
         }
     }
 

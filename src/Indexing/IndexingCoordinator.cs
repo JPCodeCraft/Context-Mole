@@ -13,6 +13,7 @@ public sealed class IndexingCoordinator(
     IDocumentExtractor extractor,
     IEmbeddingGenerator embeddings,
     IndexingActivityTracker activities,
+    EmbeddingPolicyRefreshTracker policyRefreshes,
     IGlobalCpuBudget cpuBudget,
     ILogger<IndexingCoordinator> logger) : BackgroundService
 {
@@ -27,6 +28,7 @@ public sealed class IndexingCoordinator(
     private readonly IDocumentExtractor _extractor = extractor;
     private readonly IEmbeddingGenerator _embeddings = embeddings;
     private readonly IndexingActivityTracker _activities = activities;
+    private readonly EmbeddingPolicyRefreshTracker _policyRefreshes = policyRefreshes;
     private readonly IGlobalCpuBudget _cpuBudget = cpuBudget;
     private readonly ILogger<IndexingCoordinator> _logger = logger;
     private readonly Channel<WatchChange> _watchChanges = Channel.CreateUnbounded<WatchChange>(
@@ -34,7 +36,6 @@ public sealed class IndexingCoordinator(
     private readonly object _watchersGate = new();
     private readonly SemaphoreSlim _reconciliationGate = new(1, 1);
     private readonly Dictionary<Guid, FolderWatcher> _watchers = [];
-    private readonly HashSet<(Guid ProjectId, string Policy)> _policyRefreshChecked = [];
     private bool _stopping;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -254,20 +255,50 @@ public sealed class IndexingCoordinator(
 
     private async Task QueueEmbeddingPolicyRefreshAsync(CancellationToken cancellationToken)
     {
-        if (!_embeddings.IsAvailable || _embeddings.Policy is null) return;
-        foreach (var project in await _searchStore.ListProjectsAsync(cancellationToken).ConfigureAwait(false))
+        await _policyRefreshes.RunExclusiveAsync(async () =>
         {
-            if (project.IndexedCount == 0 || project.State == ProjectState.Paused) continue;
-            var policyCheck = (project.Id, _embeddings.Policy.Key);
-            if (_policyRefreshChecked.Contains(policyCheck)) continue;
-            var metadata = await _searchStore.LoadVectorSnapshotMetadataAsync(project.Id, cancellationToken).ConfigureAwait(false);
-            if (!string.Equals(metadata.Policy?.Key, _embeddings.Policy.Key, StringComparison.Ordinal))
+            try
             {
-                _logger.LogInformation("Queueing project {Project} for embedding policy refresh", project.Name);
-                await _writer.RequestReindexAsync(project.Id, cancellationToken).ConfigureAwait(false);
+                await _embeddings.ReloadAsync(cancellationToken).ConfigureAwait(false);
             }
-            _policyRefreshChecked.Add(policyCheck);
-        }
+            catch
+            {
+                _policyRefreshes.Clear();
+                throw;
+            }
+            var policy = _embeddings.Policy;
+            if (!_embeddings.IsAvailable || policy is null)
+            {
+                _policyRefreshes.Clear();
+                return;
+            }
+            foreach (var project in await _searchStore.ListProjectsAsync(cancellationToken).ConfigureAwait(false))
+            {
+                if (project.IndexedCount == 0 || project.State == ProjectState.Paused) continue;
+                try
+                {
+                    var metadata = await _searchStore.LoadVectorSnapshotMetadataAsync(project.Id, cancellationToken)
+                        .ConfigureAwait(false);
+                    if (metadata.IsComplete && string.Equals(metadata.Policy?.Key, policy.Key, StringComparison.Ordinal))
+                    {
+                        _policyRefreshes.CancelRefresh(project.Id, policy.Key);
+                        continue;
+                    }
+
+                    if (_policyRefreshes.IsRefreshPending(project.Id, policy.Key)) continue;
+                    if (!_policyRefreshes.TryBeginRefresh(project.Id, policy.Key)) continue;
+
+                    _logger.LogInformation("Queueing project {Project} for embedding policy refresh", project.Name);
+                    await _writer.RequestEmbeddingRefreshAsync(project.Id, policy, retryFailed: false,
+                        cancellationToken).ConfigureAwait(false);
+                }
+                catch
+                {
+                    _policyRefreshes.CancelRefresh(project.Id, policy.Key);
+                    throw;
+                }
+            }
+        }, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task ReconcileFolderAsync(Guid projectId, Guid folderId, string root, CancellationToken cancellationToken)
@@ -364,7 +395,10 @@ public sealed class IndexingCoordinator(
                     activity.SetStage(IndexingPipelineStage.RecordingError);
                     try
                     {
-                        await _writer.FailJobAsync(job, ErrorCode(exception), exception.Message, IsTemporary(exception), CancellationToken.None)
+                        var code = job.Kind == IndexJobKind.EmbeddingRefresh
+                            ? "embedding_refresh_failed"
+                            : ErrorCode(exception);
+                        await _writer.FailJobAsync(job, code, exception.Message, IsTemporary(exception), CancellationToken.None)
                             .ConfigureAwait(false);
                     }
                     catch (Exception recordingException)
@@ -379,6 +413,9 @@ public sealed class IndexingCoordinator(
 
     private async Task<bool> ProcessJobAsync(IndexJobLease job, IndexingActivityHandle activity, CancellationToken cancellationToken)
     {
+        if (job.Kind == IndexJobKind.EmbeddingRefresh)
+            return await ProcessEmbeddingRefreshAsync(job, activity, cancellationToken).ConfigureAwait(false);
+
         activity.SetStage(IndexingPipelineStage.InspectingSource);
         var before = new FileInfo(job.SourcePath);
         if (!before.Exists)
@@ -414,10 +451,14 @@ public sealed class IndexingCoordinator(
         activity.SetStage(IndexingPipelineStage.ChunkingText);
         var (contentNodes, passageSeeds) = FlattenAndChunk(extraction.Root);
         IReadOnlyList<float[]> vectors = [];
+        EmbeddingPolicy? embeddingPolicy = null;
         if (_embeddings.IsAvailable && passageSeeds.Count > 0)
         {
             activity.SetStage(IndexingPipelineStage.GeneratingEmbeddings);
-            vectors = await _embeddings.EmbedPassagesAsync(passageSeeds.Select(seed => seed.SearchText).ToArray(), cancellationToken).ConfigureAwait(false);
+            var embeddingBatch = await _embeddings.EmbedPassagesAsync(
+                passageSeeds.Select(seed => seed.SearchText).ToArray(), cancellationToken).ConfigureAwait(false);
+            vectors = embeddingBatch.Vectors;
+            embeddingPolicy = embeddingBatch.Policy;
         }
 
         activity.SetStage(IndexingPipelineStage.VerifyingSource);
@@ -436,7 +477,38 @@ public sealed class IndexingCoordinator(
         activity.SetStage(IndexingPipelineStage.WritingIndex);
         return await _writer.CommitRevisionAsync(new IndexCommitRequest(job.JobId, job.ProjectId, job.DocumentId, begin.RevisionId.Value,
             job.ExpectedObservationEpoch, sha256, initialLength, initialModified, contentNodes, passages,
-            vectors.Count == passageSeeds.Count ? _embeddings.Policy : null, extraction.Errors), cancellationToken).ConfigureAwait(false);
+            vectors.Count == passageSeeds.Count ? embeddingPolicy : null, extraction.Errors), cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<bool> ProcessEmbeddingRefreshAsync(IndexJobLease job, IndexingActivityHandle activity,
+        CancellationToken cancellationToken)
+    {
+        activity.SetStage(IndexingPipelineStage.PreparingRevision);
+        var source = await _writer.LoadEmbeddingRefreshSourceAsync(job, cancellationToken).ConfigureAwait(false);
+        if (source is null) return false;
+
+        IReadOnlyList<float[]> vectors = [];
+        EmbeddingPolicy? policy = _embeddings.Policy;
+        if (source.Passages.Count > 0)
+        {
+            activity.SetStage(IndexingPipelineStage.GeneratingEmbeddings);
+            var batch = await _embeddings.EmbedPassagesAsync(
+                source.Passages.Select(passage => passage.SearchText).ToArray(), cancellationToken)
+                .ConfigureAwait(false);
+            vectors = batch.Vectors;
+            policy = batch.Policy;
+        }
+
+        if (policy is null || vectors.Count != source.Passages.Count)
+            throw new McpIndexException("embedding_unavailable",
+                _embeddings.UnavailableReason ?? "The selected embedding model is unavailable.", true);
+
+        var refreshed = source.Passages.Select((passage, index) =>
+            new PassageEmbedding(passage.PassageId, vectors[index])).ToArray();
+        activity.SetStage(IndexingPipelineStage.WritingIndex);
+        return await _writer.CommitEmbeddingRefreshAsync(new EmbeddingRefreshCommitRequest(job.JobId,
+            job.ProjectId, job.DocumentId, source.RevisionId, job.ExpectedObservationEpoch, refreshed, policy),
+            cancellationToken).ConfigureAwait(false);
     }
 
     private (List<ContentNodeDraft> Nodes, List<PassageDraft> Passages) FlattenAndChunk(ExtractedNode root)
@@ -571,7 +643,8 @@ public sealed class IndexingCoordinator(
         _ => "indexing_failed"
     };
 
-    private static bool IsTemporary(Exception exception) => exception is IOException or UnauthorizedAccessException;
+    private static bool IsTemporary(Exception exception) => exception is IOException or UnauthorizedAccessException ||
+        exception is McpIndexException { Retryable: true };
     private static StringComparer PathComparer() => OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
         ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
     private static StringComparison PathComparison() => OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()

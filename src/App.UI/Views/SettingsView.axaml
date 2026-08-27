@@ -85,7 +85,7 @@
           </Border>
 
           <Border Classes="settingsRow" Margin="0,8,0,0">
-            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="20">
+            <Grid ColumnDefinitions="*,250" ColumnSpacing="24">
               <StackPanel Spacing="5">
                 <StackPanel Orientation="Horizontal" Spacing="9">
                   <TextBlock Text="Semantic search" Classes="cardTitle" />
@@ -95,10 +95,20 @@
                   </Border>
                 </StackPanel>
                 <TextBlock Text="{Binding SemanticSearchStatusMessage}" Classes="muted" TextWrapping="Wrap" />
+                <TextBlock Text="{Binding EmbeddingModelSummary}" Classes="quiet" FontSize="12"
+                           TextWrapping="Wrap" Margin="0,3,0,0" />
               </StackPanel>
-              <Button Grid.Column="1" IsVisible="{Binding CanSetUpSemanticSearch}"
-                      Classes="primary" Content="Set up" Click="SetupSemanticSearch"
-                      VerticalAlignment="Center" />
+              <StackPanel Grid.Column="1" Spacing="7" VerticalAlignment="Center">
+                <TextBlock Text="EMBEDDING MODEL" Classes="eyebrow" />
+                <ComboBox x:Name="EmbeddingModelCombo"
+                          ItemsSource="{Binding EmbeddingModelChoices}"
+                          SelectedItem="{Binding SelectedEmbeddingModel, Mode=OneWay}"
+                          IsEnabled="{Binding CanChangeEmbeddingModel}"
+                          SelectionChanged="EmbeddingModelChanged" />
+                <Button IsVisible="{Binding CanSetUpSemanticSearch}"
+                        Classes="primary" Content="Download selected model"
+                        Click="SetupSemanticSearch" HorizontalAlignment="Stretch" />
+              </StackPanel>
             </Grid>
           </Border>
         </StackPanel>

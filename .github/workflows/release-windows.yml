@@ -39,6 +39,7 @@ jobs:
           cache-dependency-path: |
             packages.lock.json
             src/**/packages.lock.json
+            tests/**/packages.lock.json
             tools/packages.lock.json
 
       - name: Verify SDK and branding source
@@ -54,6 +55,9 @@ jobs:
 
       - name: Build the complete solution
         run: dotnet build MCPIndexSearch.slnx -c Release --no-restore -p:ContinuousIntegrationBuild=true -p:Version=${{ env.VERSION }} -p:SourceRevisionId=${{ github.sha }}
+
+      - name: Run automated tests
+        run: dotnet test --solution MCPIndexSearch.slnx -c Release --no-restore --no-build
 
       - name: Publish the Windows application and MCP sidecar
         shell: pwsh

@@ -16,10 +16,17 @@ public enum CpuUsageProfile
     Heavy
 }
 
+public enum EmbeddingModelChoice
+{
+    Granite311M,
+    Granite97M
+}
+
 public enum IndexJobKind
 {
     Index,
-    Reindex
+    Reindex,
+    EmbeddingRefresh
 }
 
 public enum ExtractionMethod
@@ -256,6 +263,14 @@ public sealed record EmbeddingPolicy(
         SourceDimensions, Dimensions, Pooling, Normalization);
 }
 
+public sealed record EmbeddingBatch(
+    IReadOnlyList<float[]> Vectors,
+    EmbeddingPolicy Policy);
+
+public sealed record QueryEmbedding(
+    float[] Vector,
+    EmbeddingPolicy Policy);
+
 public sealed record ContentNodeDraft(
     Guid Id,
     Guid? ParentId,
@@ -290,6 +305,27 @@ public sealed record IndexCommitRequest(
     IReadOnlyList<PassageDraft> Passages,
     EmbeddingPolicy? EmbeddingPolicy,
     IReadOnlyList<ExtractionError> Errors);
+
+public sealed record EmbeddingRefreshPassage(
+    Guid PassageId,
+    string SearchText);
+
+public sealed record EmbeddingRefreshSource(
+    Guid RevisionId,
+    IReadOnlyList<EmbeddingRefreshPassage> Passages);
+
+public sealed record PassageEmbedding(
+    Guid PassageId,
+    float[] Vector);
+
+public sealed record EmbeddingRefreshCommitRequest(
+    Guid JobId,
+    Guid ProjectId,
+    Guid DocumentId,
+    Guid RevisionId,
+    long ExpectedObservationEpoch,
+    IReadOnlyList<PassageEmbedding> Embeddings,
+    EmbeddingPolicy Policy);
 
 public sealed record SearchFilters(
     IReadOnlyList<Guid>? DocumentIds = null,
@@ -454,7 +490,8 @@ public sealed record VectorSnapshotMetadata(
     EmbeddingPolicy? Policy,
     long EntryCount,
     bool RequiresStreaming = false,
-    string? Warning = null);
+    string? Warning = null,
+    bool IsComplete = true);
 
 public sealed record KeywordSearchPage(long SearchGeneration, IReadOnlyList<SearchCandidate> Candidates);
 
@@ -470,7 +507,7 @@ public static class SupportedContent
 {
     public static readonly ReadOnlyCollection<string> Extensions = Array.AsReadOnly(new[]
     {
-        ".pdf", ".docx", ".xlsx", ".pptx", ".txt", ".md", ".markdown", ".html", ".htm",
+        ".pdf", ".docx", ".xlsx", ".pptx", ".txt", ".md", ".markdown", ".html", ".htm", ".mht", ".mhtml",
         ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", ".tiff", ".eml", ".msg",
         ".zip", ".rar"
     });

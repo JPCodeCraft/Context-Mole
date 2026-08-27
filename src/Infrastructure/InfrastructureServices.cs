@@ -11,6 +11,8 @@ public static class InfrastructureServices
         services.TryAddSingleton<IAppPaths, AppPaths>();
         services.AddSingleton<CpuUsageSettings>();
         services.AddSingleton<ICpuUsageSettings>(provider => provider.GetRequiredService<CpuUsageSettings>());
+        services.AddSingleton<EmbeddingModelSettings>();
+        services.AddSingleton<IEmbeddingModelSettings>(provider => provider.GetRequiredService<EmbeddingModelSettings>());
         services.AddSingleton<IGlobalCpuBudget, GlobalCpuBudget>();
         services.AddSingleton<IEmbeddingGenerator, GraniteEmbeddingGenerator>();
         services.AddSingleton<GraniteModelInstaller>();
