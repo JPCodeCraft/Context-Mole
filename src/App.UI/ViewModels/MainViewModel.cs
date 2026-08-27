@@ -26,7 +26,7 @@ internal partial class MainViewModel : ViewModelBase
     private readonly ICpuUsageSettings _cpuUsageSettings;
     private readonly WindowsStartupService _windowsStartup;
     private readonly GraniteModelInstaller _modelInstaller;
-    private readonly CodexMcpConfigurationService _codexConfiguration;
+    private readonly AiConnectionsService _aiConnections;
     private readonly IndexingActivityTracker _indexingActivities;
     private readonly EmbeddingPolicyRefreshTracker _embeddingPolicyRefreshes;
     private readonly ApplicationUpdateService _applicationUpdates;
@@ -50,7 +50,7 @@ internal partial class MainViewModel : ViewModelBase
         ICpuUsageSettings cpuUsageSettings,
         WindowsStartupService windowsStartup,
         GraniteModelInstaller modelInstaller,
-        CodexMcpConfigurationService codexConfiguration,
+        AiConnectionsService aiConnections,
         IndexingActivityTracker indexingActivities,
         EmbeddingPolicyRefreshTracker embeddingPolicyRefreshes,
         ApplicationUpdateService applicationUpdates)
@@ -64,7 +64,7 @@ internal partial class MainViewModel : ViewModelBase
         _windowsStartup = windowsStartup;
         _windowsStartup.Initialize();
         _modelInstaller = modelInstaller;
-        _codexConfiguration = codexConfiguration;
+        _aiConnections = aiConnections;
         _indexingActivities = indexingActivities;
         _embeddingPolicyRefreshes = embeddingPolicyRefreshes;
         _applicationUpdates = applicationUpdates;
@@ -73,10 +73,13 @@ internal partial class MainViewModel : ViewModelBase
         SelectedCpuUsageProfile = _cpuUsageSettings.Profile;
         SelectedEmbeddingModel = GraniteEmbeddingModels.Get(_embeddingModelSettings.Model);
         StartWithWindowsEnabled = _windowsStartup.IsEnabled;
+        foreach (var client in _aiConnections.Clients)
+            AiConnections.Add(new AiConnectionItemViewModel(client));
     }
 
     public ObservableCollection<ProjectItemViewModel> Projects { get; } = [];
     public ObservableCollection<IndexingActivityItemViewModel> ActiveIndexingItems { get; } = [];
+    public ObservableCollection<AiConnectionItemViewModel> AiConnections { get; } = [];
     public IReadOnlyList<CpuUsageProfile> CpuUsageProfiles { get; } = Enum.GetValues<CpuUsageProfile>();
     public IReadOnlyList<GraniteEmbeddingModelDefinition> EmbeddingModelChoices { get; } = GraniteEmbeddingModels.All;
 
@@ -92,21 +95,6 @@ internal partial class MainViewModel : ViewModelBase
 
     [ObservableProperty]
     public partial string StatusMessage { get; set; } = "Starting local index…";
-
-    [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(IsCodexConnected))]
-    [NotifyPropertyChangedFor(nameof(CanChangeCodexConnection))]
-    [NotifyPropertyChangedFor(nameof(CodexConnectionAction))]
-    [NotifyPropertyChangedFor(nameof(CodexConnectionStatusLabel))]
-    public partial CodexMcpConnectionState CodexConnectionState { get; set; } = CodexMcpConnectionState.Disconnected;
-
-    [ObservableProperty]
-    public partial string CodexConnectionMessage { get; set; } = "Checking the Codex connection…";
-
-    [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(CanChangeCodexConnection))]
-    [NotifyPropertyChangedFor(nameof(CodexConnectionAction))]
-    public partial bool IsChangingCodexConnection { get; set; }
 
     [ObservableProperty]
     public partial string IndexingTimingSummary { get; set; } = "No files are currently active.";
@@ -198,25 +186,6 @@ internal partial class MainViewModel : ViewModelBase
         ApplicationUpdateState.Error => "Needs attention",
         _ => "Installed builds",
     };
-    public bool IsCodexConnected => CodexConnectionState == CodexMcpConnectionState.Connected;
-    public bool CanChangeCodexConnection => !IsChangingCodexConnection && CodexConnectionState is CodexMcpConnectionState.Connected
-        or CodexMcpConnectionState.Disconnected or CodexMcpConnectionState.UpdateRequired;
-    public string CodexConnectionStatusLabel => CodexConnectionState switch
-    {
-        CodexMcpConnectionState.Connected => "Connected",
-        CodexMcpConnectionState.UpdateRequired => "Update needed",
-        CodexMcpConnectionState.Conflict => "Conflict",
-        CodexMcpConnectionState.ServerUnavailable => "Unavailable",
-        _ => "Not connected",
-    };
-    public string CodexConnectionAction => CodexConnectionState switch
-    {
-        _ when IsChangingCodexConnection => "Working…",
-        CodexMcpConnectionState.Connected => "Disconnect Codex",
-        CodexMcpConnectionState.UpdateRequired => "Update Codex connection",
-        _ => "Connect to Codex"
-    };
-
     public void RefreshAssetAvailability()
     {
         SelectedEmbeddingModel = GraniteEmbeddingModels.Get(_embeddingModelSettings.Model);
@@ -248,7 +217,7 @@ internal partial class MainViewModel : ViewModelBase
         _pollingTask = Task.WhenAll(
             PrepareEmbeddingModelAsync(_polling.Token),
             PrepareOcrAsync(_polling.Token),
-            RefreshCodexConnectionAsync(_polling.Token),
+            RefreshAiConnectionsAsync(_polling.Token),
             PollAsync(_polling.Token));
     }
 
@@ -431,20 +400,23 @@ internal partial class MainViewModel : ViewModelBase
         await MutateAsync(async () => { await _writer.RemoveProjectAsync(id); return id; });
     }
 
-    public async Task<CodexMcpConnectionStatus> ToggleCodexConnectionAsync()
+    public async Task<AiConnectionStatus> ToggleAiConnectionAsync(AiConnectionItemViewModel connection)
     {
-        IsChangingCodexConnection = true;
+        if (!connection.SupportsAutomaticSetup)
+            return await _aiConnections.GetStatusAsync(connection.Id).ConfigureAwait(false);
+
+        connection.IsBusy = true;
         try
         {
-            var result = IsCodexConnected
-                ? await _codexConfiguration.DisconnectAsync().ConfigureAwait(false)
-                : await _codexConfiguration.ConnectAsync().ConfigureAwait(false);
-            await Dispatcher.UIThread.InvokeAsync(() => ApplyCodexConnectionStatus(result));
+            var result = connection.IsConfigured
+                ? await _aiConnections.DisconnectAsync(connection.Id).ConfigureAwait(false)
+                : await _aiConnections.ConnectAsync(connection.Id).ConfigureAwait(false);
+            await Dispatcher.UIThread.InvokeAsync(() => connection.Apply(result));
             return result;
         }
         finally
         {
-            await Dispatcher.UIThread.InvokeAsync(() => IsChangingCodexConnection = false);
+            await Dispatcher.UIThread.InvokeAsync(() => connection.IsBusy = false);
         }
     }
 
@@ -578,29 +550,29 @@ internal partial class MainViewModel : ViewModelBase
         }
     }
 
-    private async Task RefreshCodexConnectionAsync(CancellationToken cancellationToken)
+    private async Task RefreshAiConnectionsAsync(CancellationToken cancellationToken)
     {
-        try
+        var connections = AiConnections.ToArray();
+        await Task.WhenAll(connections.Select(async connection =>
         {
-            var status = await _codexConfiguration.GetStatusAsync(cancellationToken).ConfigureAwait(false);
-            await Dispatcher.UIThread.InvokeAsync(() => ApplyCodexConnectionStatus(status));
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-        }
-        catch (Exception exception)
-        {
-            await Dispatcher.UIThread.InvokeAsync(() =>
+            try
             {
-                CodexConnectionMessage = exception.Message;
-            });
-        }
-    }
-
-    private void ApplyCodexConnectionStatus(CodexMcpConnectionStatus status)
-    {
-        CodexConnectionState = status.State;
-        CodexConnectionMessage = status.Message;
+                var status = await _aiConnections.GetStatusAsync(connection.Id, cancellationToken).ConfigureAwait(false);
+                await Dispatcher.UIThread.InvokeAsync(() => connection.Apply(status));
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+            }
+            catch (Exception exception)
+            {
+                var status = new AiConnectionStatus(connection.Client, AiConnectionState.Conflict, exception.Message);
+                await Dispatcher.UIThread.InvokeAsync(() => connection.Apply(status));
+            }
+            finally
+            {
+                await Dispatcher.UIThread.InvokeAsync(() => connection.IsBusy = false);
+            }
+        })).ConfigureAwait(false);
     }
 
     private void RefreshOcrAvailability()

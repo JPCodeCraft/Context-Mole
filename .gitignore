@@ -3,8 +3,28 @@
 ##
 ## Get latest from `dotnet new gitignore`
 
-# dotenv files
+# Local secrets and environment files
 .env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+.secrets/
+secrets.json
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Local databases and crash dumps
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+*.dmp
+*.dump
 
 # Codex attachment staging (copy approved assets into the repository explicitly)
 .codex-remote-attachments/
@@ -247,7 +267,6 @@ ClientBin/
 *.dbmdl
 *.dbproj.schemaview
 *.jfm
-*.pfx
 *.publishsettings
 orleans.codegen.cs
 

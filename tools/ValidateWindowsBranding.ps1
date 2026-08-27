@@ -18,7 +18,12 @@ $expectedOriginals = [ordered]@{
 }
 $expectedSizes = @(16, 24, 32, 48, 64, 128, 256)
 
-Add-Type -AssemblyName System.Drawing.Common
+try {
+    Add-Type -AssemblyName System.Drawing.Common
+}
+catch {
+    Add-Type -AssemblyName System.Drawing
+}
 
 function Assert-TransparentAndOpaquePixels {
     param(
@@ -138,12 +143,12 @@ $iconConsumers = @(
     },
     @{
         Path = "src/App.UI/App.axaml.cs"
-        Reference = "avares://MCPIndexSearch.App.UI/Assets/context-mole.ico"
+        Reference = "avares://ContextMole.App.UI/Assets/context-mole.ico"
         Description = "tray icon"
     },
     @{
         Path = "src/App.UI/Views/ConfirmWindow.cs"
-        Reference = "avares://MCPIndexSearch.App.UI/Assets/context-mole.ico"
+        Reference = "avares://ContextMole.App.UI/Assets/context-mole.ico"
         Description = "confirmation window"
     },
     @{

@@ -38,23 +38,43 @@
       </Border>
 
       <Border Classes="card">
-        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="24">
-          <StackPanel Spacing="8">
-            <StackPanel Orientation="Horizontal" Spacing="9">
-              <TextBlock Text="Codex integration" Classes="sectionTitle" />
-              <Border Classes="statusBadge" VerticalAlignment="Center">
-                <TextBlock Text="{Binding CodexConnectionStatusLabel}" Foreground="{DynamicResource AccentBrush}"
-                           FontSize="10" FontWeight="SemiBold" />
-              </Border>
-            </StackPanel>
-            <TextBlock Text="{Binding CodexConnectionMessage}" Classes="muted" TextWrapping="Wrap" />
-            <TextBlock Text="Connect once to make this local search service available to Codex."
-                       Classes="quiet" FontSize="12" TextWrapping="Wrap" />
-          </StackPanel>
-          <Button Grid.Column="1" Content="{Binding CodexConnectionAction}"
-                  IsEnabled="{Binding CanChangeCodexConnection}" Click="ToggleCodexConnection"
-                  VerticalAlignment="Center" />
-        </Grid>
+        <StackPanel Spacing="4">
+          <TextBlock Text="AI Connections" Classes="sectionTitle" />
+          <TextBlock Text="Make the same private, read-only Context Mole index available to your AI tools. Each client starts its own local MCP process; no index or embeddings are duplicated."
+                     Classes="muted" TextWrapping="Wrap" Margin="0,0,0,10" />
+
+          <ItemsControl ItemsSource="{Binding AiConnections}">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate x:DataType="vm:AiConnectionItemViewModel">
+                <Border Classes="settingsRow" Margin="0,4">
+                  <Grid ColumnDefinitions="*,Auto" ColumnSpacing="20">
+                    <StackPanel Spacing="5">
+                      <StackPanel Orientation="Horizontal" Spacing="9">
+                        <TextBlock Text="{Binding DisplayName}" Classes="cardTitle" />
+                        <Border Classes="statusBadge" VerticalAlignment="Center">
+                          <TextBlock Text="{Binding StatusLabel}" Foreground="{DynamicResource AccentBrush}"
+                                     FontSize="10" FontWeight="SemiBold" />
+                        </Border>
+                      </StackPanel>
+                      <TextBlock Text="{Binding Description}" Classes="quiet" FontSize="12" TextWrapping="Wrap" />
+                      <TextBlock Text="{Binding Message}" Classes="muted" TextWrapping="Wrap" />
+                    </StackPanel>
+                    <Button Grid.Column="1" Content="{Binding ActionLabel}"
+                            IsVisible="{Binding SupportsAutomaticSetup}"
+                            IsEnabled="{Binding CanChange}"
+                            CommandParameter="{Binding}"
+                            Click="ToggleAiConnection"
+                            VerticalAlignment="Center" />
+                    <Button Grid.Column="1" Content="Open setup guide"
+                            IsVisible="{Binding RequiresManualSetup}"
+                            Click="OpenManualSetupGuide"
+                            VerticalAlignment="Center" />
+                  </Grid>
+                </Border>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+        </StackPanel>
       </Border>
 
       <Border Classes="card">

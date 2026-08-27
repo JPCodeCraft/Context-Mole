@@ -3,18 +3,31 @@
     <OutputType>WinExe</OutputType>
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
-    <!-- Stable executable identity keeps existing Velopack installations upgradeable. -->
-    <AssemblyName>MCPIndexSearch.App.UI</AssemblyName>
+    <AssemblyName>ContextMole.App.UI</AssemblyName>
     <RootNamespace>ContextMole.App.UI</RootNamespace>
     <AssemblyTitle>Context Mole</AssemblyTitle>
-    <Description>Private local document search for Codex.</Description>
+    <Description>Private local document search for AI assistants.</Description>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets\context-mole.ico</ApplicationIcon>
+    <!-- Avalonia adds absolute AXAML paths after Roslyn applies PathMap. -->
+    <DebugType Condition="'$(Configuration)' == 'Release'">none</DebugType>
   </PropertyGroup>
 
   <ItemGroup>
     <Folder Include="Models\" />
     <AvaloniaResource Include="Assets\**" />
+    <Content Include="..\..\LICENSE"
+             Link="LICENSE"
+             CopyToOutputDirectory="PreserveNewest"
+             CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="..\..\THIRD-PARTY-NOTICES.md"
+             Link="THIRD-PARTY-NOTICES.md"
+             CopyToOutputDirectory="PreserveNewest"
+             CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="..\..\THIRD-PARTY-LICENSES\**\*"
+             Link="THIRD-PARTY-LICENSES\%(RecursiveDir)%(Filename)%(Extension)"
+             CopyToOutputDirectory="PreserveNewest"
+             CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>

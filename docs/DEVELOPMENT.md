@@ -13,8 +13,6 @@ This is the default validation for every change. The tools below are supplementa
 $env:CONTEXTMOLE_DATA_DIR = Join-Path $env:TEMP ("ContextMole-smoke-" + [guid]::NewGuid().ToString("N"))
 ```
 
-`MCPINDEXSEARCH_DATA_DIR` remains a supported alias for upgrade and automation compatibility, but new development scripts should use `CONTEXTMOLE_DATA_DIR`.
-
 Run the checks relevant to a change:
 
 ```powershell
@@ -44,9 +42,11 @@ dotnet run --file tools/DocumentInventorySmoke.cs
 # Verified root and attachment materialization
 dotnet run --file tools/MaterializationSmoke.cs
 
-# One-click Codex configuration ownership and backup behavior
+# OpenAI client adapter ownership, immutable staging, conflicts, and backups
 dotnet run --file tools/CodexConfigurationSmoke.cs
 ```
+
+The automated suite also covers the shared JSON connector used by Claude, Cursor, Zed, Copilot CLI, Gemini CLI, Google Antigravity, Kiro, JetBrains Junie, Devin CLI/Desktop, Windsurf Cascade, and Cline.
 
 The OCR runtime check downloads model assets into the isolated directory and verifies direct image OCR plus scanned-PDF fallback:
 
@@ -61,3 +61,9 @@ dotnet run --file tools/BootstrapAssets.cs -- --accept-gemma-terms
 ```
 
 Before publishing, follow the platform checklist in [NATIVE-SMOKE.md](NATIVE-SMOKE.md). Linux and macOS desktop/native-loader checks must be run on those operating systems.
+
+For a Windows publish, verify that legal notices are included and that no sensitive files or local user paths were packaged:
+
+```powershell
+./tools/ValidatePublicPayload.ps1 -PublishedDirectory artifacts/publish/win-x64
+```

@@ -21,7 +21,6 @@ public sealed partial class ContentMaterializationService(
 {
     public const long DefaultMaxBytes = 250L * 1024 * 1024;
     public const string MaxBytesEnvironmentVariable = "CONTEXTMOLE_MATERIALIZE_MAX_BYTES";
-    public const string LegacyMaxBytesEnvironmentVariable = "MCPINDEXSEARCH_MATERIALIZE_MAX_BYTES";
 
     private readonly ISearchStore _store = store;
     private readonly IAppPaths _paths = paths;
@@ -616,8 +615,6 @@ public sealed partial class ContentMaterializationService(
     private static long ReadConfiguredMaxBytes()
     {
         var configured = Environment.GetEnvironmentVariable(MaxBytesEnvironmentVariable);
-        if (string.IsNullOrWhiteSpace(configured))
-            configured = Environment.GetEnvironmentVariable(LegacyMaxBytesEnvironmentVariable);
         if (string.IsNullOrWhiteSpace(configured))
             return DefaultMaxBytes;
         if (!long.TryParse(configured, out var value) || value <= 0 || value > int.MaxValue)

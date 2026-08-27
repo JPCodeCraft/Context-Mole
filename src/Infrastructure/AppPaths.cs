@@ -5,13 +5,10 @@ namespace ContextMole.Infrastructure;
 public sealed class AppPaths : IAppPaths
 {
     public const string DataDirectoryEnvironmentVariable = "CONTEXTMOLE_DATA_DIR";
-    public const string LegacyDataDirectoryEnvironmentVariable = "MCPINDEXSEARCH_DATA_DIR";
 
     public AppPaths()
     {
         var overridePath = Environment.GetEnvironmentVariable(DataDirectoryEnvironmentVariable);
-        if (string.IsNullOrWhiteSpace(overridePath))
-            overridePath = Environment.GetEnvironmentVariable(LegacyDataDirectoryEnvironmentVariable);
         DataDirectory = Path.GetFullPath(string.IsNullOrWhiteSpace(overridePath) ? GetDefaultDataDirectory() : overridePath);
         DatabasePath = Path.Combine(DataDirectory, "index.db");
         AssetsDirectory = Path.Combine(DataDirectory, "assets");
@@ -33,9 +30,7 @@ public sealed class AppPaths : IAppPaths
 
     private static string GetDefaultDataDirectory()
     {
-        var current = GetPlatformDataDirectory("ContextMole");
-        var legacy = GetPlatformDataDirectory("MCPIndexSearch");
-        return !Directory.Exists(current) && Directory.Exists(legacy) ? legacy : current;
+        return GetPlatformDataDirectory("ContextMole");
     }
 
     private static string GetPlatformDataDirectory(string applicationDirectory)

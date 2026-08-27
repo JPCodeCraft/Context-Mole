@@ -80,8 +80,8 @@ jobs:
       - name: Validate published payload
         shell: pwsh
         run: |
-          $main = "artifacts/publish/win-x64/MCPIndexSearch.App.UI.exe"
-          $sidecar = "artifacts/publish/win-x64/mcp-server/MCPIndexSearch.Mcp.exe"
+          $main = "artifacts/publish/win-x64/ContextMole.App.UI.exe"
+          $sidecar = "artifacts/publish/win-x64/mcp-server/ContextMole.Mcp.exe"
           $icon = "src/App.UI/Assets/context-mole.ico"
           foreach ($required in @($main, $sidecar, $icon)) {
             if (-not (Test-Path -LiteralPath $required -PathType Leaf)) { throw "Missing required publish file: $required" }
@@ -89,6 +89,7 @@ jobs:
           if ((Get-Item $main).VersionInfo.ProductVersion -notlike "$env:VERSION*") { throw "The application version does not match the tag." }
           if ((Get-Item $sidecar).VersionInfo.ProductVersion -notlike "$env:VERSION*") { throw "The MCP sidecar version does not match the tag." }
           ./tools/ValidateWindowsBranding.ps1 -PublishedExecutable $main
+          ./tools/ValidatePublicPayload.ps1 -PublishedDirectory "artifacts/publish/win-x64"
 
       - name: Generate GitHub release notes
         shell: pwsh
@@ -109,8 +110,11 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           New-Item -ItemType Directory -Force -Path artifacts/velopack | Out-Null
-          $previousTag = gh api "repos/$env:GITHUB_REPOSITORY/releases?per_page=1" --jq '.[0].tag_name'
-          if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($previousTag)) {
+          $previousRelease = gh api "repos/$env:GITHUB_REPOSITORY/releases?per_page=1" | ConvertFrom-Json | Select-Object -First 1
+          $compatiblePackage = $previousRelease.assets | Where-Object {
+            $_.name -like 'JPCodeCraft.ContextMole-*-full.nupkg'
+          } | Select-Object -First 1
+          if ($LASTEXITCODE -eq 0 -and $null -ne $compatiblePackage) {
             dnx vpk download github `
               --repoUrl "https://github.com/$env:GITHUB_REPOSITORY" `
               --channel win-x64 `
@@ -119,18 +123,17 @@ jobs:
               --version 1.2.0 `
               --yes
           } else {
-            Write-Host "No previous public release exists; a full package will be created."
+            Write-Host "No previous Context Mole package exists; a clean full package will be created."
           }
 
       - name: Create the per-user Windows installer
         shell: pwsh
         run: |
-          # Keep the pre-rebrand package ID and executable name so existing installations can upgrade in place.
           dnx vpk pack `
-            --packId JPCodeCraft.MCPIndexSearch `
+            --packId JPCodeCraft.ContextMole `
             --packVersion "$env:VERSION" `
             --packDir artifacts/publish/win-x64 `
-            --mainExe MCPIndexSearch.App.UI.exe `
+            --mainExe ContextMole.App.UI.exe `
             --packTitle "Context Mole" `
             --packAuthors JPCodeCraft `
             --runtime win-x64 `
@@ -153,9 +156,10 @@ jobs:
           if (-not (Test-Path -LiteralPath $feed -PathType Leaf)) { throw "Velopack did not produce releases.win-x64.json." }
           $expanded = Join-Path $env:RUNNER_TEMP "contextmole-package"
           Expand-Archive -LiteralPath $fullPackage.FullName -DestinationPath $expanded -Force
-          if ($null -eq (Get-ChildItem $expanded -Recurse -File -Filter MCPIndexSearch.Mcp.exe | Select-Object -First 1)) {
+          if ($null -eq (Get-ChildItem $expanded -Recurse -File -Filter ContextMole.Mcp.exe | Select-Object -First 1)) {
             throw "The full package does not contain the MCP sidecar."
           }
+          ./tools/ValidatePublicPayload.ps1 -PublishedDirectory $expanded
           ./tools/ValidateWindowsBranding.ps1 -SetupExecutable $setup.FullName
 
       - name: Publish GitHub Release and update feed

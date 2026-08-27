@@ -19,5 +19,6 @@ Context Mole is built on the packages pinned in `Directory.Packages.props` and t
 - BitMiracle.LibTiff.NET / libtiff: BSD-style libtiff license.
 - Serilog and its sinks/extensions: Apache License 2.0.
 - Tokenizers.HuggingFace and its native tokenizer dependencies: licenses supplied with the locked packages.
+- SharpCompress and the bundled `tools/fixtures/sharpcompress-rar4.rar` regression fixture: MIT License, Copyright (c) 2014 Adam Hathcock. The full license is retained in `THIRD-PARTY-LICENSES/SharpCompress.txt`.
 
 This notice is a distribution aid, not a substitute for the complete license texts contained in NuGet packages and downloaded upstream assets.

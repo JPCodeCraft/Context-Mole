@@ -66,7 +66,7 @@ public partial class App : Application
             menu.Add(quit);
             _trayIcon = new TrayIcon
             {
-                Icon = new WindowIcon(AssetLoader.Open(new Uri("avares://MCPIndexSearch.App.UI/Assets/context-mole.ico"))),
+                Icon = new WindowIcon(AssetLoader.Open(new Uri("avares://ContextMole.App.UI/Assets/context-mole.ico"))),
                 ToolTipText = "Context Mole",
                 Menu = menu,
                 IsVisible = true

@@ -12,7 +12,6 @@ internal sealed class WindowsStartupService
 {
     private const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
     private const string ValueName = "Context Mole";
-    private const string LegacyValueName = "MCPIndexSearch";
     private const string EnabledPreference = "enabled";
     private const string DisabledPreference = "disabled";
     private readonly ILogger<WindowsStartupService> _logger;
@@ -88,8 +87,7 @@ internal sealed class WindowsStartupService
     private static bool ReadRegistryEnabled()
     {
         using var key = Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: false);
-        return key?.GetValue(ValueName) is string value && !string.IsNullOrWhiteSpace(value) ||
-               key?.GetValue(LegacyValueName) is string legacy && !string.IsNullOrWhiteSpace(legacy);
+        return key?.GetValue(ValueName) is string value && !string.IsNullOrWhiteSpace(value);
     }
 
     [SupportedOSPlatform("windows")]
@@ -100,7 +98,6 @@ internal sealed class WindowsStartupService
         if (!enabled)
         {
             key.DeleteValue(ValueName, throwOnMissingValue: false);
-            key.DeleteValue(LegacyValueName, throwOnMissingValue: false);
             return;
         }
 
@@ -108,7 +105,6 @@ internal sealed class WindowsStartupService
         if (string.IsNullOrWhiteSpace(executable))
             throw new InvalidOperationException("The application executable path is unavailable.");
         key.SetValue(ValueName, $"\"{executable}\"", RegistryValueKind.String);
-        key.DeleteValue(LegacyValueName, throwOnMissingValue: false);
     }
 
     private bool? ReadPreference()

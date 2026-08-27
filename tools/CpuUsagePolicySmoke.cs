@@ -50,29 +50,18 @@ if (compactModel.SourceDimensions != 384 || compactModel.Dimensions != 384 || co
 var dynamicSettings = new FixedCpuSettings(CpuUsageProfile.Light, 10);
 using var budget = new GlobalCpuBudget(dynamicSettings);
 var fullModel = GraniteEmbeddingModels.Get(EmbeddingModelChoice.Granite311M);
-var legacyModelDirectory = Path.Combine(paths.AssetsDirectory, "granite", fullModel.Revision);
-Directory.CreateDirectory(legacyModelDirectory);
-File.WriteAllText(Path.Combine(legacyModelDirectory, "tokenizer.json"), string.Empty);
-File.WriteAllText(Path.Combine(legacyModelDirectory, "model.onnx"), string.Empty);
-File.WriteAllText(Path.Combine(legacyModelDirectory, "model_quint8_avx2.onnx"), string.Empty);
-File.WriteAllText(Path.Combine(legacyModelDirectory, "validation.json"), "{}");
-File.WriteAllText(Path.Combine(paths.AssetsDirectory, "gemma-terms-acceptance.json"), $$"""
-    {
-      "terms": "{{GraniteModelInstaller.GemmaTermsUrl}}",
-      "model_id": "{{fullModel.ModelId}}",
-      "granite_revision": "{{fullModel.Revision}}",
-      "files": [
-        { "name": "tokenizer.json", "sha256": "{{fullModel.TokenizerSha}}" },
-        { "name": "model.onnx", "sha256": "{{fullModel.Fp32Sha}}" },
-        { "name": "model_quint8_avx2.onnx", "sha256": "{{fullModel.QuantizedSha}}" }
-      ]
-    }
-    """);
-using var legacyInstaller = new GraniteModelInstaller(paths, embeddingSettings, budget);
-if (!legacyInstaller.IsModelInstalled(EmbeddingModelChoice.Granite311M))
-    throw new InvalidOperationException("A verified legacy 311M installation was not preserved during upgrade.");
-legacyInstaller.MarkModelForRepair(EmbeddingModelChoice.Granite311M, "smoke test");
-if (legacyInstaller.IsModelInstalled(EmbeddingModelChoice.Granite311M))
+var modelDirectory = Path.Combine(paths.AssetsDirectory, "granite", fullModel.Revision);
+Directory.CreateDirectory(modelDirectory);
+File.WriteAllText(Path.Combine(modelDirectory, "tokenizer.json"), string.Empty);
+File.WriteAllText(Path.Combine(modelDirectory, "model.onnx"), string.Empty);
+File.WriteAllText(Path.Combine(modelDirectory, "model_quint8_avx2.onnx"), string.Empty);
+File.WriteAllText(Path.Combine(modelDirectory, "validation.json"), "{}");
+File.WriteAllText(Path.Combine(modelDirectory, "installation-complete"), string.Empty);
+using var installer = new GraniteModelInstaller(paths, embeddingSettings, budget);
+if (!installer.IsModelInstalled(EmbeddingModelChoice.Granite311M))
+    throw new InvalidOperationException("A completed 311M installation was not detected.");
+installer.MarkModelForRepair(EmbeddingModelChoice.Granite311M, "smoke test");
+if (installer.IsModelInstalled(EmbeddingModelChoice.Granite311M))
     throw new InvalidOperationException("A model marked for repair was still treated as installed.");
 using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
 

@@ -1,3 +1,5 @@
+using System.Diagnostics;
+
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
@@ -12,6 +14,7 @@ namespace ContextMole.App.UI.Views;
 
 public partial class SettingsView : UserControl
 {
+    private const string ManualSetupUrl = "https://github.com/JPCodeCraft/Context-Mole#manual-mcp-setup";
     private bool _changingEmbeddingModel;
 
     public SettingsView()
@@ -22,12 +25,13 @@ public partial class SettingsView : UserControl
     private MainViewModel ViewModel => (MainViewModel)DataContext!;
     private Window Owner => (Window)TopLevel.GetTopLevel(this)!;
 
-    private async void ToggleCodexConnection(object? sender, RoutedEventArgs args)
+    private async void ToggleAiConnection(object? sender, RoutedEventArgs args)
     {
+        if (sender is not Button { CommandParameter: AiConnectionItemViewModel connection }) return;
         try
         {
-            var result = await ViewModel.ToggleCodexConnectionAsync();
-            if (result.State is CodexMcpConnectionState.Conflict or CodexMcpConnectionState.ServerUnavailable)
+            var result = await ViewModel.ToggleAiConnectionAsync(connection);
+            if (result.State is AiConnectionState.Conflict or AiConnectionState.ServerUnavailable)
             {
                 await ConfirmWindow.ShowErrorAsync(Owner, result.Message);
                 return;
@@ -35,15 +39,27 @@ public partial class SettingsView : UserControl
 
             if (result.RestartRequired)
             {
-                var title = result.State == CodexMcpConnectionState.Connected
-                    ? "Connected to Codex"
-                    : "Disconnected from Codex";
+                var title = result.State == AiConnectionState.Connected
+                    ? $"Configured for {result.Client.DisplayName}"
+                    : $"Removed from {result.Client.DisplayName}";
                 await ConfirmWindow.ShowMessageAsync(Owner, title, result.Message);
             }
         }
         catch (Exception exception)
         {
             await ConfirmWindow.ShowErrorAsync(Owner, exception.Message);
+        }
+    }
+
+    private async void OpenManualSetupGuide(object? sender, RoutedEventArgs args)
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo(ManualSetupUrl) { UseShellExecute = true });
+        }
+        catch (Exception exception)
+        {
+            await ConfirmWindow.ShowErrorAsync(Owner, $"Could not open the setup guide: {exception.Message}");
         }
     }
 

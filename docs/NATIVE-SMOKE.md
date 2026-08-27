@@ -2,12 +2,13 @@
 
 ## Every RID publish output
 
-1. Publish the UI with `Release`, self-contained, folder-based, non-trimmed, and non-AOT settings. Confirm its `mcp-server` subfolder contains the separate self-contained MCP executable. An independent MCP-only publish must also remain possible. The legacy executable names `MCPIndexSearch.App.UI` and `MCPIndexSearch.Mcp` are intentional upgrade identifiers.
-2. Verify the UI output and bundled MCP output contain the target RID's SQLite, tokenizer, Skia/HarfBuzz, PDFium, and ONNX Runtime native libraries, except for the documented `osx-x64` ONNX degradation below. Confirm no legacy OCR executable/data, Paddle runtime, or Python files are present.
-3. On `win-x64`, `linux-x64`, and `osx-arm64`, set `CONTEXTMOLE_DATA_DIR` to a new private smoke directory. Start the UI, confirm the PP-OCRv6 medium detector and recognizer download automatically with visible progress, interrupt and resume the download, and verify checksum-gated activation followed by offline OCR. Exercise both Granite 311M and 97M from Settings, including 311M terms review/rejection/acceptance, cancellation/resume, checksums, switching in both directions, persisted selection, and automatic re-embedding. Verify `MCPINDEXSEARCH_DATA_DIR` still works as an alias. Skip this ONNX-dependent step on `osx-x64` and verify its documented degradation instead.
-4. Start the UI, create a project over disposable fixtures, and verify create/modify/rename/delete plus pause/resume/reindex/edit/remove.
-5. Confirm source hashes and modification timestamps remain unchanged.
-6. Use **Connect to Codex**, inspect that only the marked block was added to `~/.codex/config.toml` and that a backup was made, restart Codex, and invoke all eight tools. Confirm stdout contains protocol frames only and the database's logical contents are unchanged. Then disconnect and verify unrelated Codex configuration remains byte-for-byte present.
+1. Publish the UI with `Release`, self-contained, folder-based, non-trimmed, and non-AOT settings. Confirm its `mcp-server` subfolder contains the separate self-contained `ContextMole.Mcp` executable. An independent MCP-only publish must also remain possible.
+2. Verify the UI output and bundled MCP output contain the target RID's SQLite, tokenizer, Skia/HarfBuzz, PDFium, and ONNX Runtime native libraries, except for the documented `osx-x64` ONNX degradation below. Confirm no obsolete OCR executable/data, Paddle runtime, or Python files are present.
+3. Verify both outputs contain `THIRD-PARTY-NOTICES.md` and `THIRD-PARTY-LICENSES`, and confirm production symbols contain only mapped source paths rather than local user directories.
+4. On `win-x64`, `linux-x64`, and `osx-arm64`, set `CONTEXTMOLE_DATA_DIR` to a new private smoke directory. Start the UI, confirm the PP-OCRv6 medium detector and recognizer download automatically with visible progress, interrupt and resume the download, and verify checksum-gated activation followed by offline OCR. Exercise both Granite 311M and 97M from Settings, including 311M terms review/rejection/acceptance, cancellation/resume, checksums, switching in both directions, persisted selection, and automatic re-embedding. Skip this ONNX-dependent step on `osx-x64` and verify its documented degradation instead.
+5. Start the UI, create a project over disposable fixtures, and verify create/modify/rename/delete plus pause/resume/reindex/edit/remove.
+6. Confirm source hashes and modification timestamps remain unchanged.
+7. Exercise every row under **AI Connections**. For automatic clients, verify only the owned `context-mole` entry changes, unrelated settings survive, an existing file receives a backup before changes, and removal deletes only that entry. For VS Code, Roo Code, and OpenCode, follow the manual instructions. Reload each available client, approve the local server, invoke all MCP tools, and confirm the database's logical contents are unchanged. Inspect the OpenAI TOML block separately because it uses a different configuration format.
 
 ## Windows x64
 
@@ -16,7 +17,6 @@
 - Exercise a OneDrive placeholder that is not resident and verify it is retained/retried without hydration.
 - Force-close during indexing, restart, and verify expired jobs/staging work recover.
 - Verify the tray close/show flow and explicit Quit drain.
-- With no `ContextMole` data directory present, place an existing test database and settings under `%LOCALAPPDATA%\MCPIndexSearch` and verify Context Mole discovers them without moving or resetting data.
 
 ## Linux x64 glibc
 
@@ -25,7 +25,6 @@
 - Verify PDFium, Skia, ONNX Runtime, SQLite, and tokenizer libraries load without `LD_LIBRARY_PATH` changes.
 - Check tray integration. When AppIndicator is unavailable, verify close minimizes to the taskbar and indexing continues.
 - Verify `$XDG_DATA_HOME` and `~/.local/share` resolution and user-only data-directory permissions.
-- With no `ContextMole` data directory present, verify an existing `MCPIndexSearch` directory is discovered without moving or resetting data.
 
 ## macOS arm64
 
@@ -33,7 +32,6 @@
 - Verify executable permission on the UI, MCP, and dylibs.
 - Verify PDFium, Skia, ONNX Runtime, SQLite, and tokenizer dylibs load under the app's folder layout.
 - Verify `~/Library/Application Support/ContextMole` resolution, folder picker access, window hide/show, and explicit Quit.
-- With no `ContextMole` data directory present, verify `~/Library/Application Support/MCPIndexSearch` is discovered without moving or resetting data.
 - If packaging later adds an app bundle, repeat after signing/notarization; those release steps are outside this build.
 
 ## macOS x64

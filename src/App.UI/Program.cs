@@ -43,7 +43,8 @@ internal static class Program
             builder.Services.AddSerilog(dispose: true);
             builder.Services.AddSingleton<IAppPaths>(paths);
             builder.Services.AddContextMoleInfrastructure(includeOcr: true);
-            builder.Services.AddSingleton<CodexMcpConfigurationService>();
+            builder.Services.AddSingleton<McpServerDeploymentService>();
+            builder.Services.AddSingleton<AiConnectionsService>();
             builder.Services.AddContextMoleDocuments();
             builder.Services.AddWritableContextMoleStorage();
             builder.Services.AddContextMoleIndexing();

@@ -15,7 +15,7 @@ public sealed class ConfirmWindow : Window
         CanResize = false;
         SizeToContent = SizeToContent.Height;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
-        Icon = new WindowIcon("avares://MCPIndexSearch.App.UI/Assets/context-mole.ico");
+        Icon = new WindowIcon("avares://ContextMole.App.UI/Assets/context-mole.ico");
 
         var accept = new Button
         {

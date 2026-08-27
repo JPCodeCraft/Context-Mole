@@ -116,7 +116,7 @@ public sealed class GraniteEmbeddingGenerator : IEmbeddingGenerator
                 installationFingerprint);
             return;
         }
-        if (!GraniteModelInstallation.IsComplete(_paths, model, useQuantized) ||
+        if (!GraniteModelInstallation.IsComplete(_paths, model) ||
             (useQuantized && !File.Exists(Path.Combine(modelDirectory, "validation.json"))))
         {
             ReplaceResources(null, null, "Semantic-search model installation has not finished validation.",

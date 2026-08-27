@@ -7,9 +7,11 @@
     <InvariantGlobalization>false</InvariantGlobalization>
     <Deterministic>true</Deterministic>
     <DebugType>embedded</DebugType>
+    <PathMap Condition="'$(Configuration)' == 'Release'">$(MSBuildThisFileDirectory)=/_/</PathMap>
     <Product>Context Mole</Product>
     <Company>JPCodeCraft</Company>
     <Authors>JPCodeCraft</Authors>
+    <Copyright>Copyright (c) 2026 JPCodeCraft</Copyright>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
     <RuntimeIdentifiers>win-x64;linux-x64;osx-x64;osx-arm64</RuntimeIdentifiers>
     <NoWarn>$(NoWarn);NU1510</NoWarn>

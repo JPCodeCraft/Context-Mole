@@ -75,7 +75,7 @@ public sealed class GraniteModelInstaller : IDisposable
             !File.Exists(Path.Combine(directory, "quantization-disabled"));
         var modelPath = Path.Combine(directory, useQuantized ? "model_quint8_avx2.onnx" : "model.onnx");
         return File.Exists(Path.Combine(directory, "tokenizer.json")) && File.Exists(modelPath) &&
-               GraniteModelInstallation.IsComplete(_paths, model, useQuantized) &&
+                GraniteModelInstallation.IsComplete(_paths, model) &&
                (!useQuantized || File.Exists(Path.Combine(directory, "validation.json")));
     }
 
