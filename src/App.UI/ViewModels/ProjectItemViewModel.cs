@@ -1,7 +1,8 @@
 using System.Collections.ObjectModel;
-using MCPIndexSearch.Core;
 
-namespace MCPIndexSearch.App.UI.ViewModels;
+using ContextMole.Core;
+
+namespace ContextMole.App.UI.ViewModels;
 
 public sealed class ProjectItemViewModel : ViewModelBase
 {

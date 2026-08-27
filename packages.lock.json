@@ -42,13 +42,13 @@
         "resolved": "9.0.0",
         "contentHash": "hyJB4UlpAi19Xr9AXzu2NuagKC4lPfHObNMEAA0HmqFz2rX7wKgzeYzO/jM/eBHDhnUGFFEjk5cOoJaxqg5J4A=="
       },
-      "mcpindexsearch.core": {
+      "contextmole.core": {
         "type": "Project"
       },
-      "mcpindexsearch.infrastructure": {
+      "contextmole.infrastructure": {
         "type": "Project",
         "dependencies": {
-          "MCPIndexSearch.Core": "[1.0.0, )",
+          "ContextMole.Core": "[1.0.0, )",
           "Microsoft.Extensions.DependencyInjection.Abstractions": "[10.0.11, )",
           "Microsoft.ML.OnnxRuntime": "[1.29.0, )",
           "SkiaSharp": "[4.150.1, )",

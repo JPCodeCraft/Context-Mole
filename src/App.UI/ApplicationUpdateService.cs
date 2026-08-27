@@ -3,7 +3,7 @@ using Microsoft.Extensions.Logging;
 using Velopack;
 using Velopack.Sources;
 
-namespace MCPIndexSearch.App.UI;
+namespace ContextMole.App.UI;
 
 internal enum ApplicationUpdateState
 {
@@ -34,7 +34,7 @@ internal sealed record ApplicationUpdateSnapshot(
 
 internal sealed class ApplicationUpdateService : IDisposable
 {
-    private const string RepositoryUrl = "https://github.com/JPCodeCraft/MCPIndexSearch";
+    private const string RepositoryUrl = "https://github.com/JPCodeCraft/Context-Mole";
     private static readonly TimeSpan CheckInterval = TimeSpan.FromHours(6);
 
     private readonly ILogger<ApplicationUpdateService> _logger;
@@ -190,7 +190,7 @@ internal sealed class ApplicationUpdateService : IDisposable
                     GetCurrentVersion(),
                     null,
                     0,
-                    "MCPIndexSearch is up to date."));
+                    "Context Mole is up to date."));
                 return;
             }
 

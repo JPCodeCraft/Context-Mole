@@ -1,13 +1,13 @@
 using Microsoft.Extensions.DependencyInjection;
 
-namespace MCPIndexSearch.Documents;
+namespace ContextMole.Documents;
 
 public static class DocumentsServices
 {
-    public static IServiceCollection AddMcpIndexDocuments(this IServiceCollection services)
+    public static IServiceCollection AddContextMoleDocuments(this IServiceCollection services)
     {
-        services.AddSingleton<MCPIndexSearch.Core.IDocumentExtractor, DocumentExtractionRegistry>();
-        services.AddSingleton<MCPIndexSearch.Core.IContentMaterializer, ContentMaterializationService>();
+        services.AddSingleton<ContextMole.Core.IDocumentExtractor, DocumentExtractionRegistry>();
+        services.AddSingleton<ContextMole.Core.IContentMaterializer, ContentMaterializationService>();
         return services;
     }
 }

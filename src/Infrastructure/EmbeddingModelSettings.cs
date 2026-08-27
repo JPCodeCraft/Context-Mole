@@ -1,7 +1,8 @@
 using System.Text;
-using MCPIndexSearch.Core;
 
-namespace MCPIndexSearch.Infrastructure;
+using ContextMole.Core;
+
+namespace ContextMole.Infrastructure;
 
 public sealed class EmbeddingModelSettings : IEmbeddingModelSettings
 {
@@ -87,7 +88,7 @@ public sealed class EmbeddingModelSettings : IEmbeddingModelSettings
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            throw new McpIndexException("settings_write_failed",
+            throw new ContextMoleException("settings_write_failed",
                 $"The embedding model selection could not be saved: {exception.Message}");
         }
         finally

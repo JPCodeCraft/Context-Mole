@@ -1,6 +1,6 @@
 using System.Collections.Concurrent;
 
-namespace MCPIndexSearch.Indexing;
+namespace ContextMole.Indexing;
 
 public sealed class EmbeddingPolicyRefreshTracker
 {

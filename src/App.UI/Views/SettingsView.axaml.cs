@@ -2,13 +2,13 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
 
-using MCPIndexSearch.App.UI.ViewModels;
-using MCPIndexSearch.Core;
-using MCPIndexSearch.Infrastructure;
+using ContextMole.App.UI.ViewModels;
+using ContextMole.Core;
+using ContextMole.Infrastructure;
 
 using Microsoft.Extensions.DependencyInjection;
 
-namespace MCPIndexSearch.App.UI.Views;
+namespace ContextMole.App.UI.Views;
 
 public partial class SettingsView : UserControl
 {

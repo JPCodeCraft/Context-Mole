@@ -2,11 +2,11 @@ using System.IO.Compression;
 using System.Runtime.CompilerServices;
 using System.Text;
 
-using MCPIndexSearch.Core;
-using MCPIndexSearch.Documents;
-using MCPIndexSearch.Search;
+using ContextMole.Core;
+using ContextMole.Documents;
+using ContextMole.Search;
 
-namespace MCPIndexSearch.Tests;
+namespace ContextMole.Tests;
 
 public sealed class DocumentExtractionTests
 {
@@ -439,7 +439,7 @@ file sealed class TemporaryDirectory : IDisposable
 {
     public TemporaryDirectory()
     {
-        Root = Path.Combine(Path.GetTempPath(), "MCPIndexSearch.Tests", Guid.NewGuid().ToString("N"));
+        Root = Path.Combine(Path.GetTempPath(), "ContextMole.Tests", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(Root);
     }
 

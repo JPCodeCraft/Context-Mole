@@ -1,6 +1,6 @@
 using System.Collections.ObjectModel;
 
-namespace MCPIndexSearch.Core;
+namespace ContextMole.Core;
 
 public enum ProjectState
 {
@@ -497,7 +497,7 @@ public sealed record KeywordSearchPage(long SearchGeneration, IReadOnlyList<Sear
 
 public sealed record VectorMatch(Guid PassageId, double Score, int Rank);
 
-public sealed class McpIndexException(string code, string message, bool retryable = false) : Exception(message)
+public sealed class ContextMoleException(string code, string message, bool retryable = false) : Exception(message)
 {
     public string Code { get; } = code;
     public bool Retryable { get; } = retryable;

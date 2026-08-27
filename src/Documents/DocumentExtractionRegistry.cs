@@ -2,23 +2,33 @@ using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
+
 using AngleSharp.Dom;
 using AngleSharp.Html.Parser;
+
 using BitMiracle.LibTiff.Classic;
+
+using ContextMole.Core;
+
 using DocumentFormat.OpenXml;
 using DocumentFormat.OpenXml.Packaging;
+
 using Markdig;
-using MCPIndexSearch.Core;
+
 using MimeKit;
+
 using MsgReader.Outlook;
+
 using PDFtoImage;
 using PDFtoImage.Exceptions;
+
 using SkiaSharp;
+
 using UglyToad.PdfPig;
 using UglyToad.PdfPig.Core;
 using UglyToad.PdfPig.Exceptions;
 
-namespace MCPIndexSearch.Documents;
+namespace ContextMole.Documents;
 
 public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : IDocumentExtractor
 {
@@ -255,11 +265,11 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
                     throw new InvalidDataException($"Unable to decode TIFF frame {frame}.");
                 using var bitmap = new SKBitmap(width, height, SKColorType.Rgba8888, SKAlphaType.Unpremul);
                 for (var y = 0; y < height; y++)
-                for (var x = 0; x < width; x++)
-                {
-                    var rgba = unchecked((uint)raster[(y * width) + x]);
-                    bitmap.SetPixel(x, y, new SKColor((byte)rgba, (byte)(rgba >> 8), (byte)(rgba >> 16), (byte)(rgba >> 24)));
-                }
+                    for (var x = 0; x < width; x++)
+                    {
+                        var rgba = unchecked((uint)raster[(y * width) + x]);
+                        bitmap.SetPixel(x, y, new SKColor((byte)rgba, (byte)(rgba >> 8), (byte)(rgba >> 16), (byte)(rgba >> 24)));
+                    }
                 using var image = SKImage.FromBitmap(bitmap);
                 using var encoded = image.Encode(SKEncodedImageFormat.Png, 100);
                 var frameOcr = await _ocrEngine.RecognizeAsync(new OcrRequest(encoded.ToArray(), ".png", TimeSpan.FromSeconds(120)), cancellationToken);
@@ -443,7 +453,7 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
 
     private static string ErrorCode(Exception ex) => ex switch
     {
-        McpIndexException mcp => mcp.Code,
+        ContextMoleException mcp => mcp.Code,
         UnauthorizedAccessException => "access_denied",
         IOException => "io_error",
         PdfDocumentFormatException or PdfInvalidFormatException or PdfCannotOpenFileException => "malformed_document",
@@ -453,7 +463,7 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
         _ => "extraction_failed"
     };
 
-    private static bool IsTemporary(Exception ex) => ex is McpIndexException mcp ? mcp.Retryable : ex is IOException;
+    private static bool IsTemporary(Exception ex) => ex is ContextMoleException mcp ? mcp.Retryable : ex is IOException;
     private static string SafeMessage(Exception ex) => string.IsNullOrWhiteSpace(ex.Message) ? ex.GetType().Name : ex.Message;
 
     private sealed class ExpansionContext(ExtractionRequest request)

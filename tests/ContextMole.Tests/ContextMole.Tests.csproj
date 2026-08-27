@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <IsTestProject>true</IsTestProject>
+    <IsPackable>false</IsPackable>
+    <UseMicrosoftTestingPlatformRunner>true</UseMicrosoftTestingPlatformRunner>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="xunit.v3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Core\ContextMole.Core.csproj" />
+    <ProjectReference Include="..\..\src\Documents\ContextMole.Documents.csproj" />
+    <ProjectReference Include="..\..\src\Indexing\ContextMole.Indexing.csproj" />
+    <ProjectReference Include="..\..\src\Infrastructure\ContextMole.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\src\Mcp\ContextMole.Mcp.csproj" />
+    <ProjectReference Include="..\..\src\Search\ContextMole.Search.csproj" />
+    <ProjectReference Include="..\..\src\Storage\ContextMole.Storage.csproj" />
+  </ItemGroup>
+
+</Project>

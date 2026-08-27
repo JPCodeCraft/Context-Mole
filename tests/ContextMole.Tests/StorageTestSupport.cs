@@ -1,11 +1,11 @@
 using System.Security.Cryptography;
 
-using MCPIndexSearch.Core;
-using MCPIndexSearch.Storage;
+using ContextMole.Core;
+using ContextMole.Storage;
 
 using Microsoft.Data.Sqlite;
 
-namespace MCPIndexSearch.Tests;
+namespace ContextMole.Tests;
 
 [CollectionDefinition(nameof(SqliteIntegrationCollection), DisableParallelization = true)]
 public sealed class SqliteIntegrationCollection
@@ -146,7 +146,7 @@ internal sealed class StorageTestPaths : IAppPaths, IDisposable
 
     public StorageTestPaths()
     {
-        var testRoot = Path.Combine(Path.GetTempPath(), "MCPIndexSearch-tests");
+        var testRoot = Path.Combine(Path.GetTempPath(), "ContextMole-tests");
         _ownedRoot = Path.Combine(testRoot, Guid.NewGuid().ToString("N"));
         DataDirectory = Path.Combine(_ownedRoot, "data");
         DatabasePath = Path.Combine(DataDirectory, "index.db");
@@ -167,7 +167,7 @@ internal sealed class StorageTestPaths : IAppPaths, IDisposable
 
     public void Dispose()
     {
-        var testRoot = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "MCPIndexSearch-tests"));
+        var testRoot = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "ContextMole-tests"));
         var owned = Path.GetFullPath(_ownedRoot);
         var relative = Path.GetRelativePath(testRoot, owned);
         if (Path.IsPathRooted(relative) || relative == ".." ||

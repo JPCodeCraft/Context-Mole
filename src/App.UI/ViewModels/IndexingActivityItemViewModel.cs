@@ -1,6 +1,6 @@
-using MCPIndexSearch.Indexing;
+using ContextMole.Indexing;
 
-namespace MCPIndexSearch.App.UI.ViewModels;
+namespace ContextMole.App.UI.ViewModels;
 
 public sealed class IndexingActivityItemViewModel : ViewModelBase
 {

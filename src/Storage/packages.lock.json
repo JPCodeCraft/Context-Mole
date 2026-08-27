@@ -114,7 +114,7 @@
           "SQLitePCLRaw.core": "2.1.12"
         }
       },
-      "mcpindexsearch.core": {
+      "contextmole.core": {
         "type": "Project"
       }
     },

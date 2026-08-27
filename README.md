@@ -1,28 +1,28 @@
-# MCPIndexSearch
+# Context Mole
 
-MCPIndexSearch is a local document index for Codex. The desktop app watches folders and builds a searchable SQLite index; a separate read-only MCP server lets Codex search it and retrieve passages with exact file, attachment, page, sheet, slide, or message provenance.
+Context Mole is a private, local document index for Codex. The desktop app watches folders and builds a searchable SQLite index; its read-only MCP server lets Codex find passages with exact file, attachment, page, sheet, slide, or message provenance.
 
-Source documents are opened read-only. The app does not edit or launch them, and indexing, OCR, embeddings, and search run locally after the model files have been downloaded.
+Documents are opened read-only. Indexing, OCR, embeddings, and search run locally after the required model files have been downloaded.
 
 ## Install and use
 
-Windows 10+ x64 users can download the latest per-user installer from [GitHub Releases](https://github.com/JPCodeCraft/MCPIndexSearch/releases/latest). Windows releases are currently unsigned, so SmartScreen may show an unrecognized-app warning.
+Windows 10+ x64 users can download the latest per-user installer from [GitHub Releases](https://github.com/JPCodeCraft/Context-Mole/releases/latest). Releases are currently unsigned, so Windows SmartScreen may show an unrecognized-app warning.
 
-1. Install and open MCPIndexSearch.
+1. Install and open Context Mole.
 2. Add a project and select one or more non-overlapping folders.
-3. Choose a global CPU profile: **Light** (20% of logical threads), **Normal** (40%), or **Heavy** (80%).
-4. In **Settings**, choose the Granite 311M model for best quality or Granite 97M for faster, lower-memory embeddings.
-5. Select **Connect to Codex**, restart Codex, and use the local MCP tools.
+3. In **Settings**, choose a global CPU profile and a Granite embedding model.
+4. Select **Connect to Codex** and restart Codex.
+5. Ask Codex to search the indexed projects.
 
-The CPU and embedding-model choices persist globally across projects. Parallel file jobs use one thread each; OCR and Granite temporarily use the full selected CPU budget so one document can use the available capacity. The desktop app and separate MCP process refresh the same model selection, so search stays consistent after a switch.
+The CPU and embedding-model choices apply globally across projects. **Light**, **Normal**, and **Heavy** use up to 20%, 40%, and 80% of logical CPU threads. Granite 311M favors quality; Granite 97M uses less time and memory. Switching models re-embeds active projects in the background while keyword search remains available.
 
-On Windows, start-at-sign-in is enabled on first launch. Clear **Start MCPIndexSearch with Windows** to disable it persistently. Installed builds check GitHub Releases for updates at startup and every six hours, download in the background, and offer **Restart to update** when indexing is idle. Application updates preserve the database, settings, logs, and downloaded models.
+On Windows, start-at-sign-in is enabled on first launch and can be disabled in Settings. Installed builds check GitHub Releases for updates and offer to restart when an update is ready and indexing is idle.
 
-## Search, OCR, and models
+## Supported content
 
-Keyword search works with SQLite FTS5. On first use, the app downloads the PP-OCRv6 detector and multilingual recognizer (about 139 MB) for scanned PDFs and images.
+Context Mole supports PDF, DOCX, XLSX, PPTX, TXT, Markdown, HTML/HTM, MHT/MHTML, PNG, JPEG, BMP, GIF, WebP, TIFF, EML, MSG, ZIP, and RAR, including supported nested attachments and archive entries.
 
-Semantic search is optional. Settings offers IBM Granite Embedding Multilingual R2 in two sizes: **311M** for best quality and **97M** for faster inference with lower memory use. Each model is pinned to an exact revision, checksum-verified, and resumable. Switching models automatically re-embeds active projects in the background; paused projects refresh when resumed. The 311M setup presents its tokenizer terms before download. Keyword search remains available whenever the selected model is not ready.
+Keyword search uses SQLite FTS5. Optional semantic search uses IBM Granite Embedding Multilingual R2. PP-OCRv6 handles scanned PDFs and images. Malformed, encrypted, unavailable, oversized, or unsupported items are isolated as document errors instead of stopping a project.
 
 | Platform | Native extraction | OCR | Granite |
 | --- | --- | --- | --- |
@@ -31,68 +31,48 @@ Semantic search is optional. Settings offers IBM Granite Embedding Multilingual 
 | macOS arm64 | Yes | Yes | Yes |
 | macOS x64 | Yes | No | No |
 
-ONNX Runtime 1.29 does not publish an Intel macOS native library, so macOS x64 uses native text extraction and keyword search only.
+ONNX Runtime 1.29 does not provide an Intel macOS native library, so macOS x64 uses native text extraction and keyword search only.
 
 ## Codex connection
 
-**Connect to Codex** updates the shared Codex configuration with a marked `mcp-index-search` block, preserves unrelated settings, and creates a timestamped backup. A pre-existing entry not owned by the app is never overwritten. The server uses stdio only and creates no network listener.
+**Connect to Codex** safely updates the shared Codex configuration, preserves unrelated settings, and creates a timestamped backup. A pre-existing entry not owned by the app is never overwritten. The MCP server uses stdio only and creates no network listener.
 
-Available read-only tools:
+The read-only tools list projects and documents, search passages, inspect provenance and errors, browse attachments, resolve verified source files, and materialize indexed content into controlled temporary storage.
 
-- `list_projects`
-- `search_project`
-- `read_passages`
-- `get_document_info`
-- `list_documents`
-- `list_attachments`
-- `resolve_local_file`
-- `materialize_content`
+## Data and upgrade compatibility
 
-`materialize_content` validates the active index revision and project folder before returning a root file or extracting one indexed attachment into controlled temporary storage.
+New installations store application data in:
 
-## Supported content
+- Windows: `%LOCALAPPDATA%\ContextMole`
+- macOS: `~/Library/Application Support/ContextMole`
+- Linux: `$XDG_DATA_HOME/ContextMole` or `~/.local/share/ContextMole`
 
-PDF, DOCX, XLSX, PPTX, TXT, Markdown, HTML/HTM, MHT/MHTML web archives, PNG, JPEG, BMP, GIF, WebP, TIFF, EML, MSG, ZIP, and RAR are supported, including recursively supported attachments and archive entries. Malformed, encrypted, unavailable, or oversized items are isolated as document errors instead of stopping the whole project. Unsupported embedded items remain visible in the attachment tree without failing their parent; unsupported root documents are reported as errors.
+Existing installations automatically continue using an existing `MCPIndexSearch` data directory when no `ContextMole` directory exists, preserving the database, settings, logs, and downloaded models. Set `CONTEXTMOLE_DATA_DIR` to choose another location; `MCPINDEXSEARCH_DATA_DIR` remains a supported alias. The former `MCPINDEXSEARCH_MCP_PATH` and `MCPINDEXSEARCH_MATERIALIZE_MAX_BYTES` variables also remain aliases for their `CONTEXTMOLE_*` replacements.
 
-Application data is stored in:
-
-- Windows: `%LOCALAPPDATA%\MCPIndexSearch`
-- macOS: `~/Library/Application Support/MCPIndexSearch`
-- Linux: `$XDG_DATA_HOME/MCPIndexSearch` or `~/.local/share/MCPIndexSearch`
-
-Set `MCPINDEXSEARCH_DATA_DIR` to use another location.
+The executable names `MCPIndexSearch.App.UI` and `MCPIndexSearch.Mcp`, the Codex configuration key `mcp-index-search`, and the Velopack package ID `JPCodeCraft.MCPIndexSearch` intentionally remain stable. These internal identifiers let existing installations and Codex connections upgrade without being orphaned; the product shown to users is Context Mole.
 
 ## Development
 
-The repository pins .NET SDK 10.0.203 in `global.json`.
+The repository pins its .NET SDK in `global.json`. Restore and test with:
 
 ```powershell
-dotnet restore MCPIndexSearch.slnx --locked-mode
-dotnet test --solution MCPIndexSearch.slnx -c Release --no-restore
-dotnet run --project src/App.UI/MCPIndexSearch.App.UI.csproj -c Release --no-restore
+dotnet restore ContextMole.slnx --locked-mode
+dotnet test --solution ContextMole.slnx -c Release --no-restore
+dotnet run --project src/App.UI/ContextMole.App.UI.csproj -c Release --no-restore
 ```
 
-Automated tests are the default validation. Package versions are centralized in `Directory.Packages.props`, and lock files are committed. See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for supplemental smoke tests and [docs/NATIVE-SMOKE.md](docs/NATIVE-SMOKE.md) for native publish checks.
+Package versions are centralized in `Directory.Packages.props`, and lock files are committed. See [development checks](docs/DEVELOPMENT.md) and the [native smoke checklist](docs/NATIVE-SMOKE.md) for additional validation.
 
-## Publish and release
-
-Publishing the UI also places the self-contained MCP sidecar in its `mcp-server` directory. Supported RIDs are `win-x64`, `linux-x64`, `osx-x64`, and `osx-arm64`.
+Publishing the UI also places the self-contained MCP sidecar in its `mcp-server` directory:
 
 ```powershell
-dotnet publish src/App.UI/MCPIndexSearch.App.UI.csproj `
+dotnet publish src/App.UI/ContextMole.App.UI.csproj `
   -c Release -f net10.0 -r <rid> --self-contained true `
   -p:PublishSingleFile=false -p:PublishTrimmed=false -p:PublishAot=false
 ```
 
-Stable Windows releases are created from exact `vMAJOR.MINOR.PATCH` tags:
-
-```powershell
-git tag -a vX.Y.Z -m "MCPIndexSearch vX.Y.Z"
-git push origin vX.Y.Z
-```
-
-The [Windows release workflow](.github/workflows/release-windows.yml) runs the automated tests, builds the app and MCP sidecar, verifies the payload, creates the Velopack installer/update feed, and publishes the GitHub Release.
+Stable Windows releases are built from exact `vMAJOR.MINOR.PATCH` tags by the [release workflow](.github/workflows/release-windows.yml).
 
 ## Architecture
 
-The modular monolith contains `App.UI`, `Core`, `Documents`, `Indexing`, `Infrastructure`, `Mcp`, `Search`, and `Storage`. SQLite uses WAL mode, query-only read connections, one serialized writer, durable job leases, staging revisions, and atomic activation. Vector indexes are generation-labelled and cached within a bounded memory budget.
+The modular monolith contains `App.UI`, `Core`, `Documents`, `Indexing`, `Infrastructure`, `Mcp`, `Search`, and `Storage`. SQLite uses WAL mode, query-only read connections, one serialized writer, durable job leases, staging revisions, and atomic activation.

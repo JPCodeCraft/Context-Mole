@@ -1,13 +1,13 @@
 #:property TargetFramework=net10.0
-#:project ../src/Core/MCPIndexSearch.Core.csproj
-#:project ../src/Infrastructure/MCPIndexSearch.Infrastructure.csproj
+#:project ../src/Core/ContextMole.Core.csproj
+#:project ../src/Infrastructure/ContextMole.Infrastructure.csproj
 
-using MCPIndexSearch.Infrastructure;
+using ContextMole.Infrastructure;
 
 var paths = new AppPaths();
 var modelSettings = new EmbeddingModelSettings(paths);
 var model = GraniteEmbeddingModels.Get(modelSettings.Model);
-Console.WriteLine("MCPIndexSearch semantic-search model setup");
+Console.WriteLine("Context Mole semantic-search model setup");
 Console.WriteLine($"Selected model: {model.DisplayName}");
 if (model.RequiresGemmaTerms)
 {
@@ -15,7 +15,7 @@ if (model.RequiresGemmaTerms)
     Console.WriteLine(GraniteModelInstaller.GemmaTermsUrl);
     if (!args.Contains("--accept-gemma-terms", StringComparer.Ordinal))
     {
-        Console.Error.WriteLine("Review the terms, then rerun with --accept-gemma-terms. Desktop users can instead use Set up inside MCPIndexSearch.");
+        Console.Error.WriteLine("Review the terms, then rerun with --accept-gemma-terms. Desktop users can instead use Set up inside Context Mole.");
         return 2;
     }
 }

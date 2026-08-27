@@ -1,8 +1,9 @@
-using MCPIndexSearch.Core;
+using ContextMole.Core;
+
 using SharpCompress.Common;
 using SharpCompress.Readers;
 
-namespace MCPIndexSearch.Documents;
+namespace ContextMole.Documents;
 
 public sealed partial class ContentMaterializationService
 {
@@ -24,7 +25,7 @@ public sealed partial class ContentMaterializationService
             if (ordinal++ != requestedOrdinal)
                 continue;
             if (entry.IsEncrypted)
-                throw new McpIndexException("extraction_failed", "The indexed archive entry is encrypted and cannot be materialized.");
+                throw new ContextMoleException("extraction_failed", "The indexed archive entry is encrypted and cannot be materialized.");
             if (entry.Size > _maxBytes)
                 throw new MaterializationSizeLimitException();
 

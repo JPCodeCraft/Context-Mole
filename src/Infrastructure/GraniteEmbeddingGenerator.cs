@@ -1,11 +1,14 @@
-using System.Runtime.Intrinsics.X86;
 using System.Runtime.InteropServices;
-using MCPIndexSearch.Core;
+using System.Runtime.Intrinsics.X86;
+
+using ContextMole.Core;
+
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
+
 using Tokenizers.HuggingFace.Tokenizer;
 
-namespace MCPIndexSearch.Infrastructure;
+namespace ContextMole.Infrastructure;
 
 public sealed class GraniteEmbeddingGenerator : IEmbeddingGenerator
 {
@@ -207,7 +210,7 @@ public sealed class GraniteEmbeddingGenerator : IEmbeddingGenerator
     {
         if (texts.Count == 0)
         {
-            var emptyPolicy = Policy ?? throw new McpIndexException("model_unavailable",
+            var emptyPolicy = Policy ?? throw new ContextMoleException("model_unavailable",
                 UnavailableReason ?? "Granite assets are unavailable.");
             return new EmbeddingBatch([], emptyPolicy);
         }
@@ -234,7 +237,7 @@ public sealed class GraniteEmbeddingGenerator : IEmbeddingGenerator
             }
             if (tokenizer is null || session is null || policy is null)
             {
-                throw new McpIndexException("model_unavailable", UnavailableReason ?? "Granite assets are unavailable.");
+                throw new ContextMoleException("model_unavailable", UnavailableReason ?? "Granite assets are unavailable.");
             }
 
             for (var offset = 0; offset < texts.Count; offset += 8)
@@ -286,11 +289,11 @@ public sealed class GraniteEmbeddingGenerator : IEmbeddingGenerator
         var inputIds = new DenseTensor<long>([encoded.Count, sequenceLength]);
         var attentionMask = new DenseTensor<long>([encoded.Count, sequenceLength]);
         for (var batch = 0; batch < encoded.Count; batch++)
-        for (var token = 0; token < encoded[batch].Length; token++)
-        {
-            inputIds[batch, token] = encoded[batch][token];
-            attentionMask[batch, token] = 1;
-        }
+            for (var token = 0; token < encoded[batch].Length; token++)
+            {
+                inputIds[batch, token] = encoded[batch][token];
+                attentionMask[batch, token] = 1;
+            }
 
         using var results = session.Run(
         [
@@ -301,7 +304,7 @@ public sealed class GraniteEmbeddingGenerator : IEmbeddingGenerator
         var dimensions = output.Dimensions.ToArray();
         if (dimensions.Length != 3 || dimensions[0] != encoded.Count || dimensions[2] != sourceDimensions ||
             outputDimensions > sourceDimensions)
-            throw new McpIndexException("model_output_invalid",
+            throw new ContextMoleException("model_output_invalid",
                 $"Expected Granite output [batch,tokens,{sourceDimensions}], received [{string.Join(',', dimensions)}].");
 
         var vectors = new List<float[]>(encoded.Count);
@@ -315,7 +318,7 @@ public sealed class GraniteEmbeddingGenerator : IEmbeddingGenerator
                 squaredNorm += vector[dimension] * vector[dimension];
             }
             if (squaredNorm <= double.Epsilon)
-                throw new McpIndexException("model_output_invalid", "Granite produced a zero-length embedding.");
+                throw new ContextMoleException("model_output_invalid", "Granite produced a zero-length embedding.");
             var divisor = (float)Math.Sqrt(squaredNorm);
             for (var dimension = 0; dimension < vector.Length; dimension++) vector[dimension] /= divisor;
             vectors.Add(vector);

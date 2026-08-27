@@ -1,24 +1,24 @@
 #:property TargetFramework=net10.0
-#:project ../src/Core/MCPIndexSearch.Core.csproj
-#:project ../src/Documents/MCPIndexSearch.Documents.csproj
-#:project ../src/Infrastructure/MCPIndexSearch.Infrastructure.csproj
-#:project ../src/Storage/MCPIndexSearch.Storage.csproj
-#:project ../src/Indexing/MCPIndexSearch.Indexing.csproj
-#:project ../src/Search/MCPIndexSearch.Search.csproj
+#:project ../src/Core/ContextMole.Core.csproj
+#:project ../src/Documents/ContextMole.Documents.csproj
+#:project ../src/Infrastructure/ContextMole.Infrastructure.csproj
+#:project ../src/Storage/ContextMole.Storage.csproj
+#:project ../src/Indexing/ContextMole.Indexing.csproj
+#:project ../src/Search/ContextMole.Search.csproj
 #:package Microsoft.Extensions.Hosting
 
 using System.Security.Cryptography;
-using MCPIndexSearch.Core;
-using MCPIndexSearch.Documents;
-using MCPIndexSearch.Indexing;
-using MCPIndexSearch.Infrastructure;
-using MCPIndexSearch.Search;
-using MCPIndexSearch.Storage;
+using ContextMole.Core;
+using ContextMole.Documents;
+using ContextMole.Indexing;
+using ContextMole.Infrastructure;
+using ContextMole.Search;
+using ContextMole.Storage;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
-var data = Environment.GetEnvironmentVariable("MCPINDEXSEARCH_DATA_DIR")
-    ?? throw new InvalidOperationException("Set MCPINDEXSEARCH_DATA_DIR to an isolated smoke directory.");
+var data = Environment.GetEnvironmentVariable("CONTEXTMOLE_DATA_DIR")
+    ?? throw new InvalidOperationException("Set CONTEXTMOLE_DATA_DIR to an isolated smoke directory.");
 var fixture = data + "-fixtures";
 Directory.CreateDirectory(fixture);
 var source = Path.Combine(fixture, "materialize.eml");
@@ -45,12 +45,12 @@ var sourceText = """
 await File.WriteAllTextAsync(source, sourceText);
 
 var builder = Host.CreateApplicationBuilder();
-builder.Services.AddMcpIndexInfrastructure(includeOcr: false);
+builder.Services.AddContextMoleInfrastructure(includeOcr: false);
 builder.Services.AddSingleton<IOcrEngine, NoDownloadOcrEngine>();
-builder.Services.AddMcpIndexDocuments();
-builder.Services.AddWritableMcpIndexStorage();
-builder.Services.AddMcpIndexing();
-builder.Services.AddMcpIndexSearch();
+builder.Services.AddContextMoleDocuments();
+builder.Services.AddWritableContextMoleStorage();
+builder.Services.AddContextMoleIndexing();
+builder.Services.AddContextMoleSearch();
 using var host = builder.Build();
 await host.StartAsync();
 var writer = host.Services.GetRequiredService<IIndexWriter>();
@@ -130,7 +130,7 @@ static async Task ExpectCodeAsync(string expected, Func<Task<MaterializedContent
         await action();
         throw new InvalidOperationException($"Expected {expected}.");
     }
-    catch (McpIndexException exception) when (exception.Code == expected)
+    catch (ContextMoleException exception) when (exception.Code == expected)
     {
     }
 }

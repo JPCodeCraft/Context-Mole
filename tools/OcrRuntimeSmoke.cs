@@ -1,15 +1,15 @@
 #:property TargetFramework=net10.0
-#:project ../src/Core/MCPIndexSearch.Core.csproj
-#:project ../src/Documents/MCPIndexSearch.Documents.csproj
-#:project ../src/Infrastructure/MCPIndexSearch.Infrastructure.csproj
+#:project ../src/Core/ContextMole.Core.csproj
+#:project ../src/Documents/ContextMole.Documents.csproj
+#:project ../src/Infrastructure/ContextMole.Infrastructure.csproj
 
-using MCPIndexSearch.Core;
-using MCPIndexSearch.Documents;
-using MCPIndexSearch.Infrastructure;
+using ContextMole.Core;
+using ContextMole.Documents;
+using ContextMole.Infrastructure;
 using SkiaSharp;
 
-if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("MCPINDEXSEARCH_DATA_DIR")))
-    throw new InvalidOperationException("Set MCPINDEXSEARCH_DATA_DIR to an isolated smoke directory.");
+if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("CONTEXTMOLE_DATA_DIR")))
+    throw new InvalidOperationException("Set CONTEXTMOLE_DATA_DIR to an isolated smoke directory.");
 
 var paths = new AppPaths();
 using var engine = new PpOcrV6Engine(paths);

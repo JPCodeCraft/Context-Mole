@@ -1,10 +1,10 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        x:Class="MCPIndexSearch.App.UI.Views.ModelSetupWindow"
+        x:Class="ContextMole.App.UI.Views.ModelSetupWindow"
         Width="700" Height="570" MinWidth="620" MinHeight="520"
         WindowStartupLocation="CenterOwner"
         Title="Set up semantic search"
-        Icon="/Assets/mcp-index-search.ico">
+        Icon="/Assets/context-mole.ico">
   <Grid RowDefinitions="*,Auto" Margin="26">
     <ScrollViewer>
       <StackPanel Spacing="18">

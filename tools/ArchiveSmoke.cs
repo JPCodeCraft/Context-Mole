@@ -1,21 +1,21 @@
 #:property TargetFramework=net10.0
-#:project ../src/Core/MCPIndexSearch.Core.csproj
-#:project ../src/Documents/MCPIndexSearch.Documents.csproj
-#:project ../src/Infrastructure/MCPIndexSearch.Infrastructure.csproj
-#:project ../src/Storage/MCPIndexSearch.Storage.csproj
-#:project ../src/Indexing/MCPIndexSearch.Indexing.csproj
-#:project ../src/Search/MCPIndexSearch.Search.csproj
+#:project ../src/Core/ContextMole.Core.csproj
+#:project ../src/Documents/ContextMole.Documents.csproj
+#:project ../src/Infrastructure/ContextMole.Infrastructure.csproj
+#:project ../src/Storage/ContextMole.Storage.csproj
+#:project ../src/Indexing/ContextMole.Indexing.csproj
+#:project ../src/Search/ContextMole.Search.csproj
 #:package Microsoft.Extensions.Hosting
 
 using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text;
-using MCPIndexSearch.Core;
-using MCPIndexSearch.Documents;
-using MCPIndexSearch.Indexing;
-using MCPIndexSearch.Infrastructure;
-using MCPIndexSearch.Search;
-using MCPIndexSearch.Storage;
+using ContextMole.Core;
+using ContextMole.Documents;
+using ContextMole.Indexing;
+using ContextMole.Infrastructure;
+using ContextMole.Search;
+using ContextMole.Storage;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
@@ -24,8 +24,8 @@ const string traversalEvidence = "ZIP traversal materialization evidence 50b4450
 const string nestedEvidence = "Nested ZIP archive evidence f4ae0d30.";
 var unsupportedBytes = new byte[] { 0, 1, 2, 3, 254, 255 };
 
-var data = Environment.GetEnvironmentVariable("MCPINDEXSEARCH_DATA_DIR")
-    ?? throw new InvalidOperationException("Set MCPINDEXSEARCH_DATA_DIR to an isolated smoke directory.");
+var data = Environment.GetEnvironmentVariable("CONTEXTMOLE_DATA_DIR")
+    ?? throw new InvalidOperationException("Set CONTEXTMOLE_DATA_DIR to an isolated smoke directory.");
 var fixture = data + "-fixtures";
 Directory.CreateDirectory(fixture);
 var zipPath = Path.Combine(fixture, "archive.zip");
@@ -42,12 +42,12 @@ if (!string.Equals(await HashAsync(rarFixture),
 File.Copy(rarFixture, rarPath, overwrite: true);
 
 var builder = Host.CreateApplicationBuilder();
-builder.Services.AddMcpIndexInfrastructure(includeOcr: false);
+builder.Services.AddContextMoleInfrastructure(includeOcr: false);
 builder.Services.AddSingleton<IOcrEngine, NoDownloadOcrEngine>();
-builder.Services.AddMcpIndexDocuments();
-builder.Services.AddWritableMcpIndexStorage();
-builder.Services.AddMcpIndexing();
-builder.Services.AddMcpIndexSearch();
+builder.Services.AddContextMoleDocuments();
+builder.Services.AddWritableContextMoleStorage();
+builder.Services.AddContextMoleIndexing();
+builder.Services.AddContextMoleSearch();
 using var host = builder.Build();
 await host.StartAsync();
 var writer = host.Services.GetRequiredService<IIndexWriter>();

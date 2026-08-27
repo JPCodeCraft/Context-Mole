@@ -1,12 +1,12 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        xmlns:vm="using:MCPIndexSearch.App.UI.ViewModels"
-        xmlns:views="using:MCPIndexSearch.App.UI.Views"
-        x:Class="MCPIndexSearch.App.UI.Views.MainWindow"
+        xmlns:vm="using:ContextMole.App.UI.ViewModels"
+        xmlns:views="using:ContextMole.App.UI.Views"
+        x:Class="ContextMole.App.UI.Views.MainWindow"
         x:DataType="vm:MainViewModel"
         Width="1280" Height="800" MinWidth="980" MinHeight="640"
-        Icon="/Assets/mcp-index-search.ico"
-        Title="MCPIndexSearch">
+        Icon="/Assets/context-mole.ico"
+        Title="Context Mole">
   <Grid ColumnDefinitions="268,*">
     <Border Background="{DynamicResource SidebarBrush}"
             BorderBrush="{DynamicResource BorderBrush}"
@@ -18,7 +18,7 @@
                        HorizontalAlignment="Center" VerticalAlignment="Center" />
           </Border>
           <StackPanel VerticalAlignment="Center" Spacing="1">
-            <TextBlock Text="MCPIndexSearch" FontWeight="SemiBold" FontSize="15" />
+            <TextBlock Text="Context Mole" FontWeight="SemiBold" FontSize="15" />
             <TextBlock Text="Local document search" Classes="quiet" FontSize="11" />
           </StackPanel>
         </StackPanel>
@@ -76,7 +76,7 @@
                          TextWrapping="Wrap" MaxHeight="48" />
             </Grid>
           </Border>
-          <Button Classes="ghost compact" Content="Quit MCPIndexSearch" HorizontalContentAlignment="Left"
+          <Button Classes="ghost compact" Content="Quit Context Mole" HorizontalContentAlignment="Left"
                   Click="QuitApplication" />
         </StackPanel>
       </Grid>

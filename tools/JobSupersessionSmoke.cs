@@ -1,26 +1,26 @@
 #:property TargetFramework=net10.0
-#:project ../src/Core/MCPIndexSearch.Core.csproj
-#:project ../src/Infrastructure/MCPIndexSearch.Infrastructure.csproj
-#:project ../src/Storage/MCPIndexSearch.Storage.csproj
+#:project ../src/Core/ContextMole.Core.csproj
+#:project ../src/Infrastructure/ContextMole.Infrastructure.csproj
+#:project ../src/Storage/ContextMole.Storage.csproj
 #:package Microsoft.Extensions.Hosting
 
 using System.Security.Cryptography;
-using MCPIndexSearch.Core;
-using MCPIndexSearch.Infrastructure;
-using MCPIndexSearch.Storage;
+using ContextMole.Core;
+using ContextMole.Infrastructure;
+using ContextMole.Storage;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
-var data = Environment.GetEnvironmentVariable("MCPINDEXSEARCH_DATA_DIR")
-    ?? throw new InvalidOperationException("Set MCPINDEXSEARCH_DATA_DIR to an isolated smoke directory.");
+var data = Environment.GetEnvironmentVariable("CONTEXTMOLE_DATA_DIR")
+    ?? throw new InvalidOperationException("Set CONTEXTMOLE_DATA_DIR to an isolated smoke directory.");
 var fixture = data + "-fixtures";
 Directory.CreateDirectory(fixture);
 var source = Path.Combine(fixture, "concurrent-update.eml");
 await File.WriteAllTextAsync(source, "From: source@example.test\r\nTo: reader@example.test\r\nSubject: Supersession\r\n\r\nEvidence body.");
 
 var builder = Host.CreateApplicationBuilder();
-builder.Services.AddMcpIndexInfrastructure(includeOcr: false);
-builder.Services.AddWritableMcpIndexStorage();
+builder.Services.AddContextMoleInfrastructure(includeOcr: false);
+builder.Services.AddWritableContextMoleStorage();
 using var host = builder.Build();
 await host.StartAsync();
 var writer = host.Services.GetRequiredService<IIndexWriter>();

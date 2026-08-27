@@ -1,18 +1,24 @@
 using System.Globalization;
 using System.Text;
+
 using AngleSharp.Dom;
 using AngleSharp.Html.Parser;
+
+using ContextMole.Core;
+
 using DocumentFormat.OpenXml;
 using DocumentFormat.OpenXml.Packaging;
 using DocumentFormat.OpenXml.Spreadsheet;
-using MCPIndexSearch.Core;
+
 using MimeKit;
+
 using MsgReader.Outlook;
+
 using A = DocumentFormat.OpenXml.Drawing;
 using P = DocumentFormat.OpenXml.Presentation;
 using W = DocumentFormat.OpenXml.Wordprocessing;
 
-namespace MCPIndexSearch.Documents;
+namespace ContextMole.Documents;
 
 public sealed partial class DocumentExtractionRegistry
 {
@@ -34,31 +40,31 @@ public sealed partial class DocumentExtractionRegistry
             switch (element)
             {
                 case W.Paragraph paragraph:
-                {
-                    paragraphNumber++;
-                    var text = OpenXmlText(paragraph);
-                    if (string.IsNullOrWhiteSpace(text)) break;
-                    var style = paragraph.ParagraphProperties?.ParagraphStyleId?.Val?.Value;
-                    if (style?.StartsWith("Heading", StringComparison.OrdinalIgnoreCase) == true)
-                        currentHeading = text;
-                    sections.Add(new ExtractedSection(text,
-                        new SourceLocation(LocationKind.Structure, StructurePath: $"document/paragraph[{paragraphNumber}]"),
-                        ExtractionMethod.NativeText, Heading: currentHeading));
-                    break;
-                }
-                case W.Table table:
-                {
-                    tableNumber++;
-                    var rows = table.Elements<W.TableRow>()
-                        .Select(row => string.Join("\t", row.Elements<W.TableCell>().Select(OpenXmlText)))
-                        .Where(row => !string.IsNullOrWhiteSpace(row));
-                    var text = string.Join(Environment.NewLine, rows);
-                    if (!string.IsNullOrWhiteSpace(text))
+                    {
+                        paragraphNumber++;
+                        var text = OpenXmlText(paragraph);
+                        if (string.IsNullOrWhiteSpace(text)) break;
+                        var style = paragraph.ParagraphProperties?.ParagraphStyleId?.Val?.Value;
+                        if (style?.StartsWith("Heading", StringComparison.OrdinalIgnoreCase) == true)
+                            currentHeading = text;
                         sections.Add(new ExtractedSection(text,
-                            new SourceLocation(LocationKind.Structure, StructurePath: $"document/table[{tableNumber}]"),
+                            new SourceLocation(LocationKind.Structure, StructurePath: $"document/paragraph[{paragraphNumber}]"),
                             ExtractionMethod.NativeText, Heading: currentHeading));
-                    break;
-                }
+                        break;
+                    }
+                case W.Table table:
+                    {
+                        tableNumber++;
+                        var rows = table.Elements<W.TableRow>()
+                            .Select(row => string.Join("\t", row.Elements<W.TableCell>().Select(OpenXmlText)))
+                            .Where(row => !string.IsNullOrWhiteSpace(row));
+                        var text = string.Join(Environment.NewLine, rows);
+                        if (!string.IsNullOrWhiteSpace(text))
+                            sections.Add(new ExtractedSection(text,
+                                new SourceLocation(LocationKind.Structure, StructurePath: $"document/table[{tableNumber}]"),
+                                ExtractionMethod.NativeText, Heading: currentHeading));
+                        break;
+                    }
             }
         }
 
@@ -285,45 +291,45 @@ public sealed partial class DocumentExtractionRegistry
             switch (entity)
             {
                 case MessagePart messagePart:
-                {
-                    if (messagePart.Message is null) break;
-                    var suppliedName = messagePart.ContentDisposition?.FileName ?? messagePart.ContentType.Name;
-                    var attachmentName = string.IsNullOrWhiteSpace(suppliedName) ? $"message-{ordinal}.eml" : suppliedName;
-                    try
                     {
-                        await using var output = new AttachmentBuffer(context.Request.MaxAttachmentBytes);
-                        await messagePart.Message.WriteToAsync(output, cancellationToken);
-                        output.Position = 0;
-                        attachments.Add(await ExtractStreamAsync(output, attachmentName, "message/rfc822", "email-attachment",
-                            depth + 1, context, cancellationToken));
+                        if (messagePart.Message is null) break;
+                        var suppliedName = messagePart.ContentDisposition?.FileName ?? messagePart.ContentType.Name;
+                        var attachmentName = string.IsNullOrWhiteSpace(suppliedName) ? $"message-{ordinal}.eml" : suppliedName;
+                        try
+                        {
+                            await using var output = new AttachmentBuffer(context.Request.MaxAttachmentBytes);
+                            await messagePart.Message.WriteToAsync(output, cancellationToken);
+                            output.Position = 0;
+                            attachments.Add(await ExtractStreamAsync(output, attachmentName, "message/rfc822", "email-attachment",
+                                depth + 1, context, cancellationToken));
+                        }
+                        catch (AttachmentSizeLimitException exception)
+                        {
+                            attachments.Add(Rejected(attachmentName, "message/rfc822", "email-attachment", context,
+                                "attachment_size_limit", exception.Message));
+                        }
+                        break;
                     }
-                    catch (AttachmentSizeLimitException exception)
-                    {
-                        attachments.Add(Rejected(attachmentName, "message/rfc822", "email-attachment", context,
-                            "attachment_size_limit", exception.Message));
-                    }
-                    break;
-                }
                 case MimePart mimePart:
-                {
-                    if (mimePart.Content is null) break;
-                    var attachmentName = string.IsNullOrWhiteSpace(mimePart.FileName) ? $"attachment-{ordinal}" : mimePart.FileName;
-                    var attachmentRelationship = mimePart.IsAttachment ? "email-attachment" : "email-inline";
-                    try
                     {
-                        await using var output = new AttachmentBuffer(context.Request.MaxAttachmentBytes);
-                        await mimePart.Content.DecodeToAsync(output, cancellationToken);
-                        output.Position = 0;
-                        attachments.Add(await ExtractStreamAsync(output, attachmentName, mimePart.ContentType.MimeType,
-                            attachmentRelationship, depth + 1, context, cancellationToken));
+                        if (mimePart.Content is null) break;
+                        var attachmentName = string.IsNullOrWhiteSpace(mimePart.FileName) ? $"attachment-{ordinal}" : mimePart.FileName;
+                        var attachmentRelationship = mimePart.IsAttachment ? "email-attachment" : "email-inline";
+                        try
+                        {
+                            await using var output = new AttachmentBuffer(context.Request.MaxAttachmentBytes);
+                            await mimePart.Content.DecodeToAsync(output, cancellationToken);
+                            output.Position = 0;
+                            attachments.Add(await ExtractStreamAsync(output, attachmentName, mimePart.ContentType.MimeType,
+                                attachmentRelationship, depth + 1, context, cancellationToken));
+                        }
+                        catch (AttachmentSizeLimitException exception)
+                        {
+                            attachments.Add(Rejected(attachmentName, mimePart.ContentType.MimeType, attachmentRelationship,
+                                context, "attachment_size_limit", exception.Message));
+                        }
+                        break;
                     }
-                    catch (AttachmentSizeLimitException exception)
-                    {
-                        attachments.Add(Rejected(attachmentName, mimePart.ContentType.MimeType, attachmentRelationship,
-                            context, "attachment_size_limit", exception.Message));
-                    }
-                    break;
-                }
             }
         }
         return new ExtractedNode(name, mimeType, relationship, sections, attachments);
@@ -359,19 +365,19 @@ public sealed partial class DocumentExtractionRegistry
             switch (item)
             {
                 case Storage.Attachment attachment when attachment.Data is { Length: > 0 }:
-                {
-                    var attachmentName = string.IsNullOrWhiteSpace(attachment.FileName) ? $"attachment-{ordinal}" : attachment.FileName;
-                    await using var stream = new MemoryStream(attachment.Data, writable: false);
-                    attachments.Add(await ExtractStreamAsync(stream, attachmentName, attachment.MimeType, attachment.IsInline ? "email-inline" : "email-attachment",
-                        depth + 1, context, cancellationToken));
-                    break;
-                }
+                    {
+                        var attachmentName = string.IsNullOrWhiteSpace(attachment.FileName) ? $"attachment-{ordinal}" : attachment.FileName;
+                        await using var stream = new MemoryStream(attachment.Data, writable: false);
+                        attachments.Add(await ExtractStreamAsync(stream, attachmentName, attachment.MimeType, attachment.IsInline ? "email-inline" : "email-attachment",
+                            depth + 1, context, cancellationToken));
+                        break;
+                    }
                 case Storage.Message nested:
-                {
-                    var attachmentName = string.IsNullOrWhiteSpace(nested.FileName) ? $"message-{ordinal}.msg" : nested.FileName;
-                    attachments.Add(await MsgObjectNodeAsync(nested, attachmentName, "email-attachment", depth + 1, context, cancellationToken));
-                    break;
-                }
+                    {
+                        var attachmentName = string.IsNullOrWhiteSpace(nested.FileName) ? $"message-{ordinal}.msg" : nested.FileName;
+                        attachments.Add(await MsgObjectNodeAsync(nested, attachmentName, "email-attachment", depth + 1, context, cancellationToken));
+                        break;
+                    }
             }
         }
         return new ExtractedNode(name, mimeType, relationship, sections, attachments);

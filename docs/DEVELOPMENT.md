@@ -3,15 +3,17 @@
 Use the SDK pinned by `global.json`, restore the committed lock files, and run the automated suite:
 
 ```powershell
-dotnet restore MCPIndexSearch.slnx --locked-mode
-dotnet test --solution MCPIndexSearch.slnx -c Release --no-restore
+dotnet restore ContextMole.slnx --locked-mode
+dotnet test --solution ContextMole.slnx -c Release --no-restore
 ```
 
 This is the default validation for every change. The tools below are supplemental manual smoke tests for focused integration and runtime checks. Run this assignment again before every smoke command so each one gets a fresh disposable data directory:
 
 ```powershell
-$env:MCPINDEXSEARCH_DATA_DIR = Join-Path $env:TEMP ("MCPIndexSearch-smoke-" + [guid]::NewGuid().ToString("N"))
+$env:CONTEXTMOLE_DATA_DIR = Join-Path $env:TEMP ("ContextMole-smoke-" + [guid]::NewGuid().ToString("N"))
 ```
+
+`MCPINDEXSEARCH_DATA_DIR` remains a supported alias for upgrade and automation compatibility, but new development scripts should use `CONTEXTMOLE_DATA_DIR`.
 
 Run the checks relevant to a change:
 

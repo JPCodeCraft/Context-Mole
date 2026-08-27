@@ -6,12 +6,15 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
-using MCPIndexSearch.Core;
+
+using ContextMole.Core;
+
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
+
 using SkiaSharp;
 
-namespace MCPIndexSearch.Infrastructure;
+namespace ContextMole.Infrastructure;
 
 /// <summary>
 /// Local PP-OCRv6 medium text detection and recognition. The implementation
@@ -80,7 +83,7 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
         _cpuUsageSettings = cpuUsageSettings;
         _cpuBudget = cpuBudget;
         _client = new HttpClient { Timeout = TimeSpan.FromHours(2) };
-        _client.DefaultRequestHeaders.UserAgent.ParseAdd("MCPIndexSearch/1.0");
+        _client.DefaultRequestHeaders.UserAgent.ParseAdd("ContextMole/1.0");
         LoadCore(_cpuUsageSettings.ThreadLimit);
     }
 
@@ -100,7 +103,7 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
         if (IsAvailable) return;
         if (!IsPlatformSupported())
         {
-            throw new McpIndexException("ocr_platform_unsupported",
+            throw new ContextMoleException("ocr_platform_unsupported",
                 "PP-OCRv6 is unavailable because ONNX Runtime 1.29 does not provide an Intel macOS native library.");
         }
 
@@ -133,7 +136,7 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
             LoadCore(_cpuUsageSettings.ThreadLimit);
             if (!IsAvailable)
             {
-                throw new McpIndexException("ocr_initialization_failed",
+                throw new ContextMoleException("ocr_initialization_failed",
                     UnavailableReason ?? "PP-OCRv6 could not be initialized.", true);
             }
         }
@@ -141,14 +144,14 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
         {
             throw;
         }
-        catch (McpIndexException)
+        catch (ContextMoleException)
         {
             throw;
         }
         catch (Exception exception)
         {
             SetUnavailable($"PP-OCRv6 setup failed: {exception.Message}");
-            throw new McpIndexException("ocr_setup_failed", UnavailableReason!, true);
+            throw new ContextMoleException("ocr_setup_failed", UnavailableReason!, true);
         }
         finally
         {
@@ -185,7 +188,7 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
         }
         catch (OnnxRuntimeException exception)
         {
-            throw new McpIndexException("ocr_failed", $"PP-OCRv6 inference failed: {exception.Message}", true);
+            throw new ContextMoleException("ocr_failed", $"PP-OCRv6 inference failed: {exception.Message}", true);
         }
         finally
         {
@@ -202,9 +205,9 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
         string recognizerInputName;
         lock (_stateGate)
         {
-            detector = _detector ?? throw new McpIndexException("ocr_unavailable", "PP-OCRv6 detector is unavailable.", true);
-            recognizer = _recognizer ?? throw new McpIndexException("ocr_unavailable", "PP-OCRv6 recognizer is unavailable.", true);
-            characters = _characters ?? throw new McpIndexException("ocr_unavailable", "PP-OCRv6 dictionary is unavailable.", true);
+            detector = _detector ?? throw new ContextMoleException("ocr_unavailable", "PP-OCRv6 detector is unavailable.", true);
+            recognizer = _recognizer ?? throw new ContextMoleException("ocr_unavailable", "PP-OCRv6 recognizer is unavailable.", true);
+            characters = _characters ?? throw new ContextMoleException("ocr_unavailable", "PP-OCRv6 dictionary is unavailable.", true);
             detectorInputName = _detectorInputName!;
             recognizerInputName = _recognizerInputName!;
         }
@@ -248,15 +251,15 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
         try
         {
             return SKBitmap.Decode(imageBytes.ToArray())
-                ?? throw new McpIndexException("ocr_image_invalid", "The image could not be decoded.");
+                ?? throw new ContextMoleException("ocr_image_invalid", "The image could not be decoded.");
         }
-        catch (McpIndexException)
+        catch (ContextMoleException)
         {
             throw;
         }
         catch (Exception exception) when (exception is ArgumentException or InvalidOperationException)
         {
-            throw new McpIndexException("ocr_image_invalid", "The image could not be decoded.")
+            throw new ContextMoleException("ocr_image_invalid", "The image could not be decoded.")
             {
                 Source = exception.Source
             };
@@ -293,7 +296,7 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
         }
         else
         {
-            throw new McpIndexException("ocr_model_output_invalid",
+            throw new ContextMoleException("ocr_model_output_invalid",
                 $"Expected PP-OCRv6 detector output [1,1,h,w], received [{string.Join(',', dimensions)}].");
         }
 
@@ -341,17 +344,17 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
                     componentPixels++;
 
                     for (var dy = -1; dy <= 1; dy++)
-                    for (var dx = -1; dx <= 1; dx++)
-                    {
-                        if (dx == 0 && dy == 0) continue;
-                        var nx = x + dx;
-                        var ny = y + dy;
-                        if ((uint)nx >= (uint)width || (uint)ny >= (uint)height) continue;
-                        var neighbor = ny * width + nx;
-                        if (visited[neighbor] || probabilities[neighbor] <= DetectionThreshold) continue;
-                        visited[neighbor] = true;
-                        queue[tail++] = neighbor;
-                    }
+                        for (var dx = -1; dx <= 1; dx++)
+                        {
+                            if (dx == 0 && dy == 0) continue;
+                            var nx = x + dx;
+                            var ny = y + dy;
+                            if ((uint)nx >= (uint)width || (uint)ny >= (uint)height) continue;
+                            var neighbor = ny * width + nx;
+                            if (visited[neighbor] || probabilities[neighbor] <= DetectionThreshold) continue;
+                            visited[neighbor] = true;
+                            queue[tail++] = neighbor;
+                        }
                 }
 
                 var boxWidth = maxX - minX + 1;
@@ -360,8 +363,8 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
 
                 double score = 0;
                 for (var y = minY; y <= maxY; y++)
-                for (var x = minX; x <= maxX; x++)
-                    score += probabilities[y * width + x];
+                    for (var x = minX; x <= maxX; x++)
+                        score += probabilities[y * width + x];
                 score /= boxWidth * boxHeight;
                 if (score < DetectionBoxThreshold) continue;
 
@@ -404,7 +407,7 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
         var dimensions = probabilities.Dimensions.ToArray();
         if (dimensions.Length != 3 || dimensions[0] != 1)
         {
-            throw new McpIndexException("ocr_model_output_invalid",
+            throw new ContextMoleException("ocr_model_output_invalid",
                 $"Expected PP-OCRv6 recognizer output [1,time,classes], received [{string.Join(',', dimensions)}].");
         }
 
@@ -412,7 +415,7 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
         var classCount = dimensions[2];
         if (characters.Count != classCount)
         {
-            throw new McpIndexException("ocr_model_output_invalid",
+            throw new ContextMoleException("ocr_model_output_invalid",
                 $"PP-OCRv6 recognizer exposes {classCount} classes, but its pinned dictionary contains {characters.Count} entries.");
         }
 
@@ -487,14 +490,14 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
         var plane = RecognitionHeight * RecognitionWidth;
         var buffer = tensor.Buffer.Span;
         for (var y = 0; y < RecognitionHeight; y++)
-        for (var x = 0; x < resizedWidth; x++)
-        {
-            var pixel = pixels[y * resizedWidth + x];
-            var index = y * RecognitionWidth + x;
-            buffer[index] = pixel.Blue / 127.5f - 1f;
-            buffer[plane + index] = pixel.Green / 127.5f - 1f;
-            buffer[2 * plane + index] = pixel.Red / 127.5f - 1f;
-        }
+            for (var x = 0; x < resizedWidth; x++)
+            {
+                var pixel = pixels[y * resizedWidth + x];
+                var index = y * RecognitionWidth + x;
+                buffer[index] = pixel.Blue / 127.5f - 1f;
+                buffer[plane + index] = pixel.Green / 127.5f - 1f;
+                buffer[2 * plane + index] = pixel.Red / 127.5f - 1f;
+            }
     }
 
     private static (int Width, int Height) GetDetectionSize(int width, int height)
@@ -708,7 +711,7 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
         if (!string.Equals(actual, asset.Sha256, StringComparison.OrdinalIgnoreCase))
         {
             File.Delete(partial);
-            throw new McpIndexException("asset_checksum_mismatch",
+            throw new ContextMoleException("asset_checksum_mismatch",
                 $"Checksum verification failed for {asset.Name}. Expected {asset.Sha256}, received {actual}.");
         }
         File.Move(partial, asset.Target, true);

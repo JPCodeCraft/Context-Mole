@@ -1,12 +1,12 @@
 using System.Text;
 
-using MCPIndexSearch.Core;
-using MCPIndexSearch.Documents;
-using MCPIndexSearch.Infrastructure;
+using ContextMole.Core;
+using ContextMole.Documents;
+using ContextMole.Infrastructure;
 
 using Microsoft.Data.Sqlite;
 
-namespace MCPIndexSearch.Tests;
+namespace ContextMole.Tests;
 
 [Collection(nameof(SqliteIntegrationCollection))]
 public sealed class StorageTests
@@ -402,7 +402,7 @@ public sealed class StorageTests
         AssertPathIsWithin(database.Paths.TempDirectory, attachment.LocalPath);
 
         await File.AppendAllTextAsync(source, "changed", cancellationToken);
-        var exception = await Assert.ThrowsAsync<McpIndexException>(() =>
+        var exception = await Assert.ThrowsAsync<ContextMoleException>(() =>
             materializer.MaterializeAsync(projectId, rootId, cancellationToken));
         Assert.Equal("source_changed", exception.Code);
     }

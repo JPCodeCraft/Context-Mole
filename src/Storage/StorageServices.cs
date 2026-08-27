@@ -1,11 +1,12 @@
-using MCPIndexSearch.Core;
+using ContextMole.Core;
+
 using Microsoft.Extensions.DependencyInjection;
 
-namespace MCPIndexSearch.Storage;
+namespace ContextMole.Storage;
 
 public static class StorageServices
 {
-    public static IServiceCollection AddWritableMcpIndexStorage(this IServiceCollection services)
+    public static IServiceCollection AddWritableContextMoleStorage(this IServiceCollection services)
     {
         services.AddSingleton<SqliteSearchStore>();
         services.AddSingleton<ISearchStore>(provider => provider.GetRequiredService<SqliteSearchStore>());
@@ -15,7 +16,7 @@ public static class StorageServices
         return services;
     }
 
-    public static IServiceCollection AddReadOnlyMcpIndexStorage(this IServiceCollection services)
+    public static IServiceCollection AddReadOnlyContextMoleStorage(this IServiceCollection services)
     {
         services.AddSingleton<ISearchStore, SqliteSearchStore>();
         return services;

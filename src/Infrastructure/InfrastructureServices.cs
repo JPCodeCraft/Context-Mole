@@ -1,12 +1,13 @@
-using MCPIndexSearch.Core;
+using ContextMole.Core;
+
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
-namespace MCPIndexSearch.Infrastructure;
+namespace ContextMole.Infrastructure;
 
 public static class InfrastructureServices
 {
-    public static IServiceCollection AddMcpIndexInfrastructure(this IServiceCollection services, bool includeOcr)
+    public static IServiceCollection AddContextMoleInfrastructure(this IServiceCollection services, bool includeOcr)
     {
         services.TryAddSingleton<IAppPaths, AppPaths>();
         services.AddSingleton<CpuUsageSettings>();

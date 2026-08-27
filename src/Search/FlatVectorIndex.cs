@@ -1,7 +1,8 @@
 using System.Numerics;
-using MCPIndexSearch.Core;
 
-namespace MCPIndexSearch.Search;
+using ContextMole.Core;
+
+namespace ContextMole.Search;
 
 public sealed class FlatVectorIndex(VectorSnapshot snapshot) : IVectorIndex
 {

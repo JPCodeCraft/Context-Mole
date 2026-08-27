@@ -1,14 +1,14 @@
-using MCPIndexSearch.Core;
-using MCPIndexSearch.Documents;
-using MCPIndexSearch.Indexing;
-using MCPIndexSearch.Infrastructure;
-using MCPIndexSearch.Mcp;
-using MCPIndexSearch.Search;
-using MCPIndexSearch.Storage;
+using ContextMole.Core;
+using ContextMole.Documents;
+using ContextMole.Indexing;
+using ContextMole.Infrastructure;
+using ContextMole.Mcp;
+using ContextMole.Search;
+using ContextMole.Storage;
 
 using Microsoft.Extensions.Logging.Abstractions;
 
-namespace MCPIndexSearch.Tests;
+namespace ContextMole.Tests;
 
 [Collection(nameof(SqliteIntegrationCollection))]
 public sealed class IndexingPipelineTests

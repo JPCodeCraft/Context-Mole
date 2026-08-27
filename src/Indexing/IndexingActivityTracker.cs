@@ -1,8 +1,8 @@
 using System.Diagnostics;
 
-using MCPIndexSearch.Core;
+using ContextMole.Core;
 
-namespace MCPIndexSearch.Indexing;
+namespace ContextMole.Indexing;
 
 public enum IndexingPipelineStage
 {

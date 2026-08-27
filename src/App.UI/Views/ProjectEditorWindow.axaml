@@ -1,9 +1,9 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        x:Class="MCPIndexSearch.App.UI.Views.ProjectEditorWindow"
+        x:Class="ContextMole.App.UI.Views.ProjectEditorWindow"
         Width="680" Height="540" MinWidth="600" MinHeight="500"
         WindowStartupLocation="CenterOwner" Title="Project"
-        Icon="/Assets/mcp-index-search.ico">
+        Icon="/Assets/context-mole.ico">
   <Grid RowDefinitions="Auto,*,Auto,Auto" Margin="26">
     <StackPanel Spacing="5" Margin="0,0,0,18">
       <TextBlock Text="Project details" Classes="pageTitle" />

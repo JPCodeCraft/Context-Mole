@@ -7,6 +7,9 @@
     <InvariantGlobalization>false</InvariantGlobalization>
     <Deterministic>true</Deterministic>
     <DebugType>embedded</DebugType>
+    <Product>Context Mole</Product>
+    <Company>JPCodeCraft</Company>
+    <Authors>JPCodeCraft</Authors>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
     <RuntimeIdentifiers>win-x64;linux-x64;osx-x64;osx-arm64</RuntimeIdentifiers>
     <NoWarn>$(NoWarn);NU1510</NoWarn>

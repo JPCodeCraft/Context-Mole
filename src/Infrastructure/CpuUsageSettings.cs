@@ -1,7 +1,8 @@
 using System.Text;
-using MCPIndexSearch.Core;
 
-namespace MCPIndexSearch.Infrastructure;
+using ContextMole.Core;
+
+namespace ContextMole.Infrastructure;
 
 public sealed class CpuUsageSettings : ICpuUsageSettings
 {
@@ -86,7 +87,7 @@ public sealed class CpuUsageSettings : ICpuUsageSettings
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            throw new McpIndexException("settings_write_failed",
+            throw new ContextMoleException("settings_write_failed",
                 $"The CPU usage profile could not be saved: {exception.Message}");
         }
         finally

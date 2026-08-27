@@ -1,6 +1,6 @@
-using MCPIndexSearch.Core;
+using ContextMole.Core;
 
-namespace MCPIndexSearch.App.UI.ViewModels;
+namespace ContextMole.App.UI.ViewModels;
 
 public sealed class ProjectErrorItemViewModel(ProjectErrorInfo source)
 {

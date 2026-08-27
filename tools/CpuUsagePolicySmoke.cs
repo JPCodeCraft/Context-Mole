@@ -1,12 +1,12 @@
 #:property TargetFramework=net10.0
-#:project ../src/Core/MCPIndexSearch.Core.csproj
-#:project ../src/Infrastructure/MCPIndexSearch.Infrastructure.csproj
+#:project ../src/Core/ContextMole.Core.csproj
+#:project ../src/Infrastructure/ContextMole.Infrastructure.csproj
 
-using MCPIndexSearch.Core;
-using MCPIndexSearch.Infrastructure;
+using ContextMole.Core;
+using ContextMole.Infrastructure;
 
-var data = Environment.GetEnvironmentVariable("MCPINDEXSEARCH_DATA_DIR")
-    ?? throw new InvalidOperationException("Set MCPINDEXSEARCH_DATA_DIR to an isolated smoke directory.");
+var data = Environment.GetEnvironmentVariable("CONTEXTMOLE_DATA_DIR")
+    ?? throw new InvalidOperationException("Set CONTEXTMOLE_DATA_DIR to an isolated smoke directory.");
 var paths = new SmokePaths(Path.Combine(data, $"cpu-policy-{Guid.NewGuid():N}"));
 
 AssertLimit(CpuUsageProfile.Light, 10, 2);

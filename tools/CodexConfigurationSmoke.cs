@@ -1,37 +1,42 @@
 #:property TargetFramework=net10.0
-#:project ../src/Core/MCPIndexSearch.Core.csproj
-#:project ../src/Infrastructure/MCPIndexSearch.Infrastructure.csproj
+#:project ../src/Core/ContextMole.Core.csproj
+#:project ../src/Infrastructure/ContextMole.Infrastructure.csproj
 
-using MCPIndexSearch.Infrastructure;
+using ContextMole.Infrastructure;
 
-var data = Environment.GetEnvironmentVariable("MCPINDEXSEARCH_DATA_DIR")
-    ?? throw new InvalidOperationException("Set MCPINDEXSEARCH_DATA_DIR to an isolated smoke directory.");
+var data = Environment.GetEnvironmentVariable("CONTEXTMOLE_DATA_DIR")
+    ?? throw new InvalidOperationException("Set CONTEXTMOLE_DATA_DIR to an isolated smoke directory.");
 var codexHome = Path.Combine(data, "codex-home");
 Directory.CreateDirectory(codexHome);
 Environment.SetEnvironmentVariable("CODEX_HOME", codexHome);
 var developmentRoot = Path.Combine(data, "development-root");
 var serverDirectory = Path.Combine(developmentRoot, "src", "Mcp", "bin", "Debug", "net10.0");
 Directory.CreateDirectory(serverDirectory);
-await File.WriteAllTextAsync(Path.Combine(developmentRoot, "MCPIndexSearch.slnx"), "<Solution />");
-var server = Path.Combine(serverDirectory, OperatingSystem.IsWindows() ? "MCPIndexSearch.Mcp.exe" : "MCPIndexSearch.Mcp");
+await File.WriteAllTextAsync(Path.Combine(developmentRoot, "ContextMole.slnx"), "<Solution />");
+var server = Path.Combine(serverDirectory,
+    OperatingSystem.IsWindows() ? "MCPIndexSearch.Mcp.exe" : "MCPIndexSearch.Mcp");
 await File.WriteAllTextAsync(server, "smoke placeholder");
-var dependency = Path.Combine(serverDirectory, "MCPIndexSearch.Core.dll");
+var dependency = Path.Combine(serverDirectory, "ContextMole.Core.dll");
 await File.WriteAllTextAsync(dependency, "dependency placeholder");
-Environment.SetEnvironmentVariable("MCPINDEXSEARCH_MCP_PATH", server);
+Environment.SetEnvironmentVariable("CONTEXTMOLE_MCP_PATH", server);
 var configPath = Path.Combine(codexHome, "config.toml");
 const string preserved = "# user setting\nmodel = \"gpt-5\"\n";
+const string managedBeginMarker = "# BEGIN MCPIndexSearch managed MCP server";
+const string managedEndMarker = "# END MCPIndexSearch managed MCP server";
+const string managedServerHeader = "[mcp_servers.mcp-index-search]";
+const string managedEnvironmentHeader = "[mcp_servers.mcp-index-search.env]";
 var escapedServer = EscapeToml(server);
 var legacyManaged = $"""
     {preserved.TrimEnd()}
 
-    # BEGIN MCPIndexSearch managed MCP server
-    [mcp_servers.mcp-index-search]
+    {managedBeginMarker}
+    {managedServerHeader}
     command = "{escapedServer}"
     enabled = true
 
-    [mcp_servers.mcp-index-search.env]
+    {managedEnvironmentHeader}
     MCPINDEXSEARCH_DATA_DIR = "{EscapeToml(data)}"
-    # END MCPIndexSearch managed MCP server
+    {managedEndMarker}
     """ + Environment.NewLine;
 await File.WriteAllTextAsync(configPath, legacyManaged);
 
@@ -51,8 +56,14 @@ if (connected.ServerPath is null ||
     throw new InvalidOperationException("The development MCP server was not staged with its dependencies.");
 var configured = await File.ReadAllTextAsync(configPath);
 if (!configured.Contains(preserved.TrimEnd(), StringComparison.Ordinal) ||
-    !configured.Contains("# BEGIN MCPIndexSearch managed MCP server", StringComparison.Ordinal) ||
+    !configured.Contains(managedBeginMarker, StringComparison.Ordinal) ||
+    !configured.Contains(managedEndMarker, StringComparison.Ordinal) ||
+    !configured.Contains(managedServerHeader, StringComparison.Ordinal) ||
+    !configured.Contains(managedEnvironmentHeader, StringComparison.Ordinal) ||
     !configured.Contains("MCPINDEXSEARCH_DATA_DIR", StringComparison.Ordinal) ||
+    configured.Contains("ContextMole managed MCP server", StringComparison.Ordinal) ||
+    configured.Contains("[mcp_servers.context-mole]", StringComparison.Ordinal) ||
+    configured.Contains("CONTEXTMOLE_DATA_DIR", StringComparison.Ordinal) ||
     configured.Contains($"command = \"{escapedServer}\"", StringComparison.Ordinal))
     throw new InvalidOperationException("The managed configuration block or preserved user content is missing.");
 
@@ -83,7 +94,7 @@ if (disconnected.State != CodexMcpConnectionState.Disconnected ||
 if (Directory.EnumerateFiles(codexHome, "*.bak").Count() != 3)
     throw new InvalidOperationException("Expected safety backups for migration, upgrade, and disconnect.");
 
-var conflictText = afterDisconnect + "\n[mcp_servers.mcp-index-search]\ncommand = \"custom-server\"\n";
+var conflictText = afterDisconnect + $"\n{managedServerHeader}\ncommand = \"custom-server\"\n";
 await File.WriteAllTextAsync(configPath, conflictText);
 var conflict = await service.ConnectAsync();
 if (conflict.State != CodexMcpConnectionState.Conflict || await File.ReadAllTextAsync(configPath) != conflictText)

@@ -1,11 +1,14 @@
 using System.Collections.ObjectModel;
+
 using Avalonia.Controls;
 using Avalonia.Interactivity;
 using Avalonia.Platform.Storage;
-using MCPIndexSearch.Core;
+
+using ContextMole.Core;
+
 using Microsoft.Extensions.DependencyInjection;
 
-namespace MCPIndexSearch.App.UI.Views;
+namespace ContextMole.App.UI.Views;
 
 public sealed record ProjectEditorResult(string Name, IReadOnlyList<string> Folders);
 
@@ -79,14 +82,14 @@ public partial class ProjectEditorWindow : Window
                      }))
                 error = "Symbolic-link roots cannot be indexed.";
             for (var left = 0; left < canonical.Length && error.Length == 0; left++)
-            for (var right = left + 1; right < canonical.Length; right++)
-            {
-                if (string.Equals(canonical[left], canonical[right], PathComparison()) || IsWithin(canonical[left], canonical[right]) || IsWithin(canonical[right], canonical[left]))
+                for (var right = left + 1; right < canonical.Length; right++)
                 {
-                    error = "Folders in one project cannot be duplicated or nested.";
-                    break;
+                    if (string.Equals(canonical[left], canonical[right], PathComparison()) || IsWithin(canonical[left], canonical[right]) || IsWithin(canonical[right], canonical[left]))
+                    {
+                        error = "Folders in one project cannot be duplicated or nested.";
+                        break;
+                    }
                 }
-            }
         }
         ValidationBlock.Text = error;
         return error.Length == 0;

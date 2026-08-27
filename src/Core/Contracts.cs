@@ -1,4 +1,4 @@
-namespace MCPIndexSearch.Core;
+namespace ContextMole.Core;
 
 public interface IAppPaths
 {

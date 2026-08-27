@@ -1,7 +1,8 @@
 using System.Text.Json;
-using MCPIndexSearch.Core;
 
-namespace MCPIndexSearch.Infrastructure;
+using ContextMole.Core;
+
+namespace ContextMole.Infrastructure;
 
 internal static class GraniteModelInstallation
 {

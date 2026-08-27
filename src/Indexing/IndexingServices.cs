@@ -1,10 +1,10 @@
 using Microsoft.Extensions.DependencyInjection;
 
-namespace MCPIndexSearch.Indexing;
+namespace ContextMole.Indexing;
 
 public static class IndexingServices
 {
-    public static IServiceCollection AddMcpIndexing(this IServiceCollection services)
+    public static IServiceCollection AddContextMoleIndexing(this IServiceCollection services)
     {
         services.AddSingleton<IndexingActivityTracker>();
         services.AddSingleton<EmbeddingPolicyRefreshTracker>();

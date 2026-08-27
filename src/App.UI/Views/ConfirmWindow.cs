@@ -3,7 +3,7 @@ using Avalonia.Controls;
 using Avalonia.Layout;
 using Avalonia.Media;
 
-namespace MCPIndexSearch.App.UI.Views;
+namespace ContextMole.App.UI.Views;
 
 public sealed class ConfirmWindow : Window
 {
@@ -15,7 +15,7 @@ public sealed class ConfirmWindow : Window
         CanResize = false;
         SizeToContent = SizeToContent.Height;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
-        Icon = new WindowIcon("avares://MCPIndexSearch.App.UI/Assets/mcp-index-search.ico");
+        Icon = new WindowIcon("avares://MCPIndexSearch.App.UI/Assets/context-mole.ico");
 
         var accept = new Button
         {

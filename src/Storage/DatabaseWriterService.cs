@@ -2,11 +2,13 @@ using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using System.Threading.Channels;
-using MCPIndexSearch.Core;
+
+using ContextMole.Core;
+
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Hosting;
 
-namespace MCPIndexSearch.Storage;
+namespace ContextMole.Storage;
 
 public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
 {
@@ -91,7 +93,7 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
             }
             catch (SqliteException exception) when (exception.SqliteErrorCode == 19)
             {
-                throw new McpIndexException("duplicate_project", "A project with this name or folder already exists.");
+                throw new ContextMoleException("duplicate_project", "A project with this name or folder already exists.");
             }
         }, cancellationToken);
 
@@ -154,7 +156,7 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                  new("$now", DateTimeOffset.UtcNow.ToString("O")), new("$id", projectId.ToString())], token).ConfigureAwait(false);
             if (changed == 0)
             {
-                throw new McpIndexException("project_not_found", "The project does not exist.");
+                throw new ContextMoleException("project_not_found", "The project does not exist.");
             }
 
             return null;
@@ -170,7 +172,7 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
             var state = await GetProjectStateAsync(connection, transaction, projectId, token).ConfigureAwait(false);
             if (state == ProjectState.Paused)
             {
-                throw new McpIndexException("project_paused", "Resume the project before requesting a reindex.");
+                throw new ContextMoleException("project_paused", "Resume the project before requesting a reindex.");
             }
 
             var now = DateTimeOffset.UtcNow.ToString("O");
@@ -208,7 +210,7 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
             var state = await GetProjectStateAsync(connection, transaction, projectId, token).ConfigureAwait(false);
             if (state == ProjectState.Paused)
             {
-                throw new McpIndexException("project_paused", "Resume the project before requesting an embedding refresh.");
+                throw new ContextMoleException("project_paused", "Resume the project before requesting an embedding refresh.");
             }
 
             var policyJson = JsonSerializer.Serialize(targetPolicy, StorageJsonOptions);
@@ -281,7 +283,7 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
             var state = await GetProjectStateAsync(connection, transaction, projectId, token).ConfigureAwait(false);
             if (state == ProjectState.Paused)
             {
-                throw new McpIndexException("project_paused", "Resume the project before retrying failed files.");
+                throw new ContextMoleException("project_paused", "Resume the project before retrying failed files.");
             }
 
             await using var select = connection.CreateCommand();
@@ -362,7 +364,7 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                 [new("$id", projectId.ToString())], token).ConfigureAwait(false);
             if (changed == 0)
             {
-                throw new McpIndexException("project_not_found", "The project does not exist.");
+                throw new ContextMoleException("project_not_found", "The project does not exist.");
             }
 
             await transaction.CommitAsync(token).ConfigureAwait(false);
@@ -1292,7 +1294,7 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
         command.Parameters.AddWithValue("$id", projectId.ToString());
         var value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
         return value is null or DBNull
-            ? throw new McpIndexException("project_not_found", "The project does not exist.")
+            ? throw new ContextMoleException("project_not_found", "The project does not exist.")
             : (ProjectState)Convert.ToInt32(value);
     }
 
@@ -1306,7 +1308,7 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
         command.Parameters.AddWithValue("$project", projectId.ToString());
         if (await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is null)
         {
-            throw new McpIndexException("folder_not_found", "The project folder no longer exists.");
+            throw new ContextMoleException("folder_not_found", "The project folder no longer exists.");
         }
     }
 
@@ -1357,7 +1359,7 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
         var normalized = TextNormalization.ForDisplay(name);
         if (normalized.Length is < 1 or > 120)
         {
-            throw new McpIndexException("invalid_project_name", "Project names must contain 1 to 120 characters.");
+            throw new ContextMoleException("invalid_project_name", "Project names must contain 1 to 120 characters.");
         }
 
         return normalized;
@@ -1367,7 +1369,7 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
     {
         if (folders.Count == 0)
         {
-            throw new McpIndexException("folders_required", "Select at least one folder.");
+            throw new ContextMoleException("folders_required", "Select at least one folder.");
         }
 
         var canonical = folders.Select(CanonicalPath).Distinct(StringComparer.Ordinal).ToArray();
@@ -1376,26 +1378,26 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
         {
             if (!Directory.Exists(canonical[index]))
             {
-                throw new McpIndexException("folder_unavailable", $"Folder does not exist or is unavailable: {canonical[index]}", true);
+                throw new ContextMoleException("folder_unavailable", $"Folder does not exist or is unavailable: {canonical[index]}", true);
             }
 
             var rootInfo = new DirectoryInfo(canonical[index]);
             if (IsFileSystemLink(rootInfo))
             {
-                throw new McpIndexException("unsafe_folder", $"Folder roots cannot be symbolic links: {canonical[index]}");
+                throw new ContextMoleException("unsafe_folder", $"Folder roots cannot be symbolic links: {canonical[index]}");
             }
 
             var key = PathKey(canonical[index]);
             if (IsSameOrChild(key, appDataKey))
             {
-                throw new McpIndexException("unsafe_folder", "The application data directory cannot be indexed.");
+                throw new ContextMoleException("unsafe_folder", "The application data directory cannot be indexed.");
             }
 
             for (var other = 0; other < canonical.Length; other++)
             {
                 if (index != other && IsSameOrChild(key, PathKey(canonical[other])))
                 {
-                    throw new McpIndexException("nested_folder", "A project cannot contain duplicate or nested folder roots.");
+                    throw new ContextMoleException("nested_folder", "A project cannot contain duplicate or nested folder roots.");
                 }
             }
         }

@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\Core\ContextMole.Core.csproj" />
+    <ProjectReference Include="..\Documents\ContextMole.Documents.csproj" />
+    <ProjectReference Include="..\Search\ContextMole.Search.csproj" />
+    <ProjectReference Include="..\Storage\ContextMole.Storage.csproj" />
+    <ProjectReference Include="..\Infrastructure\ContextMole.Infrastructure.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Hosting" />
+    <PackageReference Include="ModelContextProtocol" />
+    <PackageReference Include="Serilog" />
+    <PackageReference Include="Serilog.Extensions.Hosting" />
+    <PackageReference Include="Serilog.Sinks.Console" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <!-- Existing Codex registrations point to this executable name. -->
+    <AssemblyName>MCPIndexSearch.Mcp</AssemblyName>
+    <RootNamespace>ContextMole.Mcp</RootNamespace>
+    <AssemblyTitle>Context Mole MCP Server</AssemblyTitle>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+</Project>

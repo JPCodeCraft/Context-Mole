@@ -1,12 +1,13 @@
 using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
+using System.Runtime.Intrinsics.X86;
 using System.Security.Cryptography;
 using System.Text.Json;
-using System.Runtime.Intrinsics.X86;
-using MCPIndexSearch.Core;
 
-namespace MCPIndexSearch.Infrastructure;
+using ContextMole.Core;
+
+namespace ContextMole.Infrastructure;
 
 public sealed record ModelInstallProgress(
     string Stage,
@@ -41,7 +42,7 @@ public sealed class GraniteModelInstaller : IDisposable
         _modelSettings = modelSettings;
         _cpuBudget = cpuBudget;
         _client = new HttpClient { Timeout = TimeSpan.FromHours(2) };
-        _client.DefaultRequestHeaders.UserAgent.ParseAdd("MCPIndexSearch/1.0");
+        _client.DefaultRequestHeaders.UserAgent.ParseAdd("ContextMole/1.0");
     }
 
     public bool IsSupported => !(OperatingSystem.IsMacOS() &&
@@ -96,9 +97,9 @@ public sealed class GraniteModelInstaller : IDisposable
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
         var model = GraniteEmbeddingModels.Get(choice);
         if (model.RequiresGemmaTerms && !gemmaTermsAccepted && !HasRecordedTermsAcceptance)
-            throw new McpIndexException("terms_not_accepted", "The Gemma terms must be accepted before installing this tokenizer.");
+            throw new ContextMoleException("terms_not_accepted", "The Gemma terms must be accepted before installing this tokenizer.");
         if (!IsSupported)
-            throw new McpIndexException("model_platform_unsupported", "ONNX Runtime 1.29 does not provide an Intel macOS native library.");
+            throw new ContextMoleException("model_platform_unsupported", "ONNX Runtime 1.29 does not provide an Intel macOS native library.");
 
         using var operation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _lifetime.Token);
         var operationToken = operation.Token;
@@ -228,7 +229,7 @@ public sealed class GraniteModelInstaller : IDisposable
         if (!string.Equals(actual, asset.Sha256, StringComparison.OrdinalIgnoreCase))
         {
             File.Delete(partial);
-            throw new McpIndexException("asset_checksum_mismatch",
+            throw new ContextMoleException("asset_checksum_mismatch",
                 $"Checksum verification failed for {asset.Name}. Expected {asset.Sha256}, received {actual}.");
         }
 

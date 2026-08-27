@@ -1,12 +1,15 @@
 using System.Diagnostics;
+
 using Avalonia.Controls;
 using Avalonia.Interactivity;
 using Avalonia.Threading;
-using MCPIndexSearch.Core;
-using MCPIndexSearch.Infrastructure;
+
+using ContextMole.Core;
+using ContextMole.Infrastructure;
+
 using Microsoft.Extensions.DependencyInjection;
 
-namespace MCPIndexSearch.App.UI.Views;
+namespace ContextMole.App.UI.Views;
 
 public partial class ModelSetupWindow : Window
 {

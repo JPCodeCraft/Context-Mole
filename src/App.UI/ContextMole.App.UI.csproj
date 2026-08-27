@@ -1,0 +1,49 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <!-- Stable executable identity keeps existing Velopack installations upgradeable. -->
+    <AssemblyName>MCPIndexSearch.App.UI</AssemblyName>
+    <RootNamespace>ContextMole.App.UI</RootNamespace>
+    <AssemblyTitle>Context Mole</AssemblyTitle>
+    <Description>Private local document search for Codex.</Description>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\context-mole.ico</ApplicationIcon>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Folder Include="Models\" />
+    <AvaloniaResource Include="Assets\**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Core\ContextMole.Core.csproj" />
+    <ProjectReference Include="..\Indexing\ContextMole.Indexing.csproj" />
+    <ProjectReference Include="..\Documents\ContextMole.Documents.csproj" />
+    <ProjectReference Include="..\Storage\ContextMole.Storage.csproj" />
+    <ProjectReference Include="..\Infrastructure\ContextMole.Infrastructure.csproj" />
+    <ProjectReference Include="..\Mcp\ContextMole.Mcp.csproj" ReferenceOutputAssembly="false" Private="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Avalonia" />
+    <PackageReference Include="Avalonia.Desktop" />
+    <PackageReference Include="Avalonia.Fonts.Inter" />
+    <PackageReference Include="Avalonia.Themes.Fluent" />
+    <PackageReference Include="CommunityToolkit.Mvvm" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" />
+    <PackageReference Include="Serilog.Extensions.Hosting" />
+    <PackageReference Include="Serilog.Sinks.File" />
+    <PackageReference Include="Velopack" />
+  </ItemGroup>
+
+  <Target Name="PublishBundledMcpServer" AfterTargets="Publish"
+          Condition="'$(RuntimeIdentifier)' != '' and '$(ContextMoleSkipMcpBundle)' != 'true'">
+    <PropertyGroup>
+      <_McpBundleDirectory>$(PublishDir)mcp-server\</_McpBundleDirectory>
+    </PropertyGroup>
+    <MSBuild Projects="..\Mcp\ContextMole.Mcp.csproj" Targets="Publish" BuildInParallel="false"
+             Properties="Configuration=$(Configuration);TargetFramework=$(TargetFramework);RuntimeIdentifier=$(RuntimeIdentifier);SelfContained=$(SelfContained);Version=$(Version);SourceRevisionId=$(SourceRevisionId);ContinuousIntegrationBuild=$(ContinuousIntegrationBuild);PublishSingleFile=false;PublishTrimmed=false;PublishAot=false;PublishDir=$(_McpBundleDirectory);ContextMoleSkipMcpBundle=true" />
+  </Target>
+</Project>

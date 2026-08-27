@@ -1,8 +1,9 @@
-using MCPIndexSearch.Core;
+using ContextMole.Core;
+
 using SharpCompress.Common;
 using SharpCompress.Readers;
 
-namespace MCPIndexSearch.Documents;
+namespace ContextMole.Documents;
 
 public sealed partial class DocumentExtractionRegistry
 {

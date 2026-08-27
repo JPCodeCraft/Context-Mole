@@ -1,10 +1,10 @@
 using Avalonia;
 
-using MCPIndexSearch.Core;
-using MCPIndexSearch.Documents;
-using MCPIndexSearch.Indexing;
-using MCPIndexSearch.Infrastructure;
-using MCPIndexSearch.Storage;
+using ContextMole.Core;
+using ContextMole.Documents;
+using ContextMole.Indexing;
+using ContextMole.Infrastructure;
+using ContextMole.Storage;
 
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -14,7 +14,7 @@ using Serilog;
 
 using Velopack;
 
-namespace MCPIndexSearch.App.UI;
+namespace ContextMole.App.UI;
 
 internal static class Program
 {
@@ -42,11 +42,11 @@ internal static class Program
                 .CreateLogger();
             builder.Services.AddSerilog(dispose: true);
             builder.Services.AddSingleton<IAppPaths>(paths);
-            builder.Services.AddMcpIndexInfrastructure(includeOcr: true);
+            builder.Services.AddContextMoleInfrastructure(includeOcr: true);
             builder.Services.AddSingleton<CodexMcpConfigurationService>();
-            builder.Services.AddMcpIndexDocuments();
-            builder.Services.AddWritableMcpIndexStorage();
-            builder.Services.AddMcpIndexing();
+            builder.Services.AddContextMoleDocuments();
+            builder.Services.AddWritableContextMoleStorage();
+            builder.Services.AddContextMoleIndexing();
             builder.Services.AddSingleton<ApplicationUpdateService>();
             builder.Services.AddSingleton<WindowsStartupService>();
             builder.Services.AddSingleton<ViewModels.MainViewModel>();
@@ -56,7 +56,7 @@ internal static class Program
         }
         catch (Exception exception)
         {
-            Console.Error.WriteLine($"MCPIndexSearch could not start: {exception.Message}");
+            Console.Error.WriteLine($"Context Mole could not start: {exception.Message}");
             Log.Fatal(exception, "Application startup failed");
         }
         finally

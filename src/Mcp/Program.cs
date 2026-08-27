@@ -1,17 +1,20 @@
 using System.Text.Json;
-using System.Text.Json.Serialization.Metadata;
 using System.Text.Json.Serialization;
-using MCPIndexSearch.Documents;
-using MCPIndexSearch.Infrastructure;
-using MCPIndexSearch.Search;
-using MCPIndexSearch.Storage;
+using System.Text.Json.Serialization.Metadata;
+
+using ContextMole.Documents;
+using ContextMole.Infrastructure;
+using ContextMole.Search;
+using ContextMole.Storage;
+
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+
 using Serilog;
 using Serilog.Events;
 
-namespace MCPIndexSearch.Mcp;
+namespace ContextMole.Mcp;
 
 internal static class Program
 {
@@ -28,10 +31,10 @@ internal static class Program
             .WriteTo.Console(standardErrorFromLevel: LogEventLevel.Verbose)
             .CreateLogger();
         builder.Services.AddSerilog(dispose: true);
-        builder.Services.AddMcpIndexInfrastructure(includeOcr: false);
-        builder.Services.AddMcpIndexDocuments();
-        builder.Services.AddReadOnlyMcpIndexStorage();
-        builder.Services.AddMcpIndexSearch();
+        builder.Services.AddContextMoleInfrastructure(includeOcr: false);
+        builder.Services.AddContextMoleDocuments();
+        builder.Services.AddReadOnlyContextMoleStorage();
+        builder.Services.AddContextMoleSearch();
 
         var serializerOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web)
         {

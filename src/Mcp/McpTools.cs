@@ -1,10 +1,13 @@
 using System.ComponentModel;
-using MCPIndexSearch.Core;
-using MCPIndexSearch.Search;
+
+using ContextMole.Core;
+using ContextMole.Search;
+
 using Microsoft.Extensions.Logging;
+
 using ModelContextProtocol.Server;
 
-namespace MCPIndexSearch.Mcp;
+namespace ContextMole.Mcp;
 
 [McpServerToolType]
 public sealed class McpTools(
@@ -45,9 +48,9 @@ public sealed class McpTools(
     {
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
         if (passage_ids.Count is < 1 or > 50)
-            throw new McpIndexException("invalid_request", "passage_ids must contain between 1 and 50 IDs.");
+            throw new ContextMoleException("invalid_request", "passage_ids must contain between 1 and 50 IDs.");
         if (context_before is < 0 or > 3 || context_after is < 0 or > 3)
-            throw new McpIndexException("invalid_request", "context_before and context_after must be between 0 and 3.");
+            throw new ContextMoleException("invalid_request", "context_before and context_after must be between 0 and 3.");
         return await _store.ReadPassagesAsync(project_id, passage_ids, context_before, context_after, cancellationToken).ConfigureAwait(false);
     });
 
@@ -58,7 +61,7 @@ public sealed class McpTools(
     {
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
         return await _store.GetDocumentInfoAsync(project_id, document_id, content_id, cancellationToken).ConfigureAwait(false)
-            ?? throw new McpIndexException("document_not_found", "The indexed document or content node was not found.");
+            ?? throw new ContextMoleException("document_not_found", "The indexed document or content node was not found.");
     });
 
     [McpServerTool(Name = "list_documents", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false, UseStructuredContent = true)]
@@ -76,9 +79,9 @@ public sealed class McpTools(
                 ParseDocumentSortField(sort_by), ParseDocumentSortDirection(sort_direction), limit, cursor), cancellationToken)
                 .ConfigureAwait(false);
         }
-        catch (McpIndexException exception) when (exception.Code is "not_initialized" or "schema_incompatible")
+        catch (ContextMoleException exception) when (exception.Code is "not_initialized" or "schema_incompatible")
         {
-            throw new McpIndexException("index_unavailable", "The local document index is unavailable or incompatible.", true);
+            throw new ContextMoleException("index_unavailable", "The local document index is unavailable or incompatible.", true);
         }
     });
 
@@ -89,7 +92,7 @@ public sealed class McpTools(
     {
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
         if (limit is < 1 or > 500)
-            throw new McpIndexException("invalid_request", "limit must be between 1 and 500.");
+            throw new ContextMoleException("invalid_request", "limit must be between 1 and 500.");
         return await _store.ListAttachmentsAsync(project_id, document_id, cursor, limit, cancellationToken).ConfigureAwait(false);
     });
 
@@ -100,7 +103,7 @@ public sealed class McpTools(
     {
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
         return await _store.ResolveLocalFileAsync(project_id, document_id, content_id, cancellationToken).ConfigureAwait(false)
-            ?? throw new McpIndexException("document_not_found", "The indexed document or content node was not found.");
+            ?? throw new ContextMoleException("document_not_found", "The indexed document or content node was not found.");
     });
 
     [McpServerTool(Name = "materialize_content", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false, UseStructuredContent = true)]
@@ -116,8 +119,8 @@ public sealed class McpTools(
     {
         if (!await _store.IsInitializedAsync(cancellationToken).ConfigureAwait(false))
             throw File.Exists(_paths.DatabasePath)
-                ? new McpIndexException("schema_incompatible", "The local index database schema is incompatible with this MCP server.")
-                : new McpIndexException("not_initialized", "The local index database has not been initialized by the desktop application.");
+                ? new ContextMoleException("schema_incompatible", "The local index database schema is incompatible with this MCP server.")
+                : new ContextMoleException("not_initialized", "The local index database has not been initialized by the desktop application.");
     }
 
     private static DocumentStatusFilter ParseDocumentStatus(string? value) => value?.Trim().ToLowerInvariant() switch
@@ -128,7 +131,7 @@ public sealed class McpTools(
         "processing" => DocumentStatusFilter.Processing,
         "paused" => DocumentStatusFilter.Paused,
         "error" => DocumentStatusFilter.Error,
-        _ => throw new McpIndexException("invalid_filter", "status must be all, indexed, pending, processing, paused, or error.")
+        _ => throw new ContextMoleException("invalid_filter", "status must be all, indexed, pending, processing, paused, or error.")
     };
 
     private static DocumentSortField ParseDocumentSortField(string? value) => value?.Trim().ToLowerInvariant() switch
@@ -138,14 +141,14 @@ public sealed class McpTools(
         "modified_utc" => DocumentSortField.ModifiedUtc,
         "last_indexed_utc" => DocumentSortField.LastIndexedUtc,
         "status" => DocumentSortField.Status,
-        _ => throw new McpIndexException("invalid_filter", "sort_by must be file_name, source_path, modified_utc, last_indexed_utc, or status.")
+        _ => throw new ContextMoleException("invalid_filter", "sort_by must be file_name, source_path, modified_utc, last_indexed_utc, or status.")
     };
 
     private static DocumentSortDirection ParseDocumentSortDirection(string? value) => value?.Trim().ToLowerInvariant() switch
     {
         "asc" => DocumentSortDirection.Asc,
         "desc" => DocumentSortDirection.Desc,
-        _ => throw new McpIndexException("invalid_filter", "sort_direction must be asc or desc.")
+        _ => throw new ContextMoleException("invalid_filter", "sort_direction must be asc or desc.")
     };
 
     private async Task<object> RunAsync(Func<Task<object>> action)
@@ -154,7 +157,7 @@ public sealed class McpTools(
         {
             return await action().ConfigureAwait(false);
         }
-        catch (McpIndexException exception)
+        catch (ContextMoleException exception)
         {
             return new ErrorEnvelope(new ToolError(exception.Code, exception.Message, exception.Retryable));
         }
@@ -172,22 +175,22 @@ public sealed class McpTools(
     private static void ValidateSearchInput(string query, McpSearchFilters? filters)
     {
         if (string.IsNullOrWhiteSpace(query))
-            throw new McpIndexException("invalid_request", "query must not be empty.");
+            throw new ContextMoleException("invalid_request", "query must not be empty.");
         if (query.Length > 4096)
-            throw new McpIndexException("invalid_request", "query must not exceed 4096 characters.");
+            throw new ContextMoleException("invalid_request", "query must not exceed 4096 characters.");
         if (filters is null) return;
         if (!Enum.IsDefined(filters.AttachmentScope))
-            throw new McpIndexException("invalid_filter", "attachment_scope is invalid.");
+            throw new ContextMoleException("invalid_filter", "attachment_scope is invalid.");
         if (filters.DocumentIds is { Count: > 100 })
-            throw new McpIndexException("invalid_filter", "document_ids must contain at most 100 IDs.");
+            throw new ContextMoleException("invalid_filter", "document_ids must contain at most 100 IDs.");
         if (filters.PathPrefixes is { Count: > 50 } ||
             filters.PathPrefixes?.Any(path => string.IsNullOrWhiteSpace(path) || path.Length > 1024) == true)
-            throw new McpIndexException("invalid_filter", "path_prefixes must contain at most 50 non-empty paths of up to 1024 characters.");
+            throw new ContextMoleException("invalid_filter", "path_prefixes must contain at most 50 non-empty paths of up to 1024 characters.");
         if (filters.Extensions is { Count: > 50 } ||
             filters.Extensions?.Any(extension => string.IsNullOrWhiteSpace(extension) || extension.Length > 32) == true)
-            throw new McpIndexException("invalid_filter", "extensions must contain at most 50 non-empty values of up to 32 characters.");
+            throw new ContextMoleException("invalid_filter", "extensions must contain at most 50 non-empty values of up to 32 characters.");
         if (filters.ModifiedFromUtc is { } from && filters.ModifiedToUtc is { } to && from > to)
-            throw new McpIndexException("invalid_filter", "modified_from_utc must not be later than modified_to_utc.");
+            throw new ContextMoleException("invalid_filter", "modified_from_utc must not be later than modified_to_utc.");
     }
 }
 

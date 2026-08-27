@@ -1,6 +1,6 @@
-using MCPIndexSearch.Core;
+using ContextMole.Core;
 
-namespace MCPIndexSearch.Infrastructure;
+namespace ContextMole.Infrastructure;
 
 public sealed class GlobalCpuBudget : IGlobalCpuBudget, IDisposable
 {

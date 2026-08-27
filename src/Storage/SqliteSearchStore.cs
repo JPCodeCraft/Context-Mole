@@ -1,13 +1,15 @@
-using System.Runtime.InteropServices;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
-using MCPIndexSearch.Core;
+
+using ContextMole.Core;
+
 using Microsoft.Data.Sqlite;
 
-namespace MCPIndexSearch.Storage;
+namespace ContextMole.Storage;
 
 public sealed class SqliteSearchStore : ISearchStore
 {
@@ -127,7 +129,7 @@ public sealed class SqliteSearchStore : ISearchStore
                 projectCommand.Parameters.AddWithValue("$project", request.ProjectId.ToString());
                 await using var reader = await projectCommand.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
                 if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-                    throw new McpIndexException("project_not_found", "The indexing project does not exist.");
+                    throw new ContextMoleException("project_not_found", "The indexing project does not exist.");
                 projectState = (ProjectState)reader.GetInt32(0);
                 searchGeneration = reader.GetInt64(1);
             }
@@ -318,7 +320,7 @@ public sealed class SqliteSearchStore : ISearchStore
         }
         catch (SqliteException exception)
         {
-            throw new McpIndexException("index_unavailable", $"The document index is unavailable: {exception.Message}", true);
+            throw new ContextMoleException("index_unavailable", $"The document index is unavailable: {exception.Message}", true);
         }
     }
 
@@ -526,7 +528,7 @@ public sealed class SqliteSearchStore : ISearchStore
         using var transaction = connection.BeginTransaction(deferred: true);
         var generation = await ReadGenerationAsync(connection, transaction, projectId, cancellationToken).ConfigureAwait(false);
         if (generation != expectedGeneration)
-            throw new McpIndexException("index_changed", "The project index changed before semantic streaming began.", true);
+            throw new ContextMoleException("index_changed", "The project index changed before semantic streaming began.", true);
         await using var command = connection.CreateCommand();
         command.Transaction = transaction;
         var sql = new StringBuilder("""
@@ -567,7 +569,7 @@ public sealed class SqliteSearchStore : ISearchStore
         using var transaction = connection.BeginTransaction(deferred: true);
         var generation = await ReadGenerationAsync(connection, transaction, projectId, cancellationToken).ConfigureAwait(false);
         if (generation != expectedGeneration)
-            throw new McpIndexException("index_changed", "The project index changed before semantic candidates were loaded.", true);
+            throw new ContextMoleException("index_changed", "The project index changed before semantic candidates were loaded.", true);
         await using var command = connection.CreateCommand();
         command.Transaction = transaction;
         var sql = new StringBuilder("""
@@ -595,7 +597,7 @@ public sealed class SqliteSearchStore : ISearchStore
     {
         if (passageIds.Count is < 1 or > 50)
         {
-            throw new McpIndexException("invalid_request", "read_passages accepts between 1 and 50 passage IDs.");
+            throw new ContextMoleException("invalid_request", "read_passages accepts between 1 and 50 passage IDs.");
         }
 
         contextBefore = Math.Clamp(contextBefore, 0, 3);
@@ -846,19 +848,19 @@ public sealed class SqliteSearchStore : ISearchStore
     private static void ValidateDocumentListRequest(DocumentListRequest request)
     {
         if (!Enum.IsDefined(request.Status) || !Enum.IsDefined(request.SortBy) || !Enum.IsDefined(request.SortDirection))
-            throw new McpIndexException("invalid_filter", "status, sort_by, or sort_direction is invalid.");
+            throw new ContextMoleException("invalid_filter", "status, sort_by, or sort_direction is invalid.");
         if (request.Limit is < 1 or > 500)
-            throw new McpIndexException("invalid_limit", "limit must be between 1 and 500.");
+            throw new ContextMoleException("invalid_limit", "limit must be between 1 and 500.");
         if (request.Extensions is { Count: > 100 })
-            throw new McpIndexException("invalid_filter", "extensions may contain at most 100 values.");
+            throw new ContextMoleException("invalid_filter", "extensions may contain at most 100 values.");
         if (request.PathPrefixes is { Count: > 100 })
-            throw new McpIndexException("invalid_filter", "path_prefixes may contain at most 100 values.");
+            throw new ContextMoleException("invalid_filter", "path_prefixes may contain at most 100 values.");
         if (request.NameQuery is { Length: > 256 } || request.NameQuery?.Contains('\0') == true)
-            throw new McpIndexException("invalid_filter", "name_query must contain at most 256 valid characters.");
+            throw new ContextMoleException("invalid_filter", "name_query must contain at most 256 valid characters.");
         if (request.ModifiedFromUtc > request.ModifiedToUtc)
-            throw new McpIndexException("invalid_filter", "modified_from_utc must not be later than modified_to_utc.");
+            throw new ContextMoleException("invalid_filter", "modified_from_utc must not be later than modified_to_utc.");
         if (request.Cursor is { Length: > 4096 })
-            throw new McpIndexException("invalid_cursor", "The document cursor is invalid.");
+            throw new ContextMoleException("invalid_cursor", "The document cursor is invalid.");
     }
 
     private static IReadOnlyList<string> NormalizeExtensions(IReadOnlyList<string>? requested)
@@ -870,11 +872,11 @@ public sealed class SqliteSearchStore : ISearchStore
         {
             var extension = value?.Trim().ToLowerInvariant();
             if (string.IsNullOrWhiteSpace(extension))
-                throw new McpIndexException("invalid_filter", "extensions cannot contain empty values.");
+                throw new ContextMoleException("invalid_filter", "extensions cannot contain empty values.");
             if (!extension.StartsWith('.'))
                 extension = "." + extension;
             if (extension.Length is < 2 or > 17 || extension.Skip(1).Any(character => !char.IsLetterOrDigit(character)))
-                throw new McpIndexException("invalid_filter", $"Invalid file extension filter: {value}");
+                throw new ContextMoleException("invalid_filter", $"Invalid file extension filter: {value}");
             extensions.Add(extension);
         }
         return extensions.Order(StringComparer.Ordinal).ToArray();
@@ -889,7 +891,7 @@ public sealed class SqliteSearchStore : ISearchStore
         foreach (var raw in requested)
         {
             if (string.IsNullOrWhiteSpace(raw) || raw.Length > 4096 || raw.Contains('\0') || raw.IndexOfAny(['*', '?']) >= 0)
-                throw new McpIndexException("invalid_filter", "path_prefixes contains an invalid path.");
+                throw new ContextMoleException("invalid_filter", "path_prefixes contains an invalid path.");
             var value = raw.Trim();
             try
             {
@@ -897,31 +899,31 @@ public sealed class SqliteSearchStore : ISearchStore
                 {
                     var key = DatabaseWriterService.PathKey(value);
                     if (!folders.Any(folder => IsSameOrChildPathKey(key, folder.PathKey)))
-                        throw new McpIndexException("invalid_filter", "A path_prefix is outside the folders authorized for this project.");
+                        throw new ContextMoleException("invalid_filter", "A path_prefix is outside the folders authorized for this project.");
                     prefixes.Add(key);
                 }
                 else
                 {
                     if (Path.IsPathRooted(value))
-                        throw new McpIndexException("invalid_filter", "A path_prefix is not a fully qualified or safe relative path.");
+                        throw new ContextMoleException("invalid_filter", "A path_prefix is not a fully qualified or safe relative path.");
                     foreach (var folder in folders)
                     {
                         var key = DatabaseWriterService.PathKey(Path.Combine(folder.Path, value));
                         if (!IsSameOrChildPathKey(key, folder.PathKey))
-                            throw new McpIndexException("invalid_filter", "A relative path_prefix escapes an authorized project folder.");
+                            throw new ContextMoleException("invalid_filter", "A relative path_prefix escapes an authorized project folder.");
                         prefixes.Add(key);
                     }
                 }
                 if (prefixes.Count > 500)
-                    throw new McpIndexException("invalid_filter", "Relative path_prefix expansion exceeds the safe query limit.");
+                    throw new ContextMoleException("invalid_filter", "Relative path_prefix expansion exceeds the safe query limit.");
             }
-            catch (McpIndexException)
+            catch (ContextMoleException)
             {
                 throw;
             }
             catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
             {
-                throw new McpIndexException("invalid_filter", "path_prefixes contains an invalid path.");
+                throw new ContextMoleException("invalid_filter", "path_prefixes contains an invalid path.");
             }
         }
         return prefixes.Order(StringComparer.Ordinal).ToArray();
@@ -969,7 +971,7 @@ public sealed class SqliteSearchStore : ISearchStore
         }
         catch (Exception exception) when (exception is FormatException or JsonException or ArgumentException)
         {
-            throw new McpIndexException("invalid_cursor", "The document cursor is invalid, stale, or belongs to different filters.");
+            throw new ContextMoleException("invalid_cursor", "The document cursor is invalid, stale, or belongs to different filters.");
         }
     }
 
@@ -986,7 +988,7 @@ public sealed class SqliteSearchStore : ISearchStore
         DocumentSortField.ModifiedUtc => "modified_utc",
         DocumentSortField.LastIndexedUtc => "last_indexed_utc",
         DocumentSortField.Status => "current_status",
-        _ => throw new McpIndexException("invalid_filter", "sort_by is invalid.")
+        _ => throw new ContextMoleException("invalid_filter", "sort_by is invalid.")
     };
 
     private static string StatusValue(DocumentStatusFilter status) => status switch
@@ -996,7 +998,7 @@ public sealed class SqliteSearchStore : ISearchStore
         DocumentStatusFilter.Processing => "processing",
         DocumentStatusFilter.Paused => "paused",
         DocumentStatusFilter.Error => "error",
-        _ => throw new McpIndexException("invalid_filter", "status is invalid.")
+        _ => throw new ContextMoleException("invalid_filter", "status is invalid.")
     };
 
     private static void AppendDocumentCursorPredicate(StringBuilder sql, SqliteCommand command, DocumentCursor? cursor,
@@ -1040,7 +1042,7 @@ public sealed class SqliteSearchStore : ISearchStore
     {
         if (!File.Exists(_paths.DatabasePath))
         {
-            throw new McpIndexException("not_initialized", "The index database does not exist. Start the desktop application first.");
+            throw new ContextMoleException("not_initialized", "The index database does not exist. Start the desktop application first.");
         }
 
         var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
@@ -1052,7 +1054,7 @@ public sealed class SqliteSearchStore : ISearchStore
             if (value is null or DBNull || Convert.ToInt32(value) != Schema.CurrentVersion)
             {
                 await connection.DisposeAsync().ConfigureAwait(false);
-                throw new McpIndexException("schema_incompatible", "The index schema is missing or incompatible. Start the desktop application to migrate it.");
+                throw new ContextMoleException("schema_incompatible", "The index schema is missing or incompatible. Start the desktop application to migrate it.");
             }
 
             return connection;
@@ -1090,7 +1092,7 @@ public sealed class SqliteSearchStore : ISearchStore
         command.Parameters.AddWithValue("$project", projectId.ToString());
         var value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
         return value is null or DBNull
-            ? throw new McpIndexException("project_not_found", "The project does not exist.")
+            ? throw new ContextMoleException("project_not_found", "The project does not exist.")
             : Convert.ToInt64(value);
     }
 
@@ -1340,7 +1342,7 @@ public sealed class SqliteSearchStore : ISearchStore
         }
         catch (FormatException)
         {
-            throw new McpIndexException("invalid_cursor", "The attachment cursor is invalid.");
+            throw new ContextMoleException("invalid_cursor", "The attachment cursor is invalid.");
         }
     }
 

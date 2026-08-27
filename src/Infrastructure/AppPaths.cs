@@ -1,12 +1,17 @@
-using MCPIndexSearch.Core;
+using ContextMole.Core;
 
-namespace MCPIndexSearch.Infrastructure;
+namespace ContextMole.Infrastructure;
 
 public sealed class AppPaths : IAppPaths
 {
+    public const string DataDirectoryEnvironmentVariable = "CONTEXTMOLE_DATA_DIR";
+    public const string LegacyDataDirectoryEnvironmentVariable = "MCPINDEXSEARCH_DATA_DIR";
+
     public AppPaths()
     {
-        var overridePath = Environment.GetEnvironmentVariable("MCPINDEXSEARCH_DATA_DIR");
+        var overridePath = Environment.GetEnvironmentVariable(DataDirectoryEnvironmentVariable);
+        if (string.IsNullOrWhiteSpace(overridePath))
+            overridePath = Environment.GetEnvironmentVariable(LegacyDataDirectoryEnvironmentVariable);
         DataDirectory = Path.GetFullPath(string.IsNullOrWhiteSpace(overridePath) ? GetDefaultDataDirectory() : overridePath);
         DatabasePath = Path.Combine(DataDirectory, "index.db");
         AssetsDirectory = Path.Combine(DataDirectory, "assets");
@@ -28,20 +33,27 @@ public sealed class AppPaths : IAppPaths
 
     private static string GetDefaultDataDirectory()
     {
+        var current = GetPlatformDataDirectory("ContextMole");
+        var legacy = GetPlatformDataDirectory("MCPIndexSearch");
+        return !Directory.Exists(current) && Directory.Exists(legacy) ? legacy : current;
+    }
+
+    private static string GetPlatformDataDirectory(string applicationDirectory)
+    {
         if (OperatingSystem.IsWindows())
         {
-            return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MCPIndexSearch");
+            return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), applicationDirectory);
         }
 
         if (OperatingSystem.IsMacOS())
         {
-            return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Library", "Application Support", "MCPIndexSearch");
+            return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Library", "Application Support", applicationDirectory);
         }
 
         var xdgData = Environment.GetEnvironmentVariable("XDG_DATA_HOME");
         return string.IsNullOrWhiteSpace(xdgData)
-            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local", "share", "MCPIndexSearch")
-            : Path.Combine(xdgData, "MCPIndexSearch");
+            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local", "share", applicationDirectory)
+            : Path.Combine(xdgData, applicationDirectory);
     }
 
     private void ApplyPrivatePermissions()
@@ -84,7 +96,7 @@ public sealed class SingleInstanceLock : IDisposable
         }
         catch (IOException exception)
         {
-            throw new McpIndexException("already_running", "Another MCPIndexSearch UI/indexer process is already using this data directory.", false)
+            throw new ContextMoleException("already_running", "Another Context Mole UI/indexer process is already using this data directory.", false)
             {
                 Source = exception.Source
             };

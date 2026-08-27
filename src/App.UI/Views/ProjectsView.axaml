@@ -1,8 +1,8 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-             xmlns:vm="using:MCPIndexSearch.App.UI.ViewModels"
-             xmlns:core="using:MCPIndexSearch.Core"
-             x:Class="MCPIndexSearch.App.UI.Views.ProjectsView"
+             xmlns:vm="using:ContextMole.App.UI.ViewModels"
+             xmlns:core="using:ContextMole.Core"
+             x:Class="ContextMole.App.UI.Views.ProjectsView"
              x:DataType="vm:MainViewModel">
   <ScrollViewer>
     <StackPanel Margin="30,24,30,38" Spacing="18">
@@ -13,7 +13,7 @@
                        HorizontalAlignment="Center" VerticalAlignment="Center" />
           </Border>
           <TextBlock Text="Create your first project" Classes="sectionTitle" HorizontalAlignment="Center" />
-          <TextBlock Text="Choose one or more folders and MCPIndexSearch will build a private, local search index."
+          <TextBlock Text="Choose one or more folders and Context Mole will build a private, local search index."
                      Classes="muted" TextWrapping="Wrap" TextAlignment="Center" />
           <TextBlock Text="Use Add project above to get started." Classes="quiet" FontSize="12"
                      HorizontalAlignment="Center" />
@@ -180,7 +180,7 @@
                 <StackPanel Spacing="12">
                   <StackPanel Spacing="3">
                     <TextBlock Text="Indexed folders" Classes="sectionTitle" />
-                    <TextBlock Text="MCPIndexSearch watches these locations for changes." Classes="quiet" FontSize="12" />
+                    <TextBlock Text="Context Mole watches these locations for changes." Classes="quiet" FontSize="12" />
                   </StackPanel>
                   <ItemsControl ItemsSource="{Binding Folders}">
                     <ItemsControl.ItemTemplate>

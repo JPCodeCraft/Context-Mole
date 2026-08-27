@@ -1,13 +1,13 @@
 #:property TargetFramework=net10.0
-#:project ../src/Core/MCPIndexSearch.Core.csproj
-#:project ../src/Documents/MCPIndexSearch.Documents.csproj
+#:project ../src/Core/ContextMole.Core.csproj
+#:project ../src/Documents/ContextMole.Documents.csproj
 
 using System.Text;
-using MCPIndexSearch.Core;
-using MCPIndexSearch.Documents;
+using ContextMole.Core;
+using ContextMole.Documents;
 
-var data = Environment.GetEnvironmentVariable("MCPINDEXSEARCH_DATA_DIR")
-    ?? throw new InvalidOperationException("Set MCPINDEXSEARCH_DATA_DIR to an isolated smoke directory.");
+var data = Environment.GetEnvironmentVariable("CONTEXTMOLE_DATA_DIR")
+    ?? throw new InvalidOperationException("Set CONTEXTMOLE_DATA_DIR to an isolated smoke directory.");
 Directory.CreateDirectory(data);
 var extractor = new DocumentExtractionRegistry(new UnexpectedOcrEngine());
 

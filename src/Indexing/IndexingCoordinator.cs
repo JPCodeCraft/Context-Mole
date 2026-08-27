@@ -1,11 +1,13 @@
 using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Threading.Channels;
-using MCPIndexSearch.Core;
+
+using ContextMole.Core;
+
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
-namespace MCPIndexSearch.Indexing;
+namespace ContextMole.Indexing;
 
 public sealed class IndexingCoordinator(
     IIndexWriter writer,
@@ -249,8 +251,8 @@ public sealed class IndexingCoordinator(
     {
         var projects = await _searchStore.ListProjectsAsync(cancellationToken).ConfigureAwait(false);
         foreach (var project in projects)
-        foreach (var folder in project.Folders)
-            await ReconcileFolderAsync(project.Id, folder.Id, folder.Path, cancellationToken).ConfigureAwait(false);
+            foreach (var folder in project.Folders)
+                await ReconcileFolderAsync(project.Id, folder.Id, folder.Path, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task QueueEmbeddingPolicyRefreshAsync(CancellationToken cancellationToken)
@@ -500,7 +502,7 @@ public sealed class IndexingCoordinator(
         }
 
         if (policy is null || vectors.Count != source.Passages.Count)
-            throw new McpIndexException("embedding_unavailable",
+            throw new ContextMoleException("embedding_unavailable",
                 _embeddings.UnavailableReason ?? "The selected embedding model is unavailable.", true);
 
         var refreshed = source.Passages.Select((passage, index) =>
@@ -524,12 +526,12 @@ public sealed class IndexingCoordinator(
             nodes.Add(new ContentNodeDraft(contentId, parentId, ordinal, node.Name, node.MimeType, node.Relationship, depth, node.Status));
             var passageOrdinal = 0;
             foreach (var section in node.Sections)
-            foreach (var chunk in Chunk(section.Text))
-            {
-                passages.Add(new PassageDraft(Guid.CreateVersion7(), contentId, passageOrdinal++, chunk,
-                    TextNormalization.ForSearch(chunk, section.Method == ExtractionMethod.NativeText && section.Location.Kind == LocationKind.Page),
-                    section.Location, section.Method, section.OcrConfidence, null));
-            }
+                foreach (var chunk in Chunk(section.Text))
+                {
+                    passages.Add(new PassageDraft(Guid.CreateVersion7(), contentId, passageOrdinal++, chunk,
+                        TextNormalization.ForSearch(chunk, section.Method == ExtractionMethod.NativeText && section.Location.Kind == LocationKind.Page),
+                        section.Location, section.Method, section.OcrConfidence, null));
+                }
             for (var index = 0; index < node.Attachments.Count; index++)
                 AddNode(node.Attachments[index], contentId, index, depth + 1);
         }
@@ -639,12 +641,12 @@ public sealed class IndexingCoordinator(
     {
         UnauthorizedAccessException => "access_denied",
         IOException => "io_error",
-        McpIndexException mcp => mcp.Code,
+        ContextMoleException mcp => mcp.Code,
         _ => "indexing_failed"
     };
 
     private static bool IsTemporary(Exception exception) => exception is IOException or UnauthorizedAccessException ||
-        exception is McpIndexException { Retryable: true };
+        exception is ContextMoleException { Retryable: true };
     private static StringComparer PathComparer() => OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
         ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
     private static StringComparison PathComparison() => OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()

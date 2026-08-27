@@ -1,6 +1,6 @@
 # Third-party notices
 
-MCPIndexSearch is built on the packages pinned in `Directory.Packages.props` and their locked transitive dependencies. Distributions must retain the licenses shipped by those packages and downloaded model assets.
+Context Mole is built on the packages pinned in `Directory.Packages.props` and their locked transitive dependencies. Distributions must retain the licenses shipped by those packages and downloaded model assets.
 
 - IBM Granite Embedding 311M Multilingual R2: Apache 2.0 model materials at revision `44399559930365213510b1ee2eb15ded83374f0e`. Its tokenizer is derived from the Gemma 3 tokenizer and is subject to the Gemma Terms of Use; acceptance is recorded by the in-app or command-line model installer.
 - IBM Granite Embedding 97M Multilingual R2: Apache 2.0 model materials at revision `835ad14087e140460703cf0fae09f97d469d65c2`.

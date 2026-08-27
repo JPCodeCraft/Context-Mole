@@ -1,0 +1,31 @@
+<Solution>
+  <Folder Name="/src/" />
+  <Folder Name="/src/App.UI/">
+    <Project Path="src/App.UI/ContextMole.App.UI.csproj" />
+  </Folder>
+  <Folder Name="/src/Core/">
+    <Project Path="src/Core/ContextMole.Core.csproj" />
+  </Folder>
+  <Folder Name="/src/Documents/">
+    <Project Path="src/Documents/ContextMole.Documents.csproj" />
+  </Folder>
+  <Folder Name="/src/Indexing/">
+    <Project Path="src/Indexing/ContextMole.Indexing.csproj" />
+  </Folder>
+  <Folder Name="/src/Infrastructure/">
+    <Project Path="src/Infrastructure/ContextMole.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/src/Mcp/">
+    <Project Path="src/Mcp/ContextMole.Mcp.csproj" />
+  </Folder>
+  <Folder Name="/src/Search/">
+    <Project Path="src/Search/ContextMole.Search.csproj" />
+  </Folder>
+  <Folder Name="/src/Storage/">
+    <Project Path="src/Storage/ContextMole.Storage.csproj" />
+  </Folder>
+  <Folder Name="/tests/" />
+  <Folder Name="/tests/ContextMole.Tests/">
+    <Project Path="tests/ContextMole.Tests/ContextMole.Tests.csproj" />
+  </Folder>
+</Solution>

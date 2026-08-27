@@ -1,7 +1,8 @@
 using System.Reflection;
+
 using Microsoft.Data.Sqlite;
 
-namespace MCPIndexSearch.Storage;
+namespace ContextMole.Storage;
 
 internal static class Schema
 {

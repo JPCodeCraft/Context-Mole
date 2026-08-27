@@ -2,7 +2,7 @@ using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
 
-namespace MCPIndexSearch.Core;
+namespace ContextMole.Core;
 
 public static partial class TextNormalization
 {

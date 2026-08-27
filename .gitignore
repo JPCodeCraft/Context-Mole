@@ -6,6 +6,9 @@
 # dotenv files
 .env
 
+# Codex attachment staging (copy approved assets into the repository explicitly)
+.codex-remote-attachments/
+
 # User-specific files
 *.rsuser
 *.suo

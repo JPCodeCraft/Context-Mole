@@ -1,12 +1,18 @@
 using System.Security.Cryptography;
+
+using ContextMole.Core;
+
 using DocumentFormat.OpenXml.Packaging;
-using MCPIndexSearch.Core;
+
 using MimeKit;
+
 using MsgReader.Outlook;
+
 using UglyToad.PdfPig;
+
 using Storage = MsgReader.Outlook.Storage;
 
-namespace MCPIndexSearch.Documents;
+namespace ContextMole.Documents;
 
 public sealed partial class ContentMaterializationService(
     ISearchStore store,
@@ -14,7 +20,8 @@ public sealed partial class ContentMaterializationService(
     IGlobalCpuBudget cpuBudget) : IContentMaterializer
 {
     public const long DefaultMaxBytes = 250L * 1024 * 1024;
-    public const string MaxBytesEnvironmentVariable = "MCPINDEXSEARCH_MATERIALIZE_MAX_BYTES";
+    public const string MaxBytesEnvironmentVariable = "CONTEXTMOLE_MATERIALIZE_MAX_BYTES";
+    public const string LegacyMaxBytesEnvironmentVariable = "MCPINDEXSEARCH_MATERIALIZE_MAX_BYTES";
 
     private readonly ISearchStore _store = store;
     private readonly IAppPaths _paths = paths;
@@ -27,7 +34,7 @@ public sealed partial class ContentMaterializationService(
         using var worker = await _cpuBudget.AcquireWorkerAsync(cancellationToken).ConfigureAwait(false);
         using var activeWorker = worker.Activate();
         var indexed = await _store.GetContentMaterializationAsync(projectId, contentId, cancellationToken).ConfigureAwait(false)
-            ?? throw new McpIndexException("content_not_found", "The content ID was not found in the active index revision for this project.");
+            ?? throw new ContextMoleException("content_not_found", "The content ID was not found in the active index revision for this project.");
 
         ValidateContentChain(indexed);
         var sourcePath = ValidateAuthorizedSource(indexed.SourcePath, indexed.ProjectFolderPath);
@@ -55,12 +62,12 @@ public sealed partial class ContentMaterializationService(
                 var extracted = await ExtractChildAsync(currentBytes, parent.Name, parent.MimeType, expected.Ordinal,
                     cancellationToken).ConfigureAwait(false);
                 if (extracted is null || !MatchesIndexedNode(extracted, expected))
-                    throw new McpIndexException("attachment_not_found", "The indexed attachment could not be located in the verified source container.");
+                    throw new ContextMoleException("attachment_not_found", "The indexed attachment could not be located in the verified source container.");
                 currentBytes = extracted.Bytes;
             }
             materializedBytes = currentBytes;
         }
-        catch (McpIndexException)
+        catch (ContextMoleException)
         {
             throw;
         }
@@ -74,7 +81,7 @@ public sealed partial class ContentMaterializationService(
         }
         catch (Exception exception)
         {
-            throw new McpIndexException("extraction_failed", SafeExtractionMessage(exception));
+            throw new ContextMoleException("extraction_failed", SafeExtractionMessage(exception));
         }
 
         if (materializedBytes.LongLength > _maxBytes)
@@ -94,11 +101,11 @@ public sealed partial class ContentMaterializationService(
         var current = await _store.GetContentMaterializationAsync(indexed.ProjectId, indexed.ContentId, cancellationToken)
             .ConfigureAwait(false);
         if (current is null)
-            throw new McpIndexException("content_not_found", "The content ID is no longer part of the active index revision.");
+            throw new ContextMoleException("content_not_found", "The content ID is no longer part of the active index revision.");
         if (current.IndexRevisionId != indexed.IndexRevisionId ||
             !string.Equals(current.IndexFingerprint, indexed.IndexFingerprint, StringComparison.OrdinalIgnoreCase) ||
             !PathsEqual(current.SourcePath, indexed.SourcePath))
-            throw new McpIndexException("source_changed", "The active index revision changed during materialization.");
+            throw new ContextMoleException("source_changed", "The active index revision changed during materialization.");
     }
 
     private async Task<VerifiedSource> ReadVerifiedSourceAsync(string sourcePath, IndexedContentMaterialization indexed,
@@ -108,33 +115,33 @@ public sealed partial class ContentMaterializationService(
         {
             var info = new FileInfo(sourcePath);
             if (!info.Exists)
-                throw new McpIndexException("source_missing", "The indexed source file no longer exists.");
+                throw new ContextMoleException("source_missing", "The indexed source file no longer exists.");
             if (info.Length != indexed.IndexedSizeBytes)
-                throw new McpIndexException("source_changed", "The source file size no longer matches the active index revision.");
+                throw new ContextMoleException("source_changed", "The source file size no longer matches the active index revision.");
             if (info.Length > _maxBytes)
                 throw SizeLimitExceeded();
 
             await using var source = new FileStream(sourcePath, FileMode.Open, FileAccess.Read, FileShare.Read,
                 128 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
             if (source.Length != indexed.IndexedSizeBytes)
-                throw new McpIndexException("source_changed", "The source file changed while it was being validated.");
+                throw new ContextMoleException("source_changed", "The source file changed while it was being validated.");
             var bytes = await ReadBoundedAsync(source, cancellationToken).ConfigureAwait(false);
             var sha256 = Sha256(bytes);
             if (!string.Equals(sha256, indexed.IndexFingerprint, StringComparison.OrdinalIgnoreCase))
-                throw new McpIndexException("source_changed", "The source fingerprint no longer matches the active index revision.");
+                throw new ContextMoleException("source_changed", "The source fingerprint no longer matches the active index revision.");
             return new VerifiedSource(bytes, sha256);
         }
-        catch (McpIndexException)
+        catch (ContextMoleException)
         {
             throw;
         }
         catch (FileNotFoundException)
         {
-            throw new McpIndexException("source_missing", "The indexed source file no longer exists.");
+            throw new ContextMoleException("source_missing", "The indexed source file no longer exists.");
         }
         catch (DirectoryNotFoundException)
         {
-            throw new McpIndexException("source_missing", "The indexed source folder no longer exists.");
+            throw new ContextMoleException("source_missing", "The indexed source folder no longer exists.");
         }
         catch (MaterializationSizeLimitException)
         {
@@ -146,7 +153,7 @@ public sealed partial class ContentMaterializationService(
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            throw new McpIndexException("extraction_failed", "The indexed source file could not be read for validation.");
+            throw new ContextMoleException("extraction_failed", "The indexed source file could not be read for validation.");
         }
     }
 
@@ -166,7 +173,7 @@ public sealed partial class ContentMaterializationService(
             ".mht" or ".mhtml" => await ExtractEmlChildAsync(containerBytes, ordinal, cancellationToken).ConfigureAwait(false),
             ".msg" => ExtractMsgChild(containerBytes, ordinal),
             ".zip" or ".rar" => await ExtractArchiveChildAsync(containerBytes, extension, ordinal, cancellationToken).ConfigureAwait(false),
-            _ => throw new McpIndexException("unsupported_container", "The indexed parent content is not a supported attachment container.")
+            _ => throw new ContextMoleException("unsupported_container", "The indexed parent content is not a supported attachment container.")
         };
     }
 
@@ -266,23 +273,23 @@ public sealed partial class ContentMaterializationService(
             switch (entity)
             {
                 case MessagePart messagePart when messagePart.Message is not null:
-                {
-                    await using var output = new LimitedMemoryStream(_maxBytes);
-                    await messagePart.Message.WriteToAsync(output, cancellationToken).ConfigureAwait(false);
-                    var suppliedName = messagePart.ContentDisposition?.FileName ?? messagePart.ContentType.Name;
-                    var name = string.IsNullOrWhiteSpace(suppliedName) ? $"message-{sourceOrdinal}.eml" : suppliedName;
-                    attachment = new RawAttachment(name, "message/rfc822", "email-attachment", output.ToArray());
-                    break;
-                }
+                    {
+                        await using var output = new LimitedMemoryStream(_maxBytes);
+                        await messagePart.Message.WriteToAsync(output, cancellationToken).ConfigureAwait(false);
+                        var suppliedName = messagePart.ContentDisposition?.FileName ?? messagePart.ContentType.Name;
+                        var name = string.IsNullOrWhiteSpace(suppliedName) ? $"message-{sourceOrdinal}.eml" : suppliedName;
+                        attachment = new RawAttachment(name, "message/rfc822", "email-attachment", output.ToArray());
+                        break;
+                    }
                 case MimePart mimePart when mimePart.Content is not null:
-                {
-                    await using var output = new LimitedMemoryStream(_maxBytes);
-                    await mimePart.Content.DecodeToAsync(output, cancellationToken).ConfigureAwait(false);
-                    var name = string.IsNullOrWhiteSpace(mimePart.FileName) ? $"attachment-{sourceOrdinal}" : mimePart.FileName;
-                    attachment = new RawAttachment(name, mimePart.ContentType.MimeType,
-                        mimePart.IsAttachment ? "email-attachment" : "email-inline", output.ToArray());
-                    break;
-                }
+                    {
+                        await using var output = new LimitedMemoryStream(_maxBytes);
+                        await mimePart.Content.DecodeToAsync(output, cancellationToken).ConfigureAwait(false);
+                        var name = string.IsNullOrWhiteSpace(mimePart.FileName) ? $"attachment-{sourceOrdinal}" : mimePart.FileName;
+                        attachment = new RawAttachment(name, mimePart.ContentType.MimeType,
+                            mimePart.IsAttachment ? "email-attachment" : "email-inline", output.ToArray());
+                        break;
+                    }
             }
             if (attachment is not null && ordinal++ == requestedOrdinal)
                 return attachment;
@@ -303,22 +310,22 @@ public sealed partial class ContentMaterializationService(
             switch (item)
             {
                 case Storage.Attachment file when file.Data is { Length: > 0 } data:
-                {
-                    if (data.LongLength > _maxBytes)
-                        throw new MaterializationSizeLimitException();
-                    var name = string.IsNullOrWhiteSpace(file.FileName) ? $"attachment-{sourceOrdinal}" : file.FileName;
-                    attachment = new RawAttachment(name, file.MimeType,
-                        file.IsInline ? "email-inline" : "email-attachment", data);
-                    break;
-                }
+                    {
+                        if (data.LongLength > _maxBytes)
+                            throw new MaterializationSizeLimitException();
+                        var name = string.IsNullOrWhiteSpace(file.FileName) ? $"attachment-{sourceOrdinal}" : file.FileName;
+                        attachment = new RawAttachment(name, file.MimeType,
+                            file.IsInline ? "email-inline" : "email-attachment", data);
+                        break;
+                    }
                 case Storage.Message nested:
-                {
-                    using var output = new LimitedMemoryStream(_maxBytes);
-                    nested.Save(output);
-                    var name = string.IsNullOrWhiteSpace(nested.FileName) ? $"message-{sourceOrdinal}.msg" : nested.FileName;
-                    attachment = new RawAttachment(name, "application/vnd.ms-outlook", "email-attachment", output.ToArray());
-                    break;
-                }
+                    {
+                        using var output = new LimitedMemoryStream(_maxBytes);
+                        nested.Save(output);
+                        var name = string.IsNullOrWhiteSpace(nested.FileName) ? $"message-{sourceOrdinal}.msg" : nested.FileName;
+                        attachment = new RawAttachment(name, "application/vnd.ms-outlook", "email-attachment", output.ToArray());
+                        break;
+                    }
             }
             if (attachment is not null && ordinal++ == requestedOrdinal)
                 return attachment;
@@ -391,7 +398,7 @@ public sealed partial class ContentMaterializationService(
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            throw new McpIndexException("extraction_failed", "The attachment could not be written to controlled temporary storage.");
+            throw new ContextMoleException("extraction_failed", "The attachment could not be written to controlled temporary storage.");
         }
     }
 
@@ -420,13 +427,13 @@ public sealed partial class ContentMaterializationService(
     {
         if (indexed.ContentChain.Count == 0 || indexed.ContentChain[0].ParentContentId is not null ||
             indexed.ContentChain[0].Depth != 0 || indexed.ContentChain[^1].ContentId != indexed.ContentId)
-            throw new McpIndexException("content_not_found", "The indexed content hierarchy is incomplete.");
+            throw new ContextMoleException("content_not_found", "The indexed content hierarchy is incomplete.");
         for (var index = 1; index < indexed.ContentChain.Count; index++)
         {
             var parent = indexed.ContentChain[index - 1];
             var child = indexed.ContentChain[index];
             if (child.ParentContentId != parent.ContentId || child.Depth != parent.Depth + 1)
-                throw new McpIndexException("content_not_found", "The indexed content hierarchy is invalid.");
+                throw new ContextMoleException("content_not_found", "The indexed content hierarchy is invalid.");
         }
     }
 
@@ -441,21 +448,21 @@ public sealed partial class ContentMaterializationService(
         }
         catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
         {
-            throw new McpIndexException("source_missing", "The indexed source path is invalid.");
+            throw new ContextMoleException("source_missing", "The indexed source path is invalid.");
         }
 
         if (!IsPathWithin(folderPath, sourcePath))
-            throw new McpIndexException("source_not_authorized", "The indexed source is outside its authorized project folder.");
+            throw new ContextMoleException("source_not_authorized", "The indexed source is outside its authorized project folder.");
         if (!File.Exists(sourcePath))
-            throw new McpIndexException("source_missing", "The indexed source file no longer exists.");
+            throw new ContextMoleException("source_missing", "The indexed source file no longer exists.");
         if (IsFileSystemLink(new DirectoryInfo(folderPath)))
-            throw new McpIndexException("source_not_authorized", "The authorized project folder is now a file-system link.");
+            throw new ContextMoleException("source_not_authorized", "The authorized project folder is now a file-system link.");
 
         var current = new FileInfo(sourcePath) as FileSystemInfo;
         while (current is not null && !PathsEqual(current.FullName, folderPath))
         {
             if (IsFileSystemLink(current))
-                throw new McpIndexException("source_not_authorized", "The indexed source now traverses a file-system link.");
+                throw new ContextMoleException("source_not_authorized", "The indexed source now traverses a file-system link.");
             current = current switch
             {
                 FileInfo file => file.Directory,
@@ -599,7 +606,7 @@ public sealed partial class ContentMaterializationService(
 
     private static string Sha256(byte[] bytes) => Convert.ToHexStringLower(SHA256.HashData(bytes));
 
-    private McpIndexException SizeLimitExceeded() => new("size_limit_exceeded",
+    private ContextMoleException SizeLimitExceeded() => new("size_limit_exceeded",
         $"The requested content exceeds the configured {_maxBytes} byte materialization limit.");
 
     private static string SafeExtractionMessage(Exception exception) => string.IsNullOrWhiteSpace(exception.Message)
@@ -609,6 +616,8 @@ public sealed partial class ContentMaterializationService(
     private static long ReadConfiguredMaxBytes()
     {
         var configured = Environment.GetEnvironmentVariable(MaxBytesEnvironmentVariable);
+        if (string.IsNullOrWhiteSpace(configured))
+            configured = Environment.GetEnvironmentVariable(LegacyMaxBytesEnvironmentVariable);
         if (string.IsNullOrWhiteSpace(configured))
             return DefaultMaxBytes;
         if (!long.TryParse(configured, out var value) || value <= 0 || value > int.MaxValue)

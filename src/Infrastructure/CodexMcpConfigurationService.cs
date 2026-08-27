@@ -1,9 +1,10 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
-using MCPIndexSearch.Core;
 
-namespace MCPIndexSearch.Infrastructure;
+using ContextMole.Core;
+
+namespace ContextMole.Infrastructure;
 
 public enum CodexMcpConnectionState
 {
@@ -23,6 +24,7 @@ public sealed record CodexMcpConnectionStatus(
 
 public sealed partial class CodexMcpConfigurationService(IAppPaths appPaths)
 {
+    // Stable configuration identifiers avoid orphaning existing Codex integrations.
     private const string ServerName = "mcp-index-search";
     private const string BeginMarker = "# BEGIN MCPIndexSearch managed MCP server";
     private const string EndMarker = "# END MCPIndexSearch managed MCP server";
@@ -73,7 +75,7 @@ public sealed partial class CodexMcpConfigurationService(IAppPaths appPaths)
         if (UnmanagedServerHeaderRegex().IsMatch(config))
         {
             return new(CodexMcpConnectionState.Conflict,
-                "An existing mcp-index-search entry is already present in the Codex configuration. It was left unchanged.", ConfigPath);
+                "An existing Context Mole entry is already present in the Codex configuration. It was left unchanged.", ConfigPath);
         }
 
         var resolved = ResolveServerCandidate();
@@ -104,7 +106,7 @@ public sealed partial class CodexMcpConfigurationService(IAppPaths appPaths)
             if (!TryGetManagedBlock(config, out var start, out var end) && UnmanagedServerHeaderRegex().IsMatch(config))
             {
                 return new(CodexMcpConnectionState.Conflict,
-                    "An existing mcp-index-search entry is already present in the Codex configuration. It was left unchanged.",
+                    "An existing Context Mole entry is already present in the Codex configuration. It was left unchanged.",
                     ConfigPath, serverPath);
             }
 
@@ -120,7 +122,7 @@ public sealed partial class CodexMcpConfigurationService(IAppPaths appPaths)
 
             await WriteConfigSafelyAsync(config, updated, cancellationToken).ConfigureAwait(false);
             return new(CodexMcpConnectionState.Connected,
-                "Connected successfully. Restart Codex to load MCPIndexSearch.", ConfigPath, serverPath, true);
+                "Connected successfully. Restart Codex to load Context Mole.", ConfigPath, serverPath, true);
         }
         finally
         {
@@ -138,14 +140,14 @@ public sealed partial class CodexMcpConfigurationService(IAppPaths appPaths)
             {
                 return UnmanagedServerHeaderRegex().IsMatch(config)
                     ? new(CodexMcpConnectionState.Conflict,
-                        "The existing mcp-index-search entry is not managed by this application and was left unchanged.", ConfigPath)
+                        "The existing Context Mole entry is not managed by this application and was left unchanged.", ConfigPath)
                     : new(CodexMcpConnectionState.Disconnected, "Already disconnected.", ConfigPath);
             }
 
             var updated = string.Concat(config.AsSpan(0, start), config.AsSpan(end)).TrimEnd() + Environment.NewLine;
             await WriteConfigSafelyAsync(config, updated, cancellationToken).ConfigureAwait(false);
             return new(CodexMcpConnectionState.Disconnected,
-                "Disconnected successfully. Restart Codex to remove MCPIndexSearch from the current session.", ConfigPath,
+                "Disconnected successfully. Restart Codex to remove Context Mole from the current session.", ConfigPath,
                 RestartRequired: true);
         }
         finally
@@ -169,7 +171,9 @@ public sealed partial class CodexMcpConfigurationService(IAppPaths appPaths)
 
     private ServerCandidate? ResolveServerCandidate()
     {
-        var overridePath = Environment.GetEnvironmentVariable("MCPINDEXSEARCH_MCP_PATH");
+        var overridePath = Environment.GetEnvironmentVariable("CONTEXTMOLE_MCP_PATH");
+        if (string.IsNullOrWhiteSpace(overridePath))
+            overridePath = Environment.GetEnvironmentVariable("MCPINDEXSEARCH_MCP_PATH");
         if (!string.IsNullOrWhiteSpace(overridePath))
         {
             var fullOverride = Path.GetFullPath(overridePath);
@@ -194,7 +198,7 @@ public sealed partial class CodexMcpConfigurationService(IAppPaths appPaths)
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
         while (directory is not null)
         {
-            if (File.Exists(Path.Combine(directory.FullName, "MCPIndexSearch.slnx")))
+            if (File.Exists(Path.Combine(directory.FullName, "ContextMole.slnx")))
             {
                 var bin = Path.Combine(directory.FullName, "src", "Mcp", "bin");
                 if (!Directory.Exists(bin)) return null;
@@ -314,11 +318,11 @@ public sealed partial class CodexMcpConfigurationService(IAppPaths appPaths)
 
     private static IEnumerable<string> EnumerateServerFiles(string sourceDirectory) =>
         Directory.EnumerateFiles(sourceDirectory, "*", new EnumerationOptions
-            {
-                RecurseSubdirectories = true,
-                IgnoreInaccessible = false,
-                AttributesToSkip = FileAttributes.ReparsePoint
-            })
+        {
+            RecurseSubdirectories = true,
+            IgnoreInaccessible = false,
+            AttributesToSkip = FileAttributes.ReparsePoint
+        })
             .Order(StringComparer.Ordinal);
 
     private static bool IsRepositoryBuildOutput(string executablePath)
@@ -333,7 +337,7 @@ public sealed partial class CodexMcpConfigurationService(IAppPaths appPaths)
                 var repositoryDirectory = sourceDirectory?.Parent;
                 if (sourceDirectory is not null && repositoryDirectory is not null &&
                     string.Equals(sourceDirectory.Name, "src", StringComparison.OrdinalIgnoreCase) &&
-                    File.Exists(Path.Combine(repositoryDirectory.FullName, "MCPIndexSearch.slnx")))
+                    File.Exists(Path.Combine(repositoryDirectory.FullName, "ContextMole.slnx")))
                     return true;
             }
 
@@ -432,7 +436,7 @@ public sealed partial class CodexMcpConfigurationService(IAppPaths appPaths)
         if (File.Exists(ConfigPath))
         {
             var timestamp = DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmssfff");
-            File.Copy(ConfigPath, $"{ConfigPath}.mcpindexsearch-{timestamp}.bak", overwrite: false);
+            File.Copy(ConfigPath, $"{ConfigPath}.contextmole-{timestamp}.bak", overwrite: false);
         }
 
         var temporaryPath = $"{ConfigPath}.{Guid.NewGuid():N}.partial";

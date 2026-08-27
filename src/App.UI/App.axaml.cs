@@ -4,13 +4,13 @@ using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
 using Avalonia.Platform;
 
-using MCPIndexSearch.App.UI.ViewModels;
-using MCPIndexSearch.App.UI.Views;
-using MCPIndexSearch.Indexing;
+using ContextMole.App.UI.ViewModels;
+using ContextMole.App.UI.Views;
+using ContextMole.Indexing;
 
 using Microsoft.Extensions.DependencyInjection;
 
-namespace MCPIndexSearch.App.UI;
+namespace ContextMole.App.UI;
 
 public partial class App : Application
 {
@@ -56,7 +56,7 @@ public partial class App : Application
     {
         try
         {
-            var show = new NativeMenuItem("Show MCPIndexSearch");
+            var show = new NativeMenuItem("Show Context Mole");
             show.Click += (_, _) => ShowWindow(window);
             var quit = new NativeMenuItem("Quit");
             quit.Click += async (_, _) => await QuitAsync();
@@ -66,8 +66,8 @@ public partial class App : Application
             menu.Add(quit);
             _trayIcon = new TrayIcon
             {
-                Icon = new WindowIcon(AssetLoader.Open(new Uri("avares://MCPIndexSearch.App.UI/Assets/mcp-index-search.ico"))),
-                ToolTipText = "MCPIndexSearch",
+                Icon = new WindowIcon(AssetLoader.Open(new Uri("avares://MCPIndexSearch.App.UI/Assets/context-mole.ico"))),
+                ToolTipText = "Context Mole",
                 Menu = menu,
                 IsVisible = true
             };

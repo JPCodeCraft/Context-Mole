@@ -3,9 +3,9 @@ using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 
-using MCPIndexSearch.App.UI.ViewModels;
+using ContextMole.App.UI.ViewModels;
 
-namespace MCPIndexSearch.App.UI.Views;
+namespace ContextMole.App.UI.Views;
 
 public partial class MainWindow : Window
 {

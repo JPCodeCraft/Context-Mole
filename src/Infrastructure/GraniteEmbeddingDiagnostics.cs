@@ -1,10 +1,13 @@
 using System.Diagnostics;
-using MCPIndexSearch.Core;
+
+using ContextMole.Core;
+
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
+
 using Tokenizers.HuggingFace.Tokenizer;
 
-namespace MCPIndexSearch.Infrastructure;
+namespace ContextMole.Infrastructure;
 
 public sealed record GraniteValidationResult(
     bool QuantizedEnabled,
@@ -29,7 +32,7 @@ public static class GraniteEmbeddingDiagnostics
         var quantizedPath = Path.Combine(directory, "model_quint8_avx2.onnx");
         var fp32Path = Path.Combine(directory, "model.onnx");
         if (!File.Exists(tokenizerPath) || !File.Exists(quantizedPath) || !File.Exists(fp32Path))
-            throw new McpIndexException("model_unavailable", "Both Granite profiles and the tokenizer are required for validation.");
+            throw new ContextMoleException("model_unavailable", "Both Granite profiles and the tokenizer are required for validation.");
 
         string[] documents =
         [
@@ -122,11 +125,11 @@ public static class GraniteEmbeddingDiagnostics
             var inputIds = new DenseTensor<long>([batch.Length, length]);
             var attention = new DenseTensor<long>([batch.Length, length]);
             for (var row = 0; row < batch.Length; row++)
-            for (var token = 0; token < batch[row].Length; token++)
-            {
-                inputIds[row, token] = batch[row][token];
-                attention[row, token] = 1;
-            }
+                for (var token = 0; token < batch[row].Length; token++)
+                {
+                    inputIds[row, token] = batch[row][token];
+                    attention[row, token] = 1;
+                }
             using var results = RunWithCancellation(session,
                 [
                     NamedOnnxValue.CreateFromTensor("input_ids", inputIds),
@@ -136,7 +139,7 @@ public static class GraniteEmbeddingDiagnostics
             var dimensions = output.Dimensions.ToArray();
             if (dimensions.Length != 3 || dimensions[0] != batch.Length ||
                 dimensions[2] != model.SourceDimensions || model.Dimensions > model.SourceDimensions)
-                throw new McpIndexException("model_output_invalid",
+                throw new ContextMoleException("model_output_invalid",
                     $"Expected Granite output [batch,tokens,{model.SourceDimensions}], received [{string.Join(',', dimensions)}].");
             for (var row = 0; row < batch.Length; row++)
             {
@@ -148,7 +151,7 @@ public static class GraniteEmbeddingDiagnostics
                     norm += vector[dimension] * vector[dimension];
                 }
                 if (norm <= double.Epsilon)
-                    throw new McpIndexException("model_output_invalid", "Granite produced a zero-length embedding.");
+                    throw new ContextMoleException("model_output_invalid", "Granite produced a zero-length embedding.");
                 var divisor = (float)Math.Sqrt(norm);
                 for (var dimension = 0; dimension < vector.Length; dimension++) vector[dimension] /= divisor;
                 outputVectors.Add(vector);

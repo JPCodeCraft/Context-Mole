@@ -4,11 +4,11 @@ using Avalonia.Threading;
 
 using CommunityToolkit.Mvvm.ComponentModel;
 
-using MCPIndexSearch.Core;
-using MCPIndexSearch.Indexing;
-using MCPIndexSearch.Infrastructure;
+using ContextMole.Core;
+using ContextMole.Indexing;
+using ContextMole.Infrastructure;
 
-namespace MCPIndexSearch.App.UI.ViewModels;
+namespace ContextMole.App.UI.ViewModels;
 
 internal enum MainSection
 {
@@ -321,7 +321,7 @@ internal partial class MainViewModel : ViewModelBase
     public async Task SetEmbeddingModelAsync(GraniteEmbeddingModelDefinition model)
     {
         if (!_modelInstaller.IsModelInstalled(model.Choice))
-            throw new McpIndexException("model_unavailable", $"Download {model.DisplayName} before selecting it.");
+            throw new ContextMoleException("model_unavailable", $"Download {model.DisplayName} before selecting it.");
 
         IsChangingEmbeddingModel = true;
         try
@@ -343,7 +343,7 @@ internal partial class MainViewModel : ViewModelBase
             await _embeddingGenerator.ReloadAsync();
             if (!_embeddingGenerator.IsAvailable ||
                 !string.Equals(_embeddingGenerator.Policy?.ModelId, model.ModelId, StringComparison.Ordinal))
-                throw new McpIndexException("model_unavailable",
+                throw new ContextMoleException("model_unavailable",
                     _embeddingGenerator.UnavailableReason ?? $"{model.DisplayName} could not be loaded.");
 
             SelectedEmbeddingModel = GraniteEmbeddingModels.Get(_embeddingModelSettings.Model);
@@ -420,8 +420,8 @@ internal partial class MainViewModel : ViewModelBase
         _windowsStartup.SetEnabled(enabled);
         StartWithWindowsEnabled = _windowsStartup.IsEnabled;
         StatusMessage = StartWithWindowsEnabled
-            ? "MCPIndexSearch will start automatically with Windows."
-            : "MCPIndexSearch will not start automatically with Windows.";
+            ? "Context Mole will start automatically with Windows."
+            : "Context Mole will not start automatically with Windows.";
     }
 
     public async Task RemoveAsync()

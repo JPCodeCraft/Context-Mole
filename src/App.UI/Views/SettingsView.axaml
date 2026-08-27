@@ -1,7 +1,7 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-             xmlns:vm="using:MCPIndexSearch.App.UI.ViewModels"
-             x:Class="MCPIndexSearch.App.UI.Views.SettingsView"
+             xmlns:vm="using:ContextMole.App.UI.ViewModels"
+             x:Class="ContextMole.App.UI.Views.SettingsView"
              x:DataType="vm:MainViewModel">
   <ScrollViewer>
     <StackPanel Margin="30,24,30,40" Spacing="18" MaxWidth="920" HorizontalAlignment="Center">

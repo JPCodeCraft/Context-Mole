@@ -51,18 +51,18 @@ jobs:
           ./tools/ValidateWindowsBranding.ps1
 
       - name: Restore locked dependencies
-        run: dotnet restore MCPIndexSearch.slnx --locked-mode
+        run: dotnet restore ContextMole.slnx --locked-mode
 
       - name: Build the complete solution
-        run: dotnet build MCPIndexSearch.slnx -c Release --no-restore -p:ContinuousIntegrationBuild=true -p:Version=${{ env.VERSION }} -p:SourceRevisionId=${{ github.sha }}
+        run: dotnet build ContextMole.slnx -c Release --no-restore -p:ContinuousIntegrationBuild=true -p:Version=${{ env.VERSION }} -p:SourceRevisionId=${{ github.sha }}
 
       - name: Run automated tests
-        run: dotnet test --solution MCPIndexSearch.slnx -c Release --no-restore --no-build
+        run: dotnet test --solution ContextMole.slnx -c Release --no-restore --no-build
 
       - name: Publish the Windows application and MCP sidecar
         shell: pwsh
         run: |
-          dotnet publish src/App.UI/MCPIndexSearch.App.UI.csproj `
+          dotnet publish src/App.UI/ContextMole.App.UI.csproj `
             -c Release `
             -f net10.0 `
             -r win-x64 `
@@ -82,7 +82,7 @@ jobs:
         run: |
           $main = "artifacts/publish/win-x64/MCPIndexSearch.App.UI.exe"
           $sidecar = "artifacts/publish/win-x64/mcp-server/MCPIndexSearch.Mcp.exe"
-          $icon = "src/App.UI/Assets/mcp-index-search.ico"
+          $icon = "src/App.UI/Assets/context-mole.ico"
           foreach ($required in @($main, $sidecar, $icon)) {
             if (-not (Test-Path -LiteralPath $required -PathType Leaf)) { throw "Missing required publish file: $required" }
           }
@@ -125,17 +125,18 @@ jobs:
       - name: Create the per-user Windows installer
         shell: pwsh
         run: |
+          # Keep the pre-rebrand package ID and executable name so existing installations can upgrade in place.
           dnx vpk pack `
             --packId JPCodeCraft.MCPIndexSearch `
             --packVersion "$env:VERSION" `
             --packDir artifacts/publish/win-x64 `
             --mainExe MCPIndexSearch.App.UI.exe `
-            --packTitle MCPIndexSearch `
+            --packTitle "Context Mole" `
             --packAuthors JPCodeCraft `
             --runtime win-x64 `
             --channel win-x64 `
             --outputDir artifacts/velopack `
-            --icon src/App.UI/Assets/mcp-index-search.ico `
+            --icon src/App.UI/Assets/context-mole.ico `
             --releaseNotes artifacts/release-notes.md `
             --noPortable `
             --version 1.2.0 `
@@ -150,7 +151,7 @@ jobs:
           if ($null -eq $setup) { throw "Velopack did not produce Setup.exe." }
           if ($null -eq $fullPackage) { throw "Velopack did not produce a full package." }
           if (-not (Test-Path -LiteralPath $feed -PathType Leaf)) { throw "Velopack did not produce releases.win-x64.json." }
-          $expanded = Join-Path $env:RUNNER_TEMP "mcpindexsearch-package"
+          $expanded = Join-Path $env:RUNNER_TEMP "contextmole-package"
           Expand-Archive -LiteralPath $fullPackage.FullName -DestinationPath $expanded -Force
           if ($null -eq (Get-ChildItem $expanded -Recurse -File -Filter MCPIndexSearch.Mcp.exe | Select-Object -First 1)) {
             throw "The full package does not contain the MCP sidecar."
@@ -171,7 +172,7 @@ jobs:
             --merge `
             --tag "$env:GITHUB_REF_NAME" `
             --targetCommitish "$env:GITHUB_SHA" `
-            --releaseName "MCPIndexSearch $env:GITHUB_REF_NAME" `
+            --releaseName "Context Mole $env:GITHUB_REF_NAME" `
             --version 1.2.0 `
             --yes
           gh release edit "$env:GITHUB_REF_NAME" --notes-file artifacts/release-notes.md --repo "$env:GITHUB_REPOSITORY"

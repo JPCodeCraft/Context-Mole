@@ -1,7 +1,7 @@
-using MCPIndexSearch.Core;
-using MCPIndexSearch.Infrastructure;
+using ContextMole.Core;
+using ContextMole.Infrastructure;
 
-namespace MCPIndexSearch.Tests;
+namespace ContextMole.Tests;
 
 public sealed class CoreAndInfrastructureTests
 {
@@ -306,7 +306,7 @@ public sealed class CoreAndInfrastructureTests
 
     private sealed class TemporaryAppPaths : IAppPaths, IDisposable
     {
-        private readonly string _root = Path.Combine(Path.GetTempPath(), "MCPIndexSearch.Tests", Guid.NewGuid().ToString("N"));
+        private readonly string _root = Path.Combine(Path.GetTempPath(), "ContextMole.Tests", Guid.NewGuid().ToString("N"));
 
         public TemporaryAppPaths()
         {

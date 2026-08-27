@@ -1,6 +1,6 @@
-using MCPIndexSearch.Core;
+using ContextMole.Core;
 
-namespace MCPIndexSearch.Search;
+namespace ContextMole.Search;
 
 public sealed class HybridSearchService(
     ISearchStore store,
@@ -21,14 +21,14 @@ public sealed class HybridSearchService(
     public async Task<SearchResponse> SearchAsync(SearchRequest request, CancellationToken cancellationToken = default)
     {
         if (request.Limit is < 1 or > 50)
-            throw new McpIndexException("invalid_request", "limit must be between 1 and 50.");
+            throw new ContextMoleException("invalid_request", "limit must be between 1 and 50.");
         if (string.IsNullOrWhiteSpace(request.Query))
-            throw new McpIndexException("invalid_request", "query must not be empty.");
+            throw new ContextMoleException("invalid_request", "query must not be empty.");
 
         var candidateK = Math.Clamp(Math.Max(100, request.Limit * 5), 100, 500);
         var fts = TextNormalization.QuoteFtsTerms(request.Query);
         if (fts.Length == 0)
-            throw new McpIndexException("invalid_request", "query must contain at least one letter, number, or underscore.");
+            throw new ContextMoleException("invalid_request", "query must contain at least one letter, number, or underscore.");
 
         using var worker = await _cpuBudget.AcquireWorkerAsync(cancellationToken).ConfigureAwait(false);
         using var activeWorker = worker.Activate();
@@ -65,7 +65,7 @@ public sealed class HybridSearchService(
             vectorMetadata = await _store.LoadVectorSnapshotMetadataAsync(request.ProjectId, cancellationToken).ConfigureAwait(false);
         }
         if (keywordPage.SearchGeneration != 0 && vectorMetadata.SearchGeneration != 0 && keywordPage.SearchGeneration != vectorMetadata.SearchGeneration)
-            throw new McpIndexException("index_changed", "The project index changed during search. Retry the request.", true);
+            throw new ContextMoleException("index_changed", "The project index changed during search. Retry the request.", true);
 
         var keyword = keywordPage.Candidates.Select((candidate, index) => candidate with { KeywordRank = index + 1 }).ToArray();
         var semanticMatches = Array.Empty<VectorMatch>();
@@ -108,7 +108,7 @@ public sealed class HybridSearchService(
                     semanticMatches = vectorIndex.Search(queryEmbedding.Vector, candidateK, request.Filters).ToArray();
                 }
             }
-            catch (McpIndexException exception) when (exception.Code == "index_changed")
+            catch (ContextMoleException exception) when (exception.Code == "index_changed")
             {
                 throw;
             }
@@ -204,9 +204,9 @@ public sealed class HybridSearchService(
             var snapshot = await _store.LoadVectorSnapshotAsync(projectId, cancellationToken).ConfigureAwait(false);
             if (snapshot.SearchGeneration != metadata.SearchGeneration ||
                 !string.Equals(snapshot.Policy?.Key, policyKey, StringComparison.Ordinal))
-                throw new McpIndexException("index_changed", "The project index changed while loading semantic vectors.", true);
+                throw new ContextMoleException("index_changed", "The project index changed while loading semantic vectors.", true);
             if (snapshot.Warning is not null)
-                throw new McpIndexException("semantic_index_invalid", snapshot.Warning);
+                throw new ContextMoleException("semantic_index_invalid", snapshot.Warning);
             return _cache.GetOrCreate(projectId, snapshot, _vectorFactory);
         }
         finally
