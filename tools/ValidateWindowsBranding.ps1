@@ -8,11 +8,13 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $originalsDirectory = Join-Path $repoRoot "docs/branding/context-mole/originals"
 $icoPath = Join-Path $repoRoot "src/App.UI/Assets/context-mole.ico"
 $expectedOriginals = [ordered]@{
-    "context-mole-01-app-icon.png" = "D0E7F064F962583C4166F5EB36D7927062338D0959C188AB53815250A1AF63DB"
-    "context-mole-02-reference.png" = "6B9493B4D765FEAB809EAC9BBF19D717FD7DA9B6814CB83BAD7D8D33DF572F7C"
-    "context-mole-03-reference.png" = "95B401CF4739255071CE2D87BE6DBB3168F5EDF877FED356A254F054C55E30D8"
-    "context-mole-04-reference.png" = "39419D7D75F5E78BF15F4C04E348919350907AD27D31677DFA4F9A603134FAAF"
-    "context-mole-05-reference.png" = "A42FBB714A648F4868FE297A598344D024704C0391D714E871E74B7A0B5EC7F1"
+    "context-mole-01-app-icon.png" = @{ Hash = "D0E7F064F962583C4166F5EB36D7927062338D0959C188AB53815250A1AF63DB"; Transparent = $true }
+    "context-mole-02-reference.png" = @{ Hash = "6B9493B4D765FEAB809EAC9BBF19D717FD7DA9B6814CB83BAD7D8D33DF572F7C"; Transparent = $true }
+    "context-mole-03-reference.png" = @{ Hash = "95B401CF4739255071CE2D87BE6DBB3168F5EDF877FED356A254F054C55E30D8"; Transparent = $true }
+    "context-mole-04-reference.png" = @{ Hash = "39419D7D75F5E78BF15F4C04E348919350907AD27D31677DFA4F9A603134FAAF"; Transparent = $true }
+    "context-mole-05-reference.png" = @{ Hash = "A42FBB714A648F4868FE297A598344D024704C0391D714E871E74B7A0B5EC7F1"; Transparent = $true }
+    "context-mole-06-reference.png" = @{ Hash = "AED61BEDA6444C5C74EBA3372DC79B79E864969AEFA43FEB273F52F5BFAEFB87"; Transparent = $false }
+    "context-mole-07-reference.png" = @{ Hash = "24D2E602886767AE31FA19AC11A07D704BE214F249F03B820367EB6CB1E02E65"; Transparent = $true }
 }
 $expectedSizes = @(16, 24, 32, 48, 64, 128, 256)
 
@@ -53,7 +55,7 @@ foreach ($entry in $expectedOriginals.GetEnumerator()) {
     }
 
     $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash
-    if ($actualHash -cne $entry.Value) {
+    if ($actualHash -cne $entry.Value.Hash) {
         throw "The approved Context Mole original $($entry.Key) does not match its SHA-256."
     }
 
@@ -66,7 +68,9 @@ foreach ($entry in $expectedOriginals.GetEnumerator()) {
             throw "The approved Context Mole original $($entry.Key) is $($bitmap.Width)x$($bitmap.Height); expected 1254x1254."
         }
 
-        Assert-TransparentAndOpaquePixels -Bitmap $bitmap -Description "The approved Context Mole original $($entry.Key)"
+        if ($entry.Value.Transparent) {
+            Assert-TransparentAndOpaquePixels -Bitmap $bitmap -Description "The approved Context Mole original $($entry.Key)"
+        }
     }
     finally {
         $bitmap.Dispose()
@@ -181,4 +185,4 @@ foreach ($executable in @($PublishedExecutable, $SetupExecutable)) {
     $associatedIcon.Dispose()
 }
 
-Write-Host "Context Mole branding verified: five approved RGBA originals, icon frames, and all six application references are valid."
+Write-Host "Context Mole branding verified: seven approved PNG originals, icon frames, and all six application references are valid."
