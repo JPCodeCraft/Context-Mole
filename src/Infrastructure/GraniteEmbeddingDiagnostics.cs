@@ -17,7 +17,7 @@ public sealed record GraniteValidationResult(
 
 public static class GraniteEmbeddingDiagnostics
 {
-    public static GraniteValidationResult ValidateProfiles(IAppPaths paths)
+    public static GraniteValidationResult ValidateProfiles(IAppPaths paths, int threadCount)
     {
         var directory = Path.Combine(paths.AssetsDirectory, "granite", GraniteEmbeddingGenerator.Revision);
         var tokenizerPath = Path.Combine(directory, "tokenizer.json");
@@ -42,8 +42,8 @@ public static class GraniteEmbeddingDiagnostics
         ];
         var all = documents.Concat(queries).ToArray();
         using var tokenizer = Tokenizer.FromFile(tokenizerPath);
-        using var quantized = CreateSession(quantizedPath);
-        using var fp32 = CreateSession(fp32Path);
+        using var quantized = CreateSession(quantizedPath, threadCount);
+        using var fp32 = CreateSession(fp32Path, threadCount);
 
         var quantWatch = Stopwatch.StartNew();
         var quantVectors = Embed(quantized, tokenizer, all);
@@ -79,11 +79,11 @@ public static class GraniteEmbeddingDiagnostics
             enabled ? "Quantized profile passed parity thresholds." : "Quantized profile failed parity thresholds; FP32 is required.");
     }
 
-    private static InferenceSession CreateSession(string path) => new(path, new SessionOptions
+    private static InferenceSession CreateSession(string path, int threadCount) => new(path, new SessionOptions
     {
         ExecutionMode = ExecutionMode.ORT_SEQUENTIAL,
         InterOpNumThreads = 1,
-        IntraOpNumThreads = Math.Max(1, Environment.ProcessorCount / 2),
+        IntraOpNumThreads = threadCount,
         GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL
     });
 

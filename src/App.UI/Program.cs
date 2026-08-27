@@ -49,6 +49,7 @@ internal static class Program
             builder.Services.AddMcpIndexing();
             builder.Services.AddSingleton<ApplicationUpdateService>();
             builder.Services.AddSingleton<CodexConnectionBannerDismissalStore>();
+            builder.Services.AddSingleton<WindowsStartupService>();
             builder.Services.AddSingleton<ViewModels.MainViewModel>();
             _host = builder.Build();
             _host.StartAsync().GetAwaiter().GetResult();

@@ -67,6 +67,27 @@ public partial class MainWindow : Window
     private void DismissCodexConnectionBanner(object? sender, RoutedEventArgs args) =>
         ViewModel.DismissCodexConnectionBanner();
 
+    private async void CpuUsageProfileChanged(object? sender, SelectionChangedEventArgs args)
+    {
+        if (sender is not ComboBox { SelectedItem: CpuUsageProfile profile } ||
+            profile == ViewModel.SelectedCpuUsageProfile) return;
+        await RunUiActionAsync(() => ViewModel.SetCpuUsageProfileAsync(profile));
+    }
+
+    private async void StartWithWindowsChanged(object? sender, RoutedEventArgs args)
+    {
+        if (sender is not CheckBox checkBox) return;
+        try
+        {
+            ViewModel.SetStartWithWindows(checkBox.IsChecked == true);
+        }
+        catch (Exception exception)
+        {
+            checkBox.IsChecked = ViewModel.StartWithWindowsEnabled;
+            await ConfirmWindow.ShowErrorAsync(this, exception.Message);
+        }
+    }
+
     private async void SetupSemanticSearch(object? sender, RoutedEventArgs args)
     {
         var installer = Program.Services.GetRequiredService<GraniteModelInstaller>();

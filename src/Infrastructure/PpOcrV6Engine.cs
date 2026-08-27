@@ -43,6 +43,9 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
     private const int RecognitionWidth = 320;
 
     private readonly IAppPaths _paths;
+    private readonly ICpuUsageSettings _cpuUsageSettings;
+    private readonly IGlobalCpuBudget _cpuBudget;
+    private readonly IDisposable? _ownedCpuBudget;
     private readonly HttpClient _client;
     private readonly SemaphoreSlim _installGate = new(1, 1);
     private readonly SemaphoreSlim _inferenceGate = new(1, 1);
@@ -54,13 +57,29 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
     private string? _recognizerInputName;
     private volatile bool _isAvailable;
     private string? _unavailableReason;
+    private int _configuredThreadCount;
 
-    public PpOcrV6Engine(IAppPaths paths)
+    public PpOcrV6Engine(IAppPaths paths) : this(paths, CreateStandaloneCpuDependencies(paths))
+    {
+    }
+
+    private PpOcrV6Engine(IAppPaths paths, StandaloneCpuDependencies dependencies)
+        : this(paths, dependencies.Settings, dependencies.Budget)
+    {
+        _ownedCpuBudget = dependencies.Budget;
+    }
+
+    public PpOcrV6Engine(
+        IAppPaths paths,
+        ICpuUsageSettings cpuUsageSettings,
+        IGlobalCpuBudget cpuBudget)
     {
         _paths = paths;
+        _cpuUsageSettings = cpuUsageSettings;
+        _cpuBudget = cpuBudget;
         _client = new HttpClient { Timeout = TimeSpan.FromHours(2) };
         _client.DefaultRequestHeaders.UserAgent.ParseAdd("MCPIndexSearch/1.0");
-        LoadCore();
+        LoadCore(_cpuUsageSettings.ThreadLimit);
     }
 
     public bool IsAvailable => _isAvailable;
@@ -105,7 +124,7 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
             }
 
             await WritePolicyAsync(directory, cancellationToken).ConfigureAwait(false);
-            LoadCore();
+            LoadCore(_cpuUsageSettings.ThreadLimit);
             if (!IsAvailable)
             {
                 throw new McpIndexException("ocr_initialization_failed",
@@ -137,17 +156,15 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(request.Timeout);
 
+        var inferenceGateHeld = false;
         try
         {
+            using var cpuCapacity = await _cpuBudget.AcquireFullCapacityAsync(timeout.Token).ConfigureAwait(false);
             await _inferenceGate.WaitAsync(timeout.Token).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-        {
-            return new OcrResult(string.Empty, null, TimedOut: true);
-        }
+            inferenceGateHeld = true;
+            if (_configuredThreadCount != cpuCapacity.ThreadCount)
+                LoadCore(cpuCapacity.ThreadCount);
 
-        try
-        {
             return RecognizeCore(request.ImageBytes.Span, timeout.Token);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
@@ -160,7 +177,7 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
         }
         finally
         {
-            _inferenceGate.Release();
+            if (inferenceGateHeld) _inferenceGate.Release();
         }
     }
 
@@ -180,8 +197,7 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
             recognizerInputName = _recognizerInputName!;
         }
 
-        using var source = SKBitmap.Decode(imageBytes.ToArray())
-            ?? throw new McpIndexException("ocr_image_invalid", "The image could not be decoded.");
+        using var source = DecodeImage(imageBytes);
         cancellationToken.ThrowIfCancellationRequested();
 
         var boxes = DetectText(source, detector, detectorInputName, cancellationToken);
@@ -213,6 +229,26 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
 
         return new OcrResult(string.Join(Environment.NewLine, lines.Select(line => line.Text)),
             confidenceWeight == 0 ? null : weightedConfidence / confidenceWeight);
+    }
+
+    private static SKBitmap DecodeImage(ReadOnlySpan<byte> imageBytes)
+    {
+        try
+        {
+            return SKBitmap.Decode(imageBytes.ToArray())
+                ?? throw new McpIndexException("ocr_image_invalid", "The image could not be decoded.");
+        }
+        catch (McpIndexException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (exception is ArgumentException or InvalidOperationException)
+        {
+            throw new McpIndexException("ocr_image_invalid", "The image could not be decoded.")
+            {
+                Source = exception.Source
+            };
+        }
     }
 
     private static List<TextBox> DetectText(
@@ -482,7 +518,7 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
         return left.Box.Top.CompareTo(right.Box.Top);
     }
 
-    private void LoadCore()
+    private void LoadCore(int threadCount)
     {
         if (!IsPlatformSupported())
         {
@@ -509,7 +545,7 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
             {
                 ExecutionMode = ExecutionMode.ORT_SEQUENTIAL,
                 InterOpNumThreads = 1,
-                IntraOpNumThreads = Math.Max(1, Environment.ProcessorCount / 2),
+                IntraOpNumThreads = threadCount,
                 GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL
             };
             detector = new InferenceSession(detectorPath, options);
@@ -517,6 +553,7 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
             var characters = LoadCharacters(dictionaryPath);
             ReplaceResources(detector, recognizer, characters,
                 detector.InputMetadata.Keys.Single(), recognizer.InputMetadata.Keys.Single(), null);
+            _configuredThreadCount = threadCount;
             detector = null;
             recognizer = null;
         }
@@ -693,9 +730,17 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
         _client.Dispose();
         _installGate.Dispose();
         _inferenceGate.Dispose();
+        _ownedCpuBudget?.Dispose();
+    }
+
+    private static StandaloneCpuDependencies CreateStandaloneCpuDependencies(IAppPaths paths)
+    {
+        var settings = new CpuUsageSettings(paths);
+        return new StandaloneCpuDependencies(settings, new GlobalCpuBudget(settings));
     }
 
     private sealed record DownloadAsset(string Name, string Url, string Target, string Sha256);
+    private sealed record StandaloneCpuDependencies(CpuUsageSettings Settings, GlobalCpuBudget Budget);
     private readonly record struct TextBox(int Left, int Top, int Right, int Bottom);
     private sealed record RecognizedLine(TextBox Box, string Text, double Confidence);
 }

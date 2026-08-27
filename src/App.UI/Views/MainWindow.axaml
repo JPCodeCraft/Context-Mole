@@ -43,6 +43,21 @@
             </Grid>
           </Border>
 
+          <Border Classes="panel">
+            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="24">
+              <StackPanel Spacing="5">
+                <TextBlock Text="Global performance" FontSize="16" FontWeight="SemiBold" Foreground="White"/>
+                <TextBlock Text="The CPU profile is shared by every project. A single Granite or OCR operation can use the full budget." Foreground="#9CAAC5" TextWrapping="Wrap"/>
+                <TextBlock Text="{Binding CpuUsageSummary}" Foreground="#78A7FF" FontSize="12"/>
+                <CheckBox IsVisible="{Binding IsWindowsStartupSupported}" IsChecked="{Binding StartWithWindowsEnabled, Mode=OneWay}" Content="Start MCPIndexSearch with Windows" Click="StartWithWindowsChanged" Margin="0,8,0,0" Foreground="#D9E2F3"/>
+              </StackPanel>
+              <StackPanel Grid.Column="1" Spacing="5" VerticalAlignment="Center">
+                <TextBlock Text="CPU usage" Foreground="#8796B3" FontSize="12"/>
+                <ComboBox Width="140" ItemsSource="{Binding CpuUsageProfiles}" SelectedItem="{Binding SelectedCpuUsageProfile, Mode=OneWay}" SelectionChanged="CpuUsageProfileChanged"/>
+              </StackPanel>
+            </Grid>
+          </Border>
+
           <Border IsVisible="{Binding IsOcrUnavailable}" Background="#2B2515" BorderBrush="#665B2C" BorderThickness="1" CornerRadius="8" Padding="14">
             <StackPanel Spacing="4">
               <TextBlock Text="Local OCR setup" Foreground="#FFD878" FontWeight="SemiBold"/>

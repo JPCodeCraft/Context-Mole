@@ -9,6 +9,33 @@ public interface IAppPaths
     string TempDirectory { get; }
 }
 
+public interface ICpuUsageSettings
+{
+    CpuUsageProfile Profile { get; }
+    int LogicalProcessorCount { get; }
+    int ThreadLimit { get; }
+    int MaximumThreadLimit { get; }
+    event EventHandler? Changed;
+    void SetProfile(CpuUsageProfile profile);
+}
+
+public interface ICpuWorkerLease : IDisposable
+{
+    IDisposable Activate();
+}
+
+public interface ICpuFullCapacityLease : IDisposable
+{
+    int ThreadCount { get; }
+}
+
+public interface IGlobalCpuBudget
+{
+    int MaximumWorkerCount { get; }
+    ValueTask<ICpuWorkerLease> AcquireWorkerAsync(CancellationToken cancellationToken);
+    ValueTask<ICpuFullCapacityLease> AcquireFullCapacityAsync(CancellationToken cancellationToken);
+}
+
 public interface IDocumentExtractor
 {
     IReadOnlyCollection<string> Extensions { get; }

@@ -11,7 +11,7 @@ namespace MCPIndexSearch.Storage;
 
 public sealed class SqliteSearchStore : ISearchStore
 {
-    private static readonly JsonSerializerOptions CursorJsonOptions = new()
+    private static readonly JsonSerializerOptions StorageJsonOptions = new()
     {
         TypeInfoResolver = new DefaultJsonTypeInfoResolver()
     };
@@ -380,7 +380,9 @@ public sealed class SqliteSearchStore : ISearchStore
             await metadataReader.ReadAsync(cancellationToken).ConfigureAwait(false);
             total = metadataReader.GetInt64(0);
             policyCount = metadataReader.GetInt32(1);
-            policy = metadataReader.IsDBNull(2) ? null : JsonSerializer.Deserialize<EmbeddingPolicy>(metadataReader.GetString(2));
+            policy = metadataReader.IsDBNull(2)
+                ? null
+                : JsonSerializer.Deserialize<EmbeddingPolicy>(metadataReader.GetString(2), StorageJsonOptions);
         }
         if (total == 0)
         {
@@ -420,7 +422,7 @@ public sealed class SqliteSearchStore : ISearchStore
                 continue;
             }
 
-            var current = JsonSerializer.Deserialize<EmbeddingPolicy>(reader.GetString(8));
+            var current = JsonSerializer.Deserialize<EmbeddingPolicy>(reader.GetString(8), StorageJsonOptions);
             if (current is null)
             {
                 continue;
@@ -866,7 +868,7 @@ public sealed class SqliteSearchStore : ISearchStore
             modified_to_utc = request.ModifiedToUtc?.ToUniversalTime().ToString("O"),
             sort_by = request.SortBy.ToString(),
             sort_direction = request.SortDirection.ToString()
-        }, CursorJsonOptions);
+        }, StorageJsonOptions);
         return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(canonical)));
     }
 
@@ -879,7 +881,7 @@ public sealed class SqliteSearchStore : ISearchStore
         {
             var base64 = encoded.Replace('-', '+').Replace('_', '/');
             base64 += new string('=', (4 - base64.Length % 4) % 4);
-            var cursor = JsonSerializer.Deserialize<DocumentCursor>(Convert.FromBase64String(base64), CursorJsonOptions);
+            var cursor = JsonSerializer.Deserialize<DocumentCursor>(Convert.FromBase64String(base64), StorageJsonOptions);
             if (cursor is null || cursor.Version != 1 || cursor.ProjectId != request.ProjectId ||
                 cursor.SearchGeneration != searchGeneration || cursor.FilterFingerprint != filterFingerprint ||
                 cursor.SortBy != request.SortBy || cursor.SortDirection != request.SortDirection ||
@@ -896,7 +898,7 @@ public sealed class SqliteSearchStore : ISearchStore
 
     private static string EncodeDocumentCursor(DocumentCursor cursor)
     {
-        var base64 = Convert.ToBase64String(JsonSerializer.SerializeToUtf8Bytes(cursor, CursorJsonOptions));
+        var base64 = Convert.ToBase64String(JsonSerializer.SerializeToUtf8Bytes(cursor, StorageJsonOptions));
         return base64.TrimEnd('=').Replace('+', '-').Replace('/', '_');
     }
 
@@ -991,7 +993,7 @@ public sealed class SqliteSearchStore : ISearchStore
         {
             DataSource = _paths.DatabasePath,
             Mode = SqliteOpenMode.ReadOnly,
-            Cache = SqliteCacheMode.Shared,
+            Cache = SqliteCacheMode.Private,
             Pooling = true
         };
         var connection = new SqliteConnection(builder.ToString());

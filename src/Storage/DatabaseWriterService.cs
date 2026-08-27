@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 using System.Threading.Channels;
 using MCPIndexSearch.Core;
 using Microsoft.Data.Sqlite;
@@ -9,6 +10,10 @@ namespace MCPIndexSearch.Storage;
 
 public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
 {
+    private static readonly JsonSerializerOptions StorageJsonOptions = new()
+    {
+        TypeInfoResolver = new DefaultJsonTypeInfoResolver()
+    };
     private readonly IAppPaths _paths;
     private readonly Channel<Func<SqliteConnection, Task>> _commands = Channel.CreateBounded<Func<SqliteConnection, Task>>(
         new BoundedChannelOptions(256)
@@ -703,7 +708,9 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
             }
 
             var now = DateTimeOffset.UtcNow.ToString("O");
-            var policyJson = request.EmbeddingPolicy is null ? null : JsonSerializer.Serialize(request.EmbeddingPolicy);
+            var policyJson = request.EmbeddingPolicy is null
+                ? null
+                : JsonSerializer.Serialize(request.EmbeddingPolicy, StorageJsonOptions);
             await ExecuteAsync(connection, transaction,
                 "UPDATE document_revisions SET status='active',embedding_policy_json=$policy,activated_utc=$now WHERE id=$revision AND status='staging';",
                 [new("$policy", (object?)policyJson ?? DBNull.Value), new("$now", now), new("$revision", request.RevisionId.ToString())], token).ConfigureAwait(false);
@@ -806,7 +813,7 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
         {
             DataSource = _paths.DatabasePath,
             Mode = SqliteOpenMode.ReadWriteCreate,
-            Cache = SqliteCacheMode.Shared,
+            Cache = SqliteCacheMode.Private,
             Pooling = true
         };
         return new SqliteConnection(builder.ToString());

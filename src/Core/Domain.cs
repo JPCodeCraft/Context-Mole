@@ -9,6 +9,13 @@ public enum ProjectState
     Removing
 }
 
+public enum CpuUsageProfile
+{
+    Light,
+    Normal,
+    Heavy
+}
+
 public enum IndexJobKind
 {
     Index,

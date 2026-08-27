@@ -16,6 +16,8 @@ public sealed class GraniteEmbeddingGenerator : IEmbeddingGenerator
     public const string Fp32Sha = "75f9f258bf5013f5fe8a4dad61dd0fd16ac0cbaa7a106e3d3f41c2d04a42d541";
 
     private readonly IAppPaths _paths;
+    private readonly ICpuUsageSettings _cpuUsageSettings;
+    private readonly IGlobalCpuBudget _cpuBudget;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly object _stateGate = new();
     private Tokenizer? _tokenizer;
@@ -23,11 +25,17 @@ public sealed class GraniteEmbeddingGenerator : IEmbeddingGenerator
     private volatile bool _isAvailable;
     private string? _unavailableReason;
     private EmbeddingPolicy? _policy;
+    private int _configuredThreadCount;
 
-    public GraniteEmbeddingGenerator(IAppPaths paths)
+    public GraniteEmbeddingGenerator(
+        IAppPaths paths,
+        ICpuUsageSettings cpuUsageSettings,
+        IGlobalCpuBudget cpuBudget)
     {
         _paths = paths;
-        LoadCore();
+        _cpuUsageSettings = cpuUsageSettings;
+        _cpuBudget = cpuBudget;
+        LoadCore(_cpuUsageSettings.ThreadLimit);
     }
 
     public bool IsAvailable => _isAvailable;
@@ -39,7 +47,7 @@ public sealed class GraniteEmbeddingGenerator : IEmbeddingGenerator
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            LoadCore();
+            LoadCore(_cpuUsageSettings.ThreadLimit);
         }
         finally
         {
@@ -47,7 +55,7 @@ public sealed class GraniteEmbeddingGenerator : IEmbeddingGenerator
         }
     }
 
-    private void LoadCore()
+    private void LoadCore(int threadCount)
     {
         var modelDirectory = Path.Combine(_paths.AssetsDirectory, "granite", Revision);
         var tokenizerPath = Path.Combine(modelDirectory, "tokenizer.json");
@@ -86,11 +94,12 @@ public sealed class GraniteEmbeddingGenerator : IEmbeddingGenerator
             {
                 ExecutionMode = ExecutionMode.ORT_SEQUENTIAL,
                 InterOpNumThreads = 1,
-                IntraOpNumThreads = Math.Max(1, Environment.ProcessorCount / 2),
+                IntraOpNumThreads = threadCount,
                 GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL
             };
             session = new InferenceSession(modelPath, options);
             ReplaceResources(tokenizer, session, null);
+            _configuredThreadCount = threadCount;
             tokenizer = null;
             session = null;
         }
@@ -152,9 +161,13 @@ public sealed class GraniteEmbeddingGenerator : IEmbeddingGenerator
         }
 
         var all = new List<float[]>(texts.Count);
+        using var cpuCapacity = await _cpuBudget.AcquireFullCapacityAsync(cancellationToken).ConfigureAwait(false);
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            if (_configuredThreadCount != cpuCapacity.ThreadCount)
+                LoadCore(cpuCapacity.ThreadCount);
+
             Tokenizer? tokenizer;
             InferenceSession? session;
             lock (_stateGate)

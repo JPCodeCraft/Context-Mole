@@ -25,12 +25,14 @@ public sealed class GraniteModelInstaller : IDisposable
 {
     public const string GemmaTermsUrl = "https://ai.google.dev/gemma/terms";
     private readonly IAppPaths _paths;
+    private readonly IGlobalCpuBudget _cpuBudget;
     private readonly HttpClient _client;
     private readonly SemaphoreSlim _gate = new(1, 1);
 
-    public GraniteModelInstaller(IAppPaths paths)
+    public GraniteModelInstaller(IAppPaths paths, IGlobalCpuBudget cpuBudget)
     {
         _paths = paths;
+        _cpuBudget = cpuBudget;
         _client = new HttpClient { Timeout = TimeSpan.FromHours(2) };
         _client.DefaultRequestHeaders.UserAgent.ParseAdd("MCPIndexSearch/1.0");
     }
@@ -85,7 +87,10 @@ public sealed class GraniteModelInstaller : IDisposable
             if (useQuantized)
             {
                 progress?.Report(new ModelInstallProgress("validating", "Comparing optimized and full-precision models"));
-                validation = await Task.Run(() => GraniteEmbeddingDiagnostics.ValidateProfiles(_paths), cancellationToken).ConfigureAwait(false);
+                using var cpuCapacity = await _cpuBudget.AcquireFullCapacityAsync(cancellationToken).ConfigureAwait(false);
+                validation = await Task.Run(
+                    () => GraniteEmbeddingDiagnostics.ValidateProfiles(_paths, cpuCapacity.ThreadCount),
+                    cancellationToken).ConfigureAwait(false);
                 await WriteValidationAsync(directory, validation, cancellationToken).ConfigureAwait(false);
             }
 

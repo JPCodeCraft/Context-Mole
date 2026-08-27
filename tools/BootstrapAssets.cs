@@ -14,7 +14,9 @@ if (!args.Contains("--accept-gemma-terms", StringComparer.Ordinal))
 }
 
 var paths = new AppPaths();
-using var installer = new GraniteModelInstaller(paths);
+var settings = new CpuUsageSettings(paths);
+using var cpuBudget = new GlobalCpuBudget(settings);
+using var installer = new GraniteModelInstaller(paths, cpuBudget);
 if (!installer.IsSupported)
 {
     Console.Error.WriteLine("Semantic search is unavailable on Intel macOS with the pinned ONNX Runtime 1.29 package.");

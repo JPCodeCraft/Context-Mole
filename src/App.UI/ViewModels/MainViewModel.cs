@@ -16,6 +16,8 @@ internal partial class MainViewModel : ViewModelBase
     private readonly ISearchStore _store;
     private readonly IOcrEngine _ocrEngine;
     private readonly IEmbeddingGenerator _embeddingGenerator;
+    private readonly ICpuUsageSettings _cpuUsageSettings;
+    private readonly WindowsStartupService _windowsStartup;
     private readonly GraniteModelInstaller _modelInstaller;
     private readonly CodexMcpConfigurationService _codexConfiguration;
     private readonly CodexConnectionBannerDismissalStore _codexBannerDismissals;
@@ -32,6 +34,8 @@ internal partial class MainViewModel : ViewModelBase
         ISearchStore store,
         IOcrEngine ocrEngine,
         IEmbeddingGenerator embeddingGenerator,
+        ICpuUsageSettings cpuUsageSettings,
+        WindowsStartupService windowsStartup,
         GraniteModelInstaller modelInstaller,
         CodexMcpConfigurationService codexConfiguration,
         CodexConnectionBannerDismissalStore codexBannerDismissals,
@@ -42,6 +46,9 @@ internal partial class MainViewModel : ViewModelBase
         _store = store;
         _ocrEngine = ocrEngine;
         _embeddingGenerator = embeddingGenerator;
+        _cpuUsageSettings = cpuUsageSettings;
+        _windowsStartup = windowsStartup;
+        _windowsStartup.Initialize();
         _modelInstaller = modelInstaller;
         _codexConfiguration = codexConfiguration;
         _codexBannerDismissals = codexBannerDismissals;
@@ -49,10 +56,13 @@ internal partial class MainViewModel : ViewModelBase
         _applicationUpdates = applicationUpdates;
         _applicationUpdates.SnapshotChanged += OnApplicationUpdateSnapshotChanged;
         ApplicationUpdate = _applicationUpdates.Snapshot;
+        SelectedCpuUsageProfile = _cpuUsageSettings.Profile;
+        StartWithWindowsEnabled = _windowsStartup.IsEnabled;
     }
 
     public ObservableCollection<ProjectItemViewModel> Projects { get; } = [];
     public ObservableCollection<IndexingActivityItemViewModel> ActiveIndexingItems { get; } = [];
+    public IReadOnlyList<CpuUsageProfile> CpuUsageProfiles { get; } = Enum.GetValues<CpuUsageProfile>();
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(HasSelection))]
@@ -78,6 +88,13 @@ internal partial class MainViewModel : ViewModelBase
     public partial string IndexingTimingSummary { get; set; } = "No files are currently active.";
 
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CpuUsageSummary))]
+    public partial CpuUsageProfile SelectedCpuUsageProfile { get; set; } = CpuUsageProfile.Normal;
+
+    [ObservableProperty]
+    public partial bool StartWithWindowsEnabled { get; set; }
+
+    [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsApplicationUpdateVisible))]
     [NotifyPropertyChangedFor(nameof(IsApplicationUpdateProgressVisible))]
     [NotifyPropertyChangedFor(nameof(IsApplicationUpdateReady))]
@@ -86,6 +103,22 @@ internal partial class MainViewModel : ViewModelBase
     public partial ApplicationUpdateSnapshot ApplicationUpdate { get; set; } = ApplicationUpdateSnapshot.Disabled;
 
     public bool IsOcrUnavailable => !_ocrEngine.IsAvailable;
+    public bool IsWindowsStartupSupported => _windowsStartup.IsSupported;
+    public string CpuUsageSummary
+    {
+        get
+        {
+            var percentage = SelectedCpuUsageProfile switch
+            {
+                CpuUsageProfile.Light => 20,
+                CpuUsageProfile.Normal => 40,
+                CpuUsageProfile.Heavy => 80,
+                _ => throw new ArgumentOutOfRangeException()
+            };
+            return $"{SelectedCpuUsageProfile}: max {percentage}% — up to {_cpuUsageSettings.ThreadLimit} of " +
+                   $"{_cpuUsageSettings.LogicalProcessorCount} logical threads globally across all projects.";
+        }
+    }
     public string OcrStatusMessage => _ocrEngine.UnavailableReason ?? "Local PP-OCRv6 medium OCR is ready.";
     public bool IsSemanticSearchUnavailable => !_embeddingGenerator.IsAvailable;
     public bool CanInstallSemanticModel => _modelInstaller.IsSupported;
@@ -188,6 +221,23 @@ internal partial class MainViewModel : ViewModelBase
             1 => "Queued 1 failed file for retry.",
             _ => $"Queued {queued} failed files for retry."
         };
+    }
+
+    public Task SetCpuUsageProfileAsync(CpuUsageProfile profile)
+    {
+        _cpuUsageSettings.SetProfile(profile);
+        SelectedCpuUsageProfile = _cpuUsageSettings.Profile;
+        StatusMessage = $"CPU usage is now {SelectedCpuUsageProfile}. {CpuUsageSummary}";
+        return Task.CompletedTask;
+    }
+
+    public void SetStartWithWindows(bool enabled)
+    {
+        _windowsStartup.SetEnabled(enabled);
+        StartWithWindowsEnabled = _windowsStartup.IsEnabled;
+        StatusMessage = StartWithWindowsEnabled
+            ? "MCPIndexSearch will start automatically with Windows."
+            : "MCPIndexSearch will not start automatically with Windows.";
     }
 
     public async Task RemoveAsync()

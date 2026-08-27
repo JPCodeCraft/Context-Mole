@@ -13,6 +13,7 @@ public sealed class IndexingCoordinator(
     IDocumentExtractor extractor,
     IEmbeddingGenerator embeddings,
     IndexingActivityTracker activities,
+    IGlobalCpuBudget cpuBudget,
     ILogger<IndexingCoordinator> logger) : BackgroundService
 {
     private static readonly TimeSpan ReconciliationInterval = TimeSpan.FromMinutes(15);
@@ -22,6 +23,7 @@ public sealed class IndexingCoordinator(
     private readonly IDocumentExtractor _extractor = extractor;
     private readonly IEmbeddingGenerator _embeddings = embeddings;
     private readonly IndexingActivityTracker _activities = activities;
+    private readonly IGlobalCpuBudget _cpuBudget = cpuBudget;
     private readonly ILogger<IndexingCoordinator> _logger = logger;
     private readonly Channel<WatchChange> _watchChanges = Channel.CreateUnbounded<WatchChange>(
         new UnboundedChannelOptions { SingleReader = true, SingleWriter = false });
@@ -40,7 +42,8 @@ public sealed class IndexingCoordinator(
             var watcherLoop = DrainWatcherChangesAsync(stoppingToken);
             var refreshLoop = RefreshLoopAsync(stoppingToken);
             var reconciliationLoop = ReconciliationLoopAsync(stoppingToken);
-            var workers = Enumerable.Range(0, 2).Select(_ => IndexWorkerLoopAsync(stoppingToken)).ToArray();
+            var workers = Enumerable.Range(0, _cpuBudget.MaximumWorkerCount)
+                .Select(_ => IndexWorkerLoopAsync(stoppingToken)).ToArray();
             await Task.WhenAll(workers.Prepend(watcherLoop).Append(refreshLoop).Append(reconciliationLoop)).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -246,31 +249,47 @@ public sealed class IndexingCoordinator(
     {
         while (!cancellationToken.IsCancellationRequested)
         {
-            var job = await _writer.LeaseNextJobAsync(TimeSpan.FromMinutes(20), cancellationToken).ConfigureAwait(false);
+            var capacity = await _cpuBudget.AcquireWorkerAsync(cancellationToken).ConfigureAwait(false);
+            IndexJobLease? job;
+            try
+            {
+                job = await _writer.LeaseNextJobAsync(TimeSpan.FromMinutes(20), cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                capacity.Dispose();
+                throw;
+            }
+
             if (job is null)
             {
+                capacity.Dispose();
                 await Task.Delay(TimeSpan.FromMilliseconds(500), cancellationToken).ConfigureAwait(false);
                 continue;
             }
 
-            using var activity = _activities.Start(job);
-            try
+            using (capacity)
+            using (capacity.Activate())
             {
-                var indexed = await ProcessJobAsync(job, activity, cancellationToken).ConfigureAwait(false);
-                activity.Complete(indexed);
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                activity.Complete(false);
-                return;
-            }
-            catch (Exception exception)
-            {
-                _logger.LogError(exception, "Indexing failed for {Path}", job.SourcePath);
-                activity.SetStage(IndexingPipelineStage.RecordingError);
-                await _writer.FailJobAsync(job, ErrorCode(exception), exception.Message, IsTemporary(exception), CancellationToken.None)
-                    .ConfigureAwait(false);
-                activity.Complete(false);
+                using var activity = _activities.Start(job);
+                try
+                {
+                    var indexed = await ProcessJobAsync(job, activity, cancellationToken).ConfigureAwait(false);
+                    activity.Complete(indexed);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    activity.Complete(false);
+                    return;
+                }
+                catch (Exception exception)
+                {
+                    _logger.LogError(exception, "Indexing failed for {Path}", job.SourcePath);
+                    activity.SetStage(IndexingPipelineStage.RecordingError);
+                    await _writer.FailJobAsync(job, ErrorCode(exception), exception.Message, IsTemporary(exception), CancellationToken.None)
+                        .ConfigureAwait(false);
+                    activity.Complete(false);
+                }
             }
         }
     }

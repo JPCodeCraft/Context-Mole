@@ -12,8 +12,10 @@ using MCPIndexSearch.Core;
 using MimeKit;
 using MsgReader.Outlook;
 using PDFtoImage;
+using PDFtoImage.Exceptions;
 using SkiaSharp;
 using UglyToad.PdfPig;
+using UglyToad.PdfPig.Core;
 
 namespace MCPIndexSearch.Documents;
 
@@ -83,7 +85,7 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
         if (!context.Hashes.Add(digest))
             return Rejected(name, mimeType, relationship, context, "attachment_cycle", "Duplicate attachment content was skipped to prevent a cycle.");
 
-        var extension = ExtensionFor(name, mimeType);
+        var extension = ContentExtensionFor(bytes, name, mimeType);
         try
         {
             return extension switch
@@ -100,7 +102,7 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
                 ".zip" or ".rar" => await ArchiveNodeAsync(bytes, name, mimeType, relationship, extension, depth, context, cancellationToken),
                 ".png" or ".jpg" or ".jpeg" or ".bmp" or ".gif" or ".webp" or ".tif" or ".tiff" =>
                     await ImageNodeAsync(bytes, name, mimeType, relationship, cancellationToken),
-                _ => Rejected(name, mimeType, relationship, context, "unsupported_format", $"Unsupported attachment format: {extension ?? "unknown"}.")
+                _ => UnsupportedNode(name, mimeType, relationship, context, extension)
             };
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -123,7 +125,7 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
     {
         var sections = new List<ExtractedSection>();
         var attachments = new List<ExtractedNode>();
-        using var pdf = PdfDocument.Open(bytes);
+        using var pdf = PdfDocument.Open(bytes, new ParsingOptions { SkipMissingFonts = true });
         foreach (var page in pdf.GetPages())
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -192,11 +194,10 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
     private async Task<ExtractedNode> ImageNodeAsync(byte[] bytes, string name, string? mimeType, string relationship,
         CancellationToken cancellationToken)
     {
-        await _ocrEngine.EnsureAvailableAsync(cancellationToken);
-
         if (Path.GetExtension(name).Equals(".tif", StringComparison.OrdinalIgnoreCase) ||
             Path.GetExtension(name).Equals(".tiff", StringComparison.OrdinalIgnoreCase))
         {
+            await _ocrEngine.EnsureAvailableAsync(cancellationToken);
             var tiffSections = new List<ExtractedSection>();
             var frame = 0;
             using var input = new MemoryStream(bytes, writable: false);
@@ -229,6 +230,8 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
             return new ExtractedNode(name, mimeType, relationship, tiffSections, []);
         }
 
+        ValidateRasterImage(bytes);
+        await _ocrEngine.EnsureAvailableAsync(cancellationToken);
         var ocr = await _ocrEngine.RecognizeAsync(new OcrRequest(bytes, Path.GetExtension(name), TimeSpan.FromSeconds(120)), cancellationToken);
         var sections = string.IsNullOrWhiteSpace(ocr.Text)
             ? Array.Empty<ExtractedSection>()
@@ -311,6 +314,47 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
         };
     }
 
+    private static string? ContentExtensionFor(byte[] bytes, string name, string? mimeType)
+    {
+        var declared = ExtensionFor(name, mimeType);
+        if (LooksLikeHtml(bytes))
+            return ".html";
+        if (bytes.AsSpan().StartsWith("%PDF-"u8))
+            return ".pdf";
+        return declared;
+    }
+
+    private static bool LooksLikeHtml(byte[] bytes)
+    {
+        var length = Math.Min(bytes.Length, 512);
+        if (length == 0) return false;
+        var prefix = Encoding.UTF8.GetString(bytes, 0, length)
+            .TrimStart('\uFEFF', '\0', ' ', '\t', '\r', '\n');
+        return prefix.StartsWith("<!doctype html", StringComparison.OrdinalIgnoreCase) ||
+               prefix.StartsWith("<html", StringComparison.OrdinalIgnoreCase) ||
+               prefix.StartsWith("<head", StringComparison.OrdinalIgnoreCase) ||
+               prefix.StartsWith("<body", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static void ValidateRasterImage(byte[] bytes)
+    {
+        try
+        {
+            using var data = SKData.CreateCopy(bytes);
+            using var codec = SKCodec.Create(data);
+            if (codec is null || codec.Info.Width <= 0 || codec.Info.Height <= 0)
+                throw new InvalidDataException("The image data is malformed or does not match a supported raster format.");
+        }
+        catch (InvalidDataException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (exception is ArgumentException or InvalidOperationException)
+        {
+            throw new InvalidDataException("The image data is malformed or does not match a supported raster format.", exception);
+        }
+    }
+
     private static string? MimeFor(string name) => Path.GetExtension(name).ToLowerInvariant() switch
     {
         ".pdf" => "application/pdf",
@@ -337,11 +381,22 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
         return new ExtractedNode(name, mimeType, relationship, [], [], code);
     }
 
+    private static ExtractedNode UnsupportedNode(string name, string? mimeType, string relationship,
+        ExpansionContext context, string? extension)
+    {
+        const string code = "unsupported_format";
+        if (string.Equals(relationship, "root", StringComparison.Ordinal))
+            context.Errors.Add(new ExtractionError(code, $"Unsupported document format: {extension ?? "unknown"}.", false, name));
+        return new ExtractedNode(name, mimeType, relationship, [], [], code);
+    }
+
     private static string ErrorCode(Exception ex) => ex switch
     {
         McpIndexException mcp => mcp.Code,
         UnauthorizedAccessException => "access_denied",
         IOException => "io_error",
+        PdfDocumentFormatException or PdfInvalidFormatException or PdfCannotOpenFileException => "malformed_document",
+        PdfPasswordProtectedException => "encrypted_document",
         InvalidDataException => "malformed_document",
         NotSupportedException => "unsupported_format",
         _ => "extraction_failed"
