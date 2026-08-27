@@ -142,6 +142,11 @@ $iconConsumers = @(
         Description = "executable project"
     },
     @{
+        Path = "src/App.UI/ContextMole.App.UI.csproj"
+        Reference = 'Link="Assets\context-mole-app-icon.png"'
+        Description = "sidebar image resource"
+    },
+    @{
         Path = "src/App.UI/App.axaml.cs"
         Reference = "avares://ContextMole.App.UI/Assets/context-mole.ico"
         Description = "tray icon"
@@ -155,6 +160,11 @@ $iconConsumers = @(
         Path = "src/App.UI/Views/MainWindow.axaml"
         Reference = 'Icon="/Assets/context-mole.ico"'
         Description = "main window"
+    },
+    @{
+        Path = "src/App.UI/Views/MainWindow.axaml"
+        Reference = 'Source="/Assets/context-mole-app-icon.png"'
+        Description = "sidebar brand image"
     },
     @{
         Path = "src/App.UI/Views/ModelSetupWindow.axaml"
@@ -190,4 +200,4 @@ foreach ($executable in @($PublishedExecutable, $SetupExecutable)) {
     $associatedIcon.Dispose()
 }
 
-Write-Host "Context Mole branding verified: seven approved PNG originals, icon frames, and all six application references are valid."
+Write-Host "Context Mole branding verified: seven approved PNG originals, icon frames, and all eight application references are valid."

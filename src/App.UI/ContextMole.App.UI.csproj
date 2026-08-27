@@ -16,6 +16,8 @@
   <ItemGroup>
     <Folder Include="Models\" />
     <AvaloniaResource Include="Assets\**" />
+    <AvaloniaResource Include="..\..\docs\branding\context-mole\originals\context-mole-01-app-icon.png"
+                       Link="Assets\context-mole-app-icon.png" />
     <Content Include="..\..\LICENSE"
              Link="LICENSE"
              CopyToOutputDirectory="PreserveNewest"
