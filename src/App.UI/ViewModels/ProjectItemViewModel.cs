@@ -43,6 +43,7 @@ public sealed class ProjectItemViewModel : ViewModelBase
         : CurrentFile is not null ? "Indexing"
         : PendingCount > 0 ? "Queued" : "Ready";
 
+    public bool IsPaused => State == ProjectState.Paused;
     public int SkippedCount => Math.Max(0, DocumentCount - IndexedCount - PendingCount);
     public bool CanRetryFailedFiles => State == ProjectState.Active && ErrorCount > 0;
     public bool HasFileTypeCounts => FileTypeCounts.Count > 0;
@@ -62,6 +63,7 @@ public sealed class ProjectItemViewModel : ViewModelBase
         }
 
         var previousPhase = Phase;
+        var previousIsPaused = IsPaused;
         var previousSkipped = SkippedCount;
         var previousCanRetryFailedFiles = CanRetryFailedFiles;
         var previousPauseActionLabel = PauseActionLabel;
@@ -81,6 +83,7 @@ public sealed class ProjectItemViewModel : ViewModelBase
         CurrentFile = project.CurrentFile;
 
         if (!string.Equals(previousPhase, Phase, StringComparison.Ordinal)) OnPropertyChanged(nameof(Phase));
+        if (previousIsPaused != IsPaused) OnPropertyChanged(nameof(IsPaused));
         if (previousSkipped != SkippedCount) OnPropertyChanged(nameof(SkippedCount));
         if (previousCanRetryFailedFiles != CanRetryFailedFiles) OnPropertyChanged(nameof(CanRetryFailedFiles));
         if (!string.Equals(previousPauseActionLabel, PauseActionLabel, StringComparison.Ordinal)) OnPropertyChanged(nameof(PauseActionLabel));

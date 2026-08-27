@@ -1,5 +1,7 @@
 # Context Mole
 
+[Website](https://contextmole.com/)
+
 Context Mole is a private, local document index for AI assistants. The desktop app watches your folders and builds a searchable SQLite index; its read-only MCP server lets compatible agents find passages with exact file, attachment, page, sheet, slide, or message provenance.
 
 Documents are opened read-only. Indexing, OCR, embeddings, and search run on your computer after the required model files have been downloaded.

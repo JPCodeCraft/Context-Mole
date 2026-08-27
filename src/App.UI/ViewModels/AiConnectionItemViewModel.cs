@@ -33,6 +33,8 @@ internal sealed class AiConnectionItemViewModel(AiClientDefinition client) : Vie
     }
 
     public bool IsConfigured => State is AiConnectionState.Connected or AiConnectionState.Broken;
+    public bool HasManagedConfiguration => State is AiConnectionState.Connected or AiConnectionState.UpdateRequired
+        or AiConnectionState.Broken;
     public bool CanChange => SupportsAutomaticSetup && !IsBusy &&
         State is (AiConnectionState.Connected or AiConnectionState.Disconnected or AiConnectionState.UpdateRequired
             or AiConnectionState.Broken);
@@ -66,6 +68,7 @@ internal sealed class AiConnectionItemViewModel(AiClientDefinition client) : Vie
         SetProperty(ref _message, status.Message, nameof(Message));
         if (!stateChanged) return;
         OnPropertyChanged(nameof(IsConfigured));
+        OnPropertyChanged(nameof(HasManagedConfiguration));
         OnPropertyChanged(nameof(CanChange));
         OnPropertyChanged(nameof(StatusLabel));
         OnPropertyChanged(nameof(ActionLabel));

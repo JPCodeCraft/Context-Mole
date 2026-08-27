@@ -30,6 +30,7 @@ internal partial class MainViewModel : ViewModelBase
     private readonly IndexingActivityTracker _indexingActivities;
     private readonly EmbeddingPolicyRefreshTracker _embeddingPolicyRefreshes;
     private readonly ApplicationUpdateService _applicationUpdates;
+    private readonly Dictionary<string, int> _aiConnectionCatalogOrder = new(StringComparer.Ordinal);
     private readonly SemaphoreSlim _refreshGate = new(1, 1);
     private CancellationTokenSource? _polling;
     private Task? _pollingTask;
@@ -73,8 +74,12 @@ internal partial class MainViewModel : ViewModelBase
         SelectedCpuUsageProfile = _cpuUsageSettings.Profile;
         SelectedEmbeddingModel = GraniteEmbeddingModels.Get(_embeddingModelSettings.Model);
         StartWithWindowsEnabled = _windowsStartup.IsEnabled;
+        var connectionOrder = 0;
         foreach (var client in _aiConnections.Clients)
+        {
+            _aiConnectionCatalogOrder[client.Id] = connectionOrder++;
             AiConnections.Add(new AiConnectionItemViewModel(client));
+        }
     }
 
     public ObservableCollection<ProjectItemViewModel> Projects { get; } = [];
@@ -98,6 +103,14 @@ internal partial class MainViewModel : ViewModelBase
 
     [ObservableProperty]
     public partial string IndexingTimingSummary { get; set; } = "No files are currently active.";
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsActiveIndexingCollapsed))]
+    public partial bool IsActiveIndexingExpanded { get; set; } = true;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsAiConnectionsCollapsed))]
+    public partial bool IsAiConnectionsExpanded { get; set; }
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(CpuUsageSummary))]
@@ -170,6 +183,8 @@ internal partial class MainViewModel : ViewModelBase
     public bool HasNoSelection => SelectedProject is null;
     public bool IsProjectsSection => CurrentSection == MainSection.Projects;
     public bool IsSettingsSection => CurrentSection == MainSection.Settings;
+    public bool IsActiveIndexingCollapsed => !IsActiveIndexingExpanded;
+    public bool IsAiConnectionsCollapsed => !IsAiConnectionsExpanded;
     public bool HasActiveIndexingItems => ActiveIndexingItems.Count > 0;
     public bool IsApplicationUpdateProgressVisible => ApplicationUpdate.State == ApplicationUpdateState.Downloading;
     public bool IsApplicationUpdateReady => ApplicationUpdate.State == ApplicationUpdateState.Ready;
@@ -411,7 +426,7 @@ internal partial class MainViewModel : ViewModelBase
             var result = connection.IsConfigured
                 ? await _aiConnections.DisconnectAsync(connection.Id).ConfigureAwait(false)
                 : await _aiConnections.ConnectAsync(connection.Id).ConfigureAwait(false);
-            await Dispatcher.UIThread.InvokeAsync(() => connection.Apply(result));
+            await Dispatcher.UIThread.InvokeAsync(() => ApplyAiConnectionStatus(connection, result));
             return result;
         }
         finally
@@ -558,7 +573,7 @@ internal partial class MainViewModel : ViewModelBase
             try
             {
                 var status = await _aiConnections.GetStatusAsync(connection.Id, cancellationToken).ConfigureAwait(false);
-                await Dispatcher.UIThread.InvokeAsync(() => connection.Apply(status));
+                await Dispatcher.UIThread.InvokeAsync(() => ApplyAiConnectionStatus(connection, status));
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -566,13 +581,33 @@ internal partial class MainViewModel : ViewModelBase
             catch (Exception exception)
             {
                 var status = new AiConnectionStatus(connection.Client, AiConnectionState.Conflict, exception.Message);
-                await Dispatcher.UIThread.InvokeAsync(() => connection.Apply(status));
+                await Dispatcher.UIThread.InvokeAsync(() => ApplyAiConnectionStatus(connection, status));
             }
             finally
             {
                 await Dispatcher.UIThread.InvokeAsync(() => connection.IsBusy = false);
             }
         })).ConfigureAwait(false);
+    }
+
+    private void ApplyAiConnectionStatus(AiConnectionItemViewModel connection, AiConnectionStatus status)
+    {
+        connection.Apply(status);
+        SortAiConnections();
+    }
+
+    private void SortAiConnections()
+    {
+        var ordered = AiConnections
+            .OrderByDescending(connection => connection.HasManagedConfiguration)
+            .ThenBy(connection => _aiConnectionCatalogOrder[connection.Id])
+            .ToArray();
+
+        for (var targetIndex = 0; targetIndex < ordered.Length; targetIndex++)
+        {
+            var currentIndex = AiConnections.IndexOf(ordered[targetIndex]);
+            if (currentIndex != targetIndex) AiConnections.Move(currentIndex, targetIndex);
+        }
     }
 
     private void RefreshOcrAvailability()

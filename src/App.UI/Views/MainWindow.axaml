@@ -21,11 +21,13 @@
           </StackPanel>
         </StackPanel>
 
-        <StackPanel Grid.Row="1" Spacing="5">
+        <StackPanel Grid.Row="1" Spacing="5" HorizontalAlignment="Stretch">
           <Button Classes="navButton" Classes.active="{Binding IsProjectsSection}"
-                  Content="Projects" HorizontalContentAlignment="Left" Click="ShowProjects" />
+                  Content="Projects" HorizontalAlignment="Stretch"
+                  HorizontalContentAlignment="Left" Click="ShowProjects" />
           <Button Classes="navButton" Classes.active="{Binding IsSettingsSection}"
-                  Content="Settings" HorizontalContentAlignment="Left" Click="ShowSettings" />
+                  Content="Settings" HorizontalAlignment="Stretch"
+                  HorizontalContentAlignment="Left" Click="ShowSettings" />
         </StackPanel>
 
         <Grid Grid.Row="2" ColumnDefinitions="*,Auto" Margin="7,22,5,9">
@@ -38,16 +40,17 @@
                  SelectedItem="{Binding SelectedProject}" SelectionChanged="ProjectSelectionChanged">
           <ListBox.ItemTemplate>
             <DataTemplate x:DataType="vm:ProjectItemViewModel">
-              <Border Classes="projectCard" Margin="0,0,0,7" Padding="12" CornerRadius="9"
-                      Background="Transparent" BorderBrush="Transparent" BorderThickness="1"
+              <Border Classes="projectCard" Classes.paused="{Binding IsPaused}"
+                      Margin="0,0,0,7" Padding="12" CornerRadius="9" BorderThickness="1"
                       PointerPressed="ProjectCardPressed">
                 <StackPanel Spacing="7">
                   <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
                     <TextBlock Text="{Binding Name}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"
                                ToolTip.Tip="{Binding Name}" />
-                    <Border Grid.Column="1" Classes="phaseBadge" Padding="7,2" CornerRadius="8">
-                      <TextBlock Text="{Binding Phase}" FontSize="10" FontWeight="SemiBold"
-                                 Foreground="{DynamicResource AccentBrush}" />
+                    <Border Grid.Column="1" Classes="phaseBadge" Classes.paused="{Binding IsPaused}"
+                            Padding="7,2" CornerRadius="8">
+                      <TextBlock Text="{Binding Phase}" Classes="phaseText"
+                                 Classes.paused="{Binding IsPaused}" FontSize="10" FontWeight="SemiBold" />
                     </Border>
                   </Grid>
                   <StackPanel Orientation="Horizontal" Spacing="5">
@@ -131,28 +134,25 @@
       <Setter Property="BorderBrush" Value="#2D4D7D" />
       <Setter Property="Foreground" Value="#C5D8FF" />
     </Style>
-    <Style Selector="Border.phaseBadge">
-      <Setter Property="Background" Value="{DynamicResource AccentSubtleBrush}" />
-    </Style>
     <Style Selector="ListBox.projectList ListBoxItem /template/ ContentPresenter#PART_ContentPresenter">
       <Setter Property="Background" Value="Transparent" />
       <Setter Property="BorderBrush" Value="Transparent" />
     </Style>
     <Style Selector="ListBox.projectList ListBoxItem:selected /template/ ContentPresenter#PART_ContentPresenter">
-      <Setter Property="Background" Value="{DynamicResource SurfaceRaisedBrush}" />
-      <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
-      <Setter Property="BorderThickness" Value="1" />
-      <Setter Property="CornerRadius" Value="9" />
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderBrush" Value="Transparent" />
     </Style>
     <Style Selector="ListBox.projectList ListBoxItem:pointerover /template/ ContentPresenter#PART_ContentPresenter">
       <Setter Property="Background" Value="Transparent" />
       <Setter Property="BorderBrush" Value="Transparent" />
     </Style>
     <Style Selector="ListBox.projectList ListBoxItem:selected:pointerover /template/ ContentPresenter#PART_ContentPresenter">
-      <Setter Property="Background" Value="{DynamicResource SurfaceRaisedBrush}" />
-      <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
-      <Setter Property="BorderThickness" Value="1" />
-      <Setter Property="CornerRadius" Value="9" />
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderBrush" Value="Transparent" />
+    </Style>
+    <Style Selector="Border.projectCard">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderBrush" Value="Transparent" />
     </Style>
     <Style Selector="ListBox.projectList ListBoxItem:pointerover Border.projectCard">
       <Setter Property="Background" Value="{DynamicResource SurfaceBrush}" />
@@ -161,6 +161,18 @@
     <Style Selector="ListBox.projectList ListBoxItem:selected Border.projectCard">
       <Setter Property="Background" Value="{DynamicResource SurfaceRaisedBrush}" />
       <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
+    </Style>
+    <Style Selector="ListBox.projectList ListBoxItem Border.projectCard.paused">
+      <Setter Property="Background" Value="{DynamicResource WarningSubtleBrush}" />
+      <Setter Property="BorderBrush" Value="#5B4925" />
+    </Style>
+    <Style Selector="ListBox.projectList ListBoxItem:pointerover Border.projectCard.paused">
+      <Setter Property="Background" Value="#342B1A" />
+      <Setter Property="BorderBrush" Value="#735D2E" />
+    </Style>
+    <Style Selector="ListBox.projectList ListBoxItem:selected Border.projectCard.paused">
+      <Setter Property="Background" Value="#342B1A" />
+      <Setter Property="BorderBrush" Value="{DynamicResource WarningBrush}" />
     </Style>
   </Window.Styles>
 </Window>

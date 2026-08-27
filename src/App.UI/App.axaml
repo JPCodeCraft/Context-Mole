@@ -112,6 +112,29 @@
             <Setter Property="MinHeight" Value="32" />
             <Setter Property="FontSize" Value="12" />
         </Style>
+        <Style Selector="ToggleButton.sectionToggle">
+            <Setter Property="MinHeight" Value="0" />
+            <Setter Property="Margin" Value="-8" />
+            <Setter Property="Padding" Value="8" />
+            <Setter Property="CornerRadius" Value="8" />
+            <Setter Property="HorizontalAlignment" Value="Stretch" />
+            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderBrush" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+        </Style>
+        <Style Selector="ToggleButton.sectionToggle:pointerover">
+            <Setter Property="Background" Value="{DynamicResource SurfaceRaisedBrush}" />
+            <Setter Property="BorderBrush" Value="Transparent" />
+        </Style>
+        <Style Selector="ToggleButton.sectionToggle:checked">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderBrush" Value="Transparent" />
+        </Style>
+        <Style Selector="ToggleButton.sectionToggle:checked:pointerover">
+            <Setter Property="Background" Value="{DynamicResource SurfaceRaisedBrush}" />
+            <Setter Property="BorderBrush" Value="Transparent" />
+        </Style>
 
         <Style Selector="TextBox">
             <Setter Property="MinHeight" Value="40" />
@@ -157,6 +180,18 @@
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="CornerRadius" Value="9" />
             <Setter Property="Padding" Value="14" />
+        </Style>
+        <Style Selector="Border.phaseBadge">
+            <Setter Property="Background" Value="{DynamicResource AccentSubtleBrush}" />
+        </Style>
+        <Style Selector="Border.phaseBadge.paused">
+            <Setter Property="Background" Value="{DynamicResource WarningSubtleBrush}" />
+        </Style>
+        <Style Selector="TextBlock.phaseText">
+            <Setter Property="Foreground" Value="{DynamicResource AccentBrush}" />
+        </Style>
+        <Style Selector="TextBlock.phaseText.paused">
+            <Setter Property="Foreground" Value="{DynamicResource WarningBrush}" />
         </Style>
     </Application.Styles>
 </Application>
