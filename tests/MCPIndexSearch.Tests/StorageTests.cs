@@ -366,7 +366,9 @@ public sealed class StorageTests
 
             {{encoded}}
             --test-boundary--
-            """.Replace("\n", "\r\n", StringComparison.Ordinal);
+            """
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace("\n", "\r\n", StringComparison.Ordinal);
         await File.WriteAllTextAsync(source, eml, new UTF8Encoding(false), cancellationToken);
         var pending = await database.ObserveAndLeaseAsync(projectId, folderId, source, false, cancellationToken);
         var modified = new DateTimeOffset(pending.File.LastWriteTimeUtc, TimeSpan.Zero);
