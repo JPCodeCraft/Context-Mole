@@ -25,9 +25,11 @@ internal partial class MainViewModel : ViewModelBase
     private readonly ApplicationUpdateService _applicationUpdates;
     private readonly SemaphoreSlim _refreshGate = new(1, 1);
     private CancellationTokenSource? _polling;
+    private Task? _pollingTask;
     private bool? _reportedOcrAvailable;
     private string? _reportedOcrMessage;
     private bool _hasAnyActiveIndexingItems;
+    private int _lastProjectCount = -1;
 
     public MainViewModel(
         IIndexWriter writer,
@@ -171,18 +173,30 @@ internal partial class MainViewModel : ViewModelBase
         if (_polling is not null) return;
         _polling = new CancellationTokenSource();
         _applicationUpdates.Start();
-        _ = PrepareOcrAsync(_polling.Token);
-        _ = RefreshCodexConnectionAsync(_polling.Token);
-        _ = PollAsync(_polling.Token);
+        _pollingTask = Task.WhenAll(
+            PrepareOcrAsync(_polling.Token),
+            RefreshCodexConnectionAsync(_polling.Token),
+            PollAsync(_polling.Token));
     }
 
-    public void StopPolling()
+    public async Task StopPollingAsync()
     {
         var polling = Interlocked.Exchange(ref _polling, null);
         if (polling is null) return;
+        var pollingTask = Interlocked.Exchange(ref _pollingTask, null);
         polling.Cancel();
-        polling.Dispose();
         _applicationUpdates.Stop();
+        try
+        {
+            if (pollingTask is not null) await pollingTask.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (polling.IsCancellationRequested)
+        {
+        }
+        finally
+        {
+            polling.Dispose();
+        }
     }
 
     public async Task CreateAsync(string name, IReadOnlyList<string> folders) =>
@@ -263,12 +277,12 @@ internal partial class MainViewModel : ViewModelBase
         IsCodexConnectionBannerVisible = false;
     }
 
-    public async Task RefreshAsync(Guid? preferredProjectId = null)
+    public async Task RefreshAsync(Guid? preferredProjectId = null, CancellationToken cancellationToken = default)
     {
-        await _refreshGate.WaitAsync().ConfigureAwait(false);
+        await _refreshGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            var projects = await _store.ListProjectsAsync().ConfigureAwait(false);
+            var projects = await _store.ListProjectsAsync(cancellationToken).ConfigureAwait(false);
             await Dispatcher.UIThread.InvokeAsync(() =>
             {
                 var selectedId = preferredProjectId ?? SelectedProject?.Id;
@@ -277,7 +291,13 @@ internal partial class MainViewModel : ViewModelBase
                     ? Projects.FirstOrDefault()
                     : Projects.FirstOrDefault(project => project.Id == selectedId) ?? Projects.FirstOrDefault();
                 ReconcileIndexingActivities(_indexingActivities.GetSnapshot(SelectedProject?.Id));
-                StatusMessage = Projects.Count == 0 ? "Create a project to begin indexing." : "Indexing runs locally in the background.";
+                if (_lastProjectCount != Projects.Count)
+                {
+                    _lastProjectCount = Projects.Count;
+                    StatusMessage = Projects.Count == 0
+                        ? "Create a project to begin indexing."
+                        : "Indexing runs locally in the background.";
+                }
             });
         }
         finally
@@ -288,23 +308,33 @@ internal partial class MainViewModel : ViewModelBase
 
     private async Task PollAsync(CancellationToken cancellationToken)
     {
-        var errorTick = 0;
+        var summaryTick = 0;
         try
         {
-            await RefreshAsync().ConfigureAwait(false);
+            try
+            {
+                await RefreshAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                await Dispatcher.UIThread.InvokeAsync(() => StatusMessage = exception.Message);
+            }
+
             using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(250));
             while (await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
             {
                 try
                 {
-                    await RefreshAsync().ConfigureAwait(false);
+                    await Dispatcher.UIThread.InvokeAsync(() =>
+                        ReconcileIndexingActivities(_indexingActivities.GetSnapshot(SelectedProject?.Id)));
+                    if (++summaryTick % 4 != 0) continue;
+
+                    await RefreshAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
                     await Dispatcher.UIThread.InvokeAsync(RefreshOcrAvailability);
-                    if (++errorTick % 4 == 0)
-                    {
-                        Guid? selectedId = null;
-                        await Dispatcher.UIThread.InvokeAsync(() => selectedId = SelectedProject?.Id);
-                        if (selectedId is { } id) await RefreshErrorsAsync(id).ConfigureAwait(false);
-                    }
+                    Guid? selectedId = null;
+                    await Dispatcher.UIThread.InvokeAsync(() => selectedId = SelectedProject?.Id);
+                    if (selectedId is { } id)
+                        await RefreshErrorsAsync(id, cancellationToken).ConfigureAwait(false);
                 }
                 catch (Exception exception) when (exception is not OperationCanceledException)
                 {
@@ -391,9 +421,9 @@ internal partial class MainViewModel : ViewModelBase
         }
     }
 
-    private async Task RefreshErrorsAsync(Guid projectId)
+    private async Task RefreshErrorsAsync(Guid projectId, CancellationToken cancellationToken = default)
     {
-        var errors = await _store.ListProjectErrorsAsync(projectId, 25).ConfigureAwait(false);
+        var errors = await _store.ListProjectErrorsAsync(projectId, 25, cancellationToken).ConfigureAwait(false);
         await Dispatcher.UIThread.InvokeAsync(() =>
         {
             if (SelectedProject is { Id: var selectedId } selected && selectedId == projectId)

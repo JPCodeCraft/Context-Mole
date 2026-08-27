@@ -4,10 +4,10 @@
 
 1. Publish the UI with `Release`, self-contained, folder-based, non-trimmed, and non-AOT settings. Confirm its `mcp-server` subfolder contains the separate self-contained MCP executable. An independent MCP-only publish must also remain possible.
 2. Verify the UI output and bundled MCP output contain the target RID's SQLite, tokenizer, Skia/HarfBuzz, PDFium, and ONNX Runtime native libraries, except for the documented `osx-x64` ONNX degradation below. Confirm no legacy OCR executable/data, Paddle runtime, or Python files are present.
-3. Set `MCPINDEXSEARCH_DATA_DIR` to a new private smoke directory. Start the UI, confirm the PP-OCRv6 medium detector and recognizer download automatically with visible progress, interrupt and resume the download, and verify checksum-gated activation followed by offline OCR. Exercise the separate in-app semantic-search installer, including terms review, rejection, acceptance, cancellation/resume, checksums, activation, and automatic re-embedding.
+3. On `win-x64`, `linux-x64`, and `osx-arm64`, set `MCPINDEXSEARCH_DATA_DIR` to a new private smoke directory. Start the UI, confirm the PP-OCRv6 medium detector and recognizer download automatically with visible progress, interrupt and resume the download, and verify checksum-gated activation followed by offline OCR. Exercise the separate in-app semantic-search installer, including terms review, rejection, acceptance, cancellation/resume, checksums, activation, and automatic re-embedding. Skip this ONNX-dependent step on `osx-x64` and verify its documented degradation instead.
 4. Start the UI, create a project over disposable fixtures, and verify create/modify/rename/delete plus pause/resume/reindex/edit/remove.
 5. Confirm source hashes and modification timestamps remain unchanged.
-6. Use **Connect to Codex**, inspect that only the marked block was added to `~/.codex/config.toml` and that a backup was made, restart Codex, and invoke all six tools. Confirm stdout contains protocol frames only and the database's logical contents are unchanged. Then disconnect and verify unrelated Codex configuration remains byte-for-byte present.
+6. Use **Connect to Codex**, inspect that only the marked block was added to `~/.codex/config.toml` and that a backup was made, restart Codex, and invoke all eight tools. Confirm stdout contains protocol frames only and the database's logical contents are unchanged. Then disconnect and verify unrelated Codex configuration remains byte-for-byte present.
 
 ## Windows x64
 

@@ -447,6 +447,13 @@ public sealed record VectorSnapshot(
     bool RequiresStreaming = false,
     string? Warning = null);
 
+public sealed record VectorSnapshotMetadata(
+    long SearchGeneration,
+    EmbeddingPolicy? Policy,
+    long EntryCount,
+    bool RequiresStreaming = false,
+    string? Warning = null);
+
 public sealed record KeywordSearchPage(long SearchGeneration, IReadOnlyList<SearchCandidate> Candidates);
 
 public sealed record VectorMatch(Guid PassageId, double Score, int Rank);
@@ -466,5 +473,7 @@ public static class SupportedContent
         ".zip", ".rar"
     });
 
-    public static bool IsSupported(string path) => Extensions.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase);
+    private static readonly HashSet<string> ExtensionSet = new(Extensions, StringComparer.OrdinalIgnoreCase);
+
+    public static bool IsSupported(string path) => ExtensionSet.Contains(Path.GetExtension(path));
 }

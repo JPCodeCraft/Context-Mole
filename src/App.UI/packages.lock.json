@@ -45,16 +45,6 @@
           "Avalonia": "12.1.1"
         }
       },
-      "AvaloniaUI.DiagnosticsSupport": {
-        "type": "Direct",
-        "requested": "[2.2.3, )",
-        "resolved": "2.2.3",
-        "contentHash": "kQCInYusi2c9tjd9hV05Lln6Csbo07kiC672M3G7dsalDBe2j+pOk3We2nzdyy5ptQYy/9gQiC8ZaHhb6u/5Kw==",
-        "dependencies": {
-          "Microsoft.Extensions.Logging.Abstractions": "8.0.0",
-          "Microsoft.IO.RecyclableMemoryStream": "3.0.1"
-        }
-      },
       "CommunityToolkit.Mvvm": {
         "type": "Direct",
         "requested": "[8.4.2, )",
@@ -663,13 +653,6 @@
           "Microsoft.ML.OnnxRuntime": "[1.29.0, )",
           "SkiaSharp": "[4.150.1, )",
           "Tokenizers.HuggingFace": "[3.23.1, )"
-        }
-      },
-      "mcpindexsearch.search": {
-        "type": "Project",
-        "dependencies": {
-          "MCPIndexSearch.Core": "[1.0.0, )",
-          "Microsoft.Extensions.DependencyInjection.Abstractions": "[10.0.11, )"
         }
       },
       "mcpindexsearch.storage": {

@@ -394,33 +394,49 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
             return null;
         }, cancellationToken);
 
-    public Task CompleteReconciliationAsync(Guid projectId, Guid folderId, string tokenValue, CancellationToken cancellationToken = default) =>
-        EnqueueAsync<object?>(async (connection, token) =>
+    public async Task CompleteReconciliationAsync(Guid projectId, Guid folderId, string tokenValue,
+        CancellationToken cancellationToken = default)
+    {
+        var missing = await EnqueueAsync(async (connection, token) =>
         {
-            using var transaction = connection.BeginTransaction();
-            var missing = new List<string>();
+            var candidates = new List<(string PathKey, string Path, string UpdatedUtc)>();
             await using (var select = connection.CreateCommand())
             {
-                select.Transaction = transaction;
-                select.CommandText = "SELECT path_key FROM documents WHERE project_id=$project AND folder_id=$folder AND tombstoned=0 AND COALESCE(last_seen_token,'')<>$token;";
+                select.CommandText = "SELECT path_key,path,updated_utc FROM documents WHERE project_id=$project AND folder_id=$folder AND tombstoned=0 AND COALESCE(last_seen_token,'')<>$token;";
                 select.Parameters.AddWithValue("$project", projectId.ToString());
                 select.Parameters.AddWithValue("$folder", folderId.ToString());
                 select.Parameters.AddWithValue("$token", tokenValue);
                 await using var reader = await select.ExecuteReaderAsync(token).ConfigureAwait(false);
                 while (await reader.ReadAsync(token).ConfigureAwait(false))
                 {
-                    missing.Add(reader.GetString(0));
+                    candidates.Add((reader.GetString(0), reader.GetString(1), reader.GetString(2)));
                 }
             }
+            return candidates;
+        }, cancellationToken).ConfigureAwait(false);
 
-            foreach (var pathKey in missing)
+        var tombstones = new List<(string PathKey, string UpdatedUtc)>();
+        foreach (var candidate in missing)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!File.Exists(candidate.Path) || IsFileSystemLink(new FileInfo(candidate.Path)))
+                tombstones.Add((candidate.PathKey, candidate.UpdatedUtc));
+        }
+        if (tombstones.Count == 0) return;
+
+        await EnqueueAsync<object?>(async (connection, token) =>
+        {
+            using var transaction = connection.BeginTransaction();
+            foreach (var (pathKey, updatedUtc) in tombstones)
             {
-                await TombstonePathAsync(connection, transaction, projectId, folderId, pathKey, token).ConfigureAwait(false);
+                await TombstonePathAsync(connection, transaction, projectId, folderId, pathKey, token, updatedUtc)
+                    .ConfigureAwait(false);
             }
 
             await transaction.CommitAsync(token).ConfigureAwait(false);
             return null;
-        }, cancellationToken);
+        }, cancellationToken).ConfigureAwait(false);
+    }
 
     public Task<IndexJobLease?> LeaseNextJobAsync(TimeSpan leaseDuration, CancellationToken cancellationToken = default) =>
         EnqueueAsync<IndexJobLease?>(async (connection, token) =>
@@ -842,17 +858,18 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
     }
 
     private async Task TombstonePathAsync(SqliteConnection connection, SqliteTransaction transaction, Guid projectId,
-        Guid folderId, string pathKey, CancellationToken cancellationToken)
+        Guid folderId, string pathKey, CancellationToken cancellationToken, string? expectedUpdatedUtc = null)
     {
         Guid? documentId = null;
         Guid? revisionId = null;
         await using (var select = connection.CreateCommand())
         {
             select.Transaction = transaction;
-            select.CommandText = "SELECT id,active_revision_id FROM documents WHERE project_id=$project AND folder_id=$folder AND path_key=$path AND tombstoned=0;";
+            select.CommandText = "SELECT id,active_revision_id FROM documents WHERE project_id=$project AND folder_id=$folder AND path_key=$path AND tombstoned=0 AND ($expected_updated IS NULL OR updated_utc=$expected_updated);";
             select.Parameters.AddWithValue("$project", projectId.ToString());
             select.Parameters.AddWithValue("$folder", folderId.ToString());
             select.Parameters.AddWithValue("$path", pathKey);
+            select.Parameters.AddWithValue("$expected_updated", (object?)expectedUpdatedUtc ?? DBNull.Value);
             await using var reader = await select.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
             if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
@@ -1075,7 +1092,7 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
             }
 
             var rootInfo = new DirectoryInfo(canonical[index]);
-            if ((rootInfo.Attributes & FileAttributes.ReparsePoint) != 0 && !string.IsNullOrEmpty(rootInfo.LinkTarget))
+            if (IsFileSystemLink(rootInfo))
             {
                 throw new McpIndexException("unsafe_folder", $"Folder roots cannot be symbolic links: {canonical[index]}");
             }
@@ -1096,6 +1113,18 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
         }
 
         return canonical;
+    }
+
+    private static bool IsFileSystemLink(FileSystemInfo info)
+    {
+        try
+        {
+            return (info.Attributes & FileAttributes.ReparsePoint) != 0 && !string.IsNullOrEmpty(info.LinkTarget);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return true;
+        }
     }
 
     internal static string CanonicalPath(string path) => Path.TrimEndingDirectorySeparator(Path.GetFullPath(path.Trim()));

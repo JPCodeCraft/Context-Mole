@@ -1,5 +1,6 @@
 using MCPIndexSearch.Core;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace MCPIndexSearch.Infrastructure;
 
@@ -7,7 +8,7 @@ public static class InfrastructureServices
 {
     public static IServiceCollection AddMcpIndexInfrastructure(this IServiceCollection services, bool includeOcr)
     {
-        services.AddSingleton<IAppPaths, AppPaths>();
+        services.TryAddSingleton<IAppPaths, AppPaths>();
         services.AddSingleton<CpuUsageSettings>();
         services.AddSingleton<ICpuUsageSettings>(provider => provider.GetRequiredService<CpuUsageSettings>());
         services.AddSingleton<IGlobalCpuBudget, GlobalCpuBudget>();

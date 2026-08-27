@@ -14,9 +14,10 @@ public sealed class FlatVectorIndex(VectorSnapshot snapshot) : IVectorIndex
             throw new ArgumentException("The semantic query vector must have 384 dimensions.", nameof(query));
 
         var best = new PriorityQueue<(Guid PassageId, double Score), double>();
+        var preparedFilters = PreparedFilters.Create(filters);
         foreach (var entry in _entries)
         {
-            if (!Matches(entry, filters)) continue;
+            if (!Matches(entry, preparedFilters)) continue;
             var score = Dot(query, entry.Vector);
             if (best.Count < count)
                 best.Enqueue((entry.PassageId, score), score);
@@ -63,13 +64,12 @@ public sealed class FlatVectorIndex(VectorSnapshot snapshot) : IVectorIndex
         return scalar;
     }
 
-    private static bool Matches(VectorEntry entry, SearchFilters? filters)
+    private static bool Matches(VectorEntry entry, PreparedFilters? filters)
     {
         if (filters is null) return true;
-        if (filters.DocumentIds is { Count: > 0 } && !filters.DocumentIds.Contains(entry.DocumentId)) return false;
-        if (filters.PathPrefixes is { Count: > 0 } && !filters.PathPrefixes.Any(prefix => PathMatches(entry.SourcePath, prefix))) return false;
-        if (filters.Extensions is { Count: > 0 } && !filters.Extensions.Any(extension =>
-                string.Equals(NormalizeExtension(extension), entry.Extension, StringComparison.OrdinalIgnoreCase))) return false;
+        if (filters.DocumentIds is not null && !filters.DocumentIds.Contains(entry.DocumentId)) return false;
+        if (filters.PathPrefixes is not null && !filters.PathPrefixes.Any(prefix => PathMatches(entry.SourcePath, prefix))) return false;
+        if (filters.Extensions is not null && !filters.Extensions.Contains(entry.Extension)) return false;
         if (filters.ModifiedFromUtc is { } from && entry.ModifiedUtc < from) return false;
         if (filters.ModifiedToUtc is { } to && entry.ModifiedUtc > to) return false;
         if (filters.AttachmentScope == AttachmentScope.RootOnly && entry.IsAttachment) return false;
@@ -80,13 +80,42 @@ public sealed class FlatVectorIndex(VectorSnapshot snapshot) : IVectorIndex
     private static string NormalizeExtension(string extension) => extension.StartsWith('.') ? extension.ToLowerInvariant() : $".{extension.ToLowerInvariant()}";
     private static bool PathMatches(string candidate, string prefix)
     {
-        var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(prefix));
-        return string.Equals(candidate, root, PathComparison()) ||
-               candidate.StartsWith(root + Path.DirectorySeparatorChar, PathComparison()) ||
-               candidate.StartsWith(root + Path.AltDirectorySeparatorChar, PathComparison());
+        return string.Equals(candidate, prefix, PathComparison()) ||
+               candidate.StartsWith(prefix + Path.DirectorySeparatorChar, PathComparison()) ||
+               candidate.StartsWith(prefix + Path.AltDirectorySeparatorChar, PathComparison());
     }
     private static StringComparison PathComparison() => OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
         ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+
+    private sealed record PreparedFilters(
+        HashSet<Guid>? DocumentIds,
+        string[]? PathPrefixes,
+        HashSet<string>? Extensions,
+        DateTimeOffset? ModifiedFromUtc,
+        DateTimeOffset? ModifiedToUtc,
+        AttachmentScope AttachmentScope)
+    {
+        public static PreparedFilters? Create(SearchFilters? filters)
+        {
+            if (filters is null) return null;
+            var paths = filters.PathPrefixes is { Count: > 0 }
+                ? filters.PathPrefixes.Select(path => Path.TrimEndingDirectorySeparator(Path.GetFullPath(path)))
+                    .Distinct(PathComparer()).ToArray()
+                : null;
+            return new PreparedFilters(
+                filters.DocumentIds is { Count: > 0 } ? filters.DocumentIds.ToHashSet() : null,
+                paths,
+                filters.Extensions is { Count: > 0 }
+                    ? filters.Extensions.Select(NormalizeExtension).ToHashSet(StringComparer.OrdinalIgnoreCase)
+                    : null,
+                filters.ModifiedFromUtc,
+                filters.ModifiedToUtc,
+                filters.AttachmentScope);
+        }
+
+        private static StringComparer PathComparer() => OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
+            ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
+    }
 }
 
 public sealed class FlatVectorIndexFactory : IVectorIndexFactory

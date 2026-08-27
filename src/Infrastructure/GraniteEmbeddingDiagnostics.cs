@@ -17,8 +17,12 @@ public sealed record GraniteValidationResult(
 
 public static class GraniteEmbeddingDiagnostics
 {
-    public static GraniteValidationResult ValidateProfiles(IAppPaths paths, int threadCount)
+    public static GraniteValidationResult ValidateProfiles(
+        IAppPaths paths,
+        int threadCount,
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var directory = Path.Combine(paths.AssetsDirectory, "granite", GraniteEmbeddingGenerator.Revision);
         var tokenizerPath = Path.Combine(directory, "tokenizer.json");
         var quantizedPath = Path.Combine(directory, "model_quint8_avx2.onnx");
@@ -41,16 +45,28 @@ public static class GraniteEmbeddingDiagnostics
             "cash flow report", "protección de datos personales", "mantenimiento industrial"
         ];
         var all = documents.Concat(queries).ToArray();
+        cancellationToken.ThrowIfCancellationRequested();
         using var tokenizer = Tokenizer.FromFile(tokenizerPath);
-        using var quantized = CreateSession(quantizedPath, threadCount);
-        using var fp32 = CreateSession(fp32Path, threadCount);
 
-        var quantWatch = Stopwatch.StartNew();
-        var quantVectors = Embed(quantized, tokenizer, all);
-        quantWatch.Stop();
-        var fpWatch = Stopwatch.StartNew();
-        var fpVectors = Embed(fp32, tokenizer, all);
-        fpWatch.Stop();
+        var quantWatch = new Stopwatch();
+        List<float[]> quantVectors;
+        cancellationToken.ThrowIfCancellationRequested();
+        using (var quantized = CreateSession(quantizedPath, threadCount))
+        {
+            quantWatch.Start();
+            quantVectors = Embed(quantized, tokenizer, all, cancellationToken);
+            quantWatch.Stop();
+        }
+
+        var fpWatch = new Stopwatch();
+        List<float[]> fpVectors;
+        cancellationToken.ThrowIfCancellationRequested();
+        using (var fp32 = CreateSession(fp32Path, threadCount))
+        {
+            fpWatch.Start();
+            fpVectors = Embed(fp32, tokenizer, all, cancellationToken);
+            fpWatch.Stop();
+        }
 
         var meanCosine = quantVectors.Zip(fpVectors).Average(pair => Dot(pair.First, pair.Second));
         var overlaps = new List<double>();
@@ -87,11 +103,16 @@ public static class GraniteEmbeddingDiagnostics
         GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL
     });
 
-    private static List<float[]> Embed(InferenceSession session, Tokenizer tokenizer, IReadOnlyList<string> texts)
+    private static List<float[]> Embed(
+        InferenceSession session,
+        Tokenizer tokenizer,
+        IReadOnlyList<string> texts,
+        CancellationToken cancellationToken)
     {
         var outputVectors = new List<float[]>(texts.Count);
         for (var offset = 0; offset < texts.Count; offset += 8)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var batch = texts.Skip(offset).Take(8).Select(text =>
                 new[] { 2L }.Concat(tokenizer.Encode(text, false).First().Ids.Take(511).Select(id => (long)id)).ToArray()).ToArray();
             var length = batch.Max(ids => ids.Length);
@@ -103,11 +124,11 @@ public static class GraniteEmbeddingDiagnostics
                 inputIds[row, token] = batch[row][token];
                 attention[row, token] = 1;
             }
-            using var results = session.Run(
-            [
-                NamedOnnxValue.CreateFromTensor("input_ids", inputIds),
-                NamedOnnxValue.CreateFromTensor("attention_mask", attention)
-            ]);
+            using var results = RunWithCancellation(session,
+                [
+                    NamedOnnxValue.CreateFromTensor("input_ids", inputIds),
+                    NamedOnnxValue.CreateFromTensor("attention_mask", attention)
+                ], cancellationToken);
             var output = results.First().AsTensor<float>();
             for (var row = 0; row < batch.Length; row++)
             {
@@ -124,6 +145,25 @@ public static class GraniteEmbeddingDiagnostics
             }
         }
         return outputVectors;
+    }
+
+    private static IDisposableReadOnlyCollection<DisposableNamedOnnxValue> RunWithCancellation(
+        InferenceSession session,
+        IReadOnlyCollection<NamedOnnxValue> inputs,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        using var runOptions = new RunOptions();
+        using var cancellationRegistration = cancellationToken.Register(
+            static state => ((RunOptions)state!).Terminate = true, runOptions);
+        try
+        {
+            return session.Run(inputs, session.OutputMetadata.Keys.ToArray(), runOptions);
+        }
+        catch (OnnxRuntimeException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw new OperationCanceledException(cancellationToken);
+        }
     }
 
     private static double Dot(IReadOnlyList<float> left, IReadOnlyList<float> right)

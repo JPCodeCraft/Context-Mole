@@ -16,7 +16,6 @@
     <ProjectReference Include="..\Core\MCPIndexSearch.Core.csproj" />
     <ProjectReference Include="..\Indexing\MCPIndexSearch.Indexing.csproj" />
     <ProjectReference Include="..\Documents\MCPIndexSearch.Documents.csproj" />
-    <ProjectReference Include="..\Search\MCPIndexSearch.Search.csproj" />
     <ProjectReference Include="..\Storage\MCPIndexSearch.Storage.csproj" />
     <ProjectReference Include="..\Infrastructure\MCPIndexSearch.Infrastructure.csproj" />
     <ProjectReference Include="..\Mcp\MCPIndexSearch.Mcp.csproj" ReferenceOutputAssembly="false" Private="false" />
@@ -27,7 +26,6 @@
     <PackageReference Include="Avalonia.Desktop" />
     <PackageReference Include="Avalonia.Fonts.Inter" />
     <PackageReference Include="Avalonia.Themes.Fluent" />
-    <PackageReference Include="AvaloniaUI.DiagnosticsSupport" />
     <PackageReference Include="CommunityToolkit.Mvvm" />
     <PackageReference Include="Microsoft.Extensions.Hosting" />
     <PackageReference Include="Serilog.Extensions.Hosting" />

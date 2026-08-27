@@ -28,6 +28,8 @@ public sealed class GraniteModelInstaller : IDisposable
     private readonly IGlobalCpuBudget _cpuBudget;
     private readonly HttpClient _client;
     private readonly SemaphoreSlim _gate = new(1, 1);
+    private readonly CancellationTokenSource _lifetime = new();
+    private int _disposed;
 
     public GraniteModelInstaller(IAppPaths paths, IGlobalCpuBudget cpuBudget)
     {
@@ -64,14 +66,18 @@ public sealed class GraniteModelInstaller : IDisposable
         IProgress<ModelInstallProgress>? progress = null,
         CancellationToken cancellationToken = default)
     {
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
         if (!gemmaTermsAccepted && !HasRecordedTermsAcceptance)
             throw new McpIndexException("terms_not_accepted", "The Gemma terms must be accepted before installing this tokenizer.");
         if (!IsSupported)
             throw new McpIndexException("model_platform_unsupported", "ONNX Runtime 1.29 does not provide an Intel macOS native library.");
 
-        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        using var operation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _lifetime.Token);
+        var operationToken = operation.Token;
+        await _gate.WaitAsync(operationToken).ConfigureAwait(false);
         try
         {
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
             var directory = Path.Combine(_paths.AssetsDirectory, "granite", GraniteEmbeddingGenerator.Revision);
             Directory.CreateDirectory(directory);
             var useQuantized = System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture ==
@@ -80,21 +86,21 @@ public sealed class GraniteModelInstaller : IDisposable
 
             foreach (var asset in assets)
             {
-                await DownloadVerifiedAsync(asset, progress, cancellationToken).ConfigureAwait(false);
+                await DownloadVerifiedAsync(asset, progress, operationToken).ConfigureAwait(false);
             }
 
             GraniteValidationResult? validation = null;
             if (useQuantized)
             {
                 progress?.Report(new ModelInstallProgress("validating", "Comparing optimized and full-precision models"));
-                using var cpuCapacity = await _cpuBudget.AcquireFullCapacityAsync(cancellationToken).ConfigureAwait(false);
+                using var cpuCapacity = await _cpuBudget.AcquireFullCapacityAsync(operationToken).ConfigureAwait(false);
                 validation = await Task.Run(
-                    () => GraniteEmbeddingDiagnostics.ValidateProfiles(_paths, cpuCapacity.ThreadCount),
-                    cancellationToken).ConfigureAwait(false);
-                await WriteValidationAsync(directory, validation, cancellationToken).ConfigureAwait(false);
+                    () => GraniteEmbeddingDiagnostics.ValidateProfiles(_paths, cpuCapacity.ThreadCount, operationToken),
+                    operationToken).ConfigureAwait(false);
+                await WriteValidationAsync(directory, validation, operationToken).ConfigureAwait(false);
             }
 
-            await WriteAcceptanceAsync(directory, assets, cancellationToken).ConfigureAwait(false);
+            await WriteAcceptanceAsync(directory, assets, operationToken).ConfigureAwait(false);
             progress?.Report(new ModelInstallProgress("complete", "Semantic-search model is ready"));
             return new ModelInstallResult(directory, validation);
         }
@@ -208,6 +214,8 @@ public sealed class GraniteModelInstaller : IDisposable
             "IBM Granite Embedding model: Apache License 2.0.\n" +
             $"The derived tokenizer is subject to the Gemma Terms of Use: {GemmaTermsUrl}\n" +
             $"Model revision: {GraniteEmbeddingGenerator.Revision}\n", cancellationToken).ConfigureAwait(false);
+        await WriteAtomicTextAsync(Path.Combine(modelDirectory, "installation-complete"),
+            GraniteEmbeddingGenerator.Revision, cancellationToken).ConfigureAwait(false);
     }
 
     private static Task WriteValidationAsync(string directory, GraniteValidationResult validation, CancellationToken cancellationToken) =>
@@ -244,8 +252,18 @@ public sealed class GraniteModelInstaller : IDisposable
 
     public void Dispose()
     {
-        _client.Dispose();
-        _gate.Dispose();
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+        _lifetime.Cancel();
+        _gate.Wait();
+        try
+        {
+            _client.Dispose();
+        }
+        finally
+        {
+            _gate.Release();
+            _lifetime.Dispose();
+        }
     }
 
     private sealed record DownloadAsset(string Name, string Url, string Target, string Sha256);

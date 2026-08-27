@@ -41,8 +41,8 @@ internal static class Program
                     retainedFileCountLimit: 14, shared: true)
                 .CreateLogger();
             builder.Services.AddSerilog(dispose: true);
-            builder.Services.AddMcpIndexInfrastructure(includeOcr: true);
             builder.Services.AddSingleton<IAppPaths>(paths);
+            builder.Services.AddMcpIndexInfrastructure(includeOcr: true);
             builder.Services.AddSingleton<CodexMcpConfigurationService>();
             builder.Services.AddMcpIndexDocuments();
             builder.Services.AddWritableMcpIndexStorage();
@@ -69,22 +69,51 @@ internal static class Program
     public static async Task ShutdownHostAsync()
     {
         var host = Interlocked.Exchange(ref _host, null);
-        if (host is not null)
+        try
         {
-            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-            try { await host.StopAsync(timeout.Token).ConfigureAwait(false); }
-            catch (OperationCanceledException) { Log.Warning("Timed out while draining application services"); }
-            host.Dispose();
+            if (host is not null)
+            {
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                try
+                {
+                    await host.StopAsync(timeout.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+                {
+                    Log.Warning("Timed out while draining application services");
+                }
+                catch (Exception exception)
+                {
+                    Log.Error(exception, "Application services did not stop cleanly");
+                }
+                finally
+                {
+                    try
+                    {
+                        host.Dispose();
+                    }
+                    catch (Exception exception)
+                    {
+                        Log.Error(exception, "Application services could not be disposed cleanly");
+                    }
+                }
+            }
         }
-        Interlocked.Exchange(ref _instanceLock, null)?.Dispose();
-        Log.CloseAndFlush();
+        finally
+        {
+            try
+            {
+                Interlocked.Exchange(ref _instanceLock, null)?.Dispose();
+            }
+            finally
+            {
+                Log.CloseAndFlush();
+            }
+        }
     }
 
     public static AppBuilder BuildAvaloniaApp() => AppBuilder.Configure<App>()
         .UsePlatformDetect()
-#if DEBUG
-        .WithDeveloperTools()
-#endif
         .WithInterFont()
         .LogToTrace();
 }

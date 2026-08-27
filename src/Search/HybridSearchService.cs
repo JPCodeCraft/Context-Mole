@@ -6,13 +6,17 @@ public sealed class HybridSearchService(
     ISearchStore store,
     IEmbeddingGenerator embeddingGenerator,
     IVectorIndexFactory vectorFactory,
-    VectorIndexCache cache)
+    VectorIndexCache cache,
+    IGlobalCpuBudget cpuBudget)
 {
     private const double RrfK = 60;
     private readonly ISearchStore _store = store;
     private readonly IEmbeddingGenerator _embeddingGenerator = embeddingGenerator;
     private readonly IVectorIndexFactory _vectorFactory = vectorFactory;
     private readonly VectorIndexCache _cache = cache;
+    private readonly IGlobalCpuBudget _cpuBudget = cpuBudget;
+    private readonly SemaphoreSlim _embeddingReloadGate = new(1, 1);
+    private readonly SemaphoreSlim _vectorLoadGate = new(1, 1);
 
     public async Task<SearchResponse> SearchAsync(SearchRequest request, CancellationToken cancellationToken = default)
     {
@@ -23,8 +27,13 @@ public sealed class HybridSearchService(
 
         var candidateK = Math.Clamp(Math.Max(100, request.Limit * 5), 100, 500);
         var fts = TextNormalization.QuoteFtsTerms(request.Query);
+        if (fts.Length == 0)
+            throw new McpIndexException("invalid_request", "query must contain at least one letter, number, or underscore.");
+
+        using var worker = await _cpuBudget.AcquireWorkerAsync(cancellationToken).ConfigureAwait(false);
+        using var activeWorker = worker.Activate();
         KeywordSearchPage keywordPage = new(0, []);
-        VectorSnapshot vectorSnapshot = new(0, null, []);
+        VectorSnapshotMetadata vectorMetadata = new(0, null, 0);
         var warnings = new List<string>();
         Exception? keywordFailure = null;
         try
@@ -39,39 +48,37 @@ public sealed class HybridSearchService(
 
         try
         {
-            vectorSnapshot = await _store.LoadVectorSnapshotAsync(request.ProjectId, cancellationToken).ConfigureAwait(false);
+            vectorMetadata = await _store.LoadVectorSnapshotMetadataAsync(request.ProjectId, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             warnings.Add($"Semantic index is unavailable: {exception.Message}");
         }
 
-        if (keywordFailure is not null && vectorSnapshot.SearchGeneration == 0)
+        if (keywordFailure is not null && vectorMetadata.SearchGeneration == 0)
             throw keywordFailure;
 
-        for (var attempt = 0; keywordPage.SearchGeneration != 0 && vectorSnapshot.SearchGeneration != 0 &&
-             keywordPage.SearchGeneration != vectorSnapshot.SearchGeneration && attempt < 2; attempt++)
+        for (var attempt = 0; keywordPage.SearchGeneration != 0 && vectorMetadata.SearchGeneration != 0 &&
+             keywordPage.SearchGeneration != vectorMetadata.SearchGeneration && attempt < 2; attempt++)
         {
             keywordPage = await _store.KeywordSearchAsync(request.ProjectId, fts, candidateK, request.Filters, cancellationToken).ConfigureAwait(false);
-            vectorSnapshot = await _store.LoadVectorSnapshotAsync(request.ProjectId, cancellationToken).ConfigureAwait(false);
+            vectorMetadata = await _store.LoadVectorSnapshotMetadataAsync(request.ProjectId, cancellationToken).ConfigureAwait(false);
         }
-        if (keywordPage.SearchGeneration != 0 && vectorSnapshot.SearchGeneration != 0 && keywordPage.SearchGeneration != vectorSnapshot.SearchGeneration)
+        if (keywordPage.SearchGeneration != 0 && vectorMetadata.SearchGeneration != 0 && keywordPage.SearchGeneration != vectorMetadata.SearchGeneration)
             throw new McpIndexException("index_changed", "The project index changed during search. Retry the request.", true);
 
         var keyword = keywordPage.Candidates.Select((candidate, index) => candidate with { KeywordRank = index + 1 }).ToArray();
         var semanticMatches = Array.Empty<VectorMatch>();
-        if (vectorSnapshot.Warning is not null) warnings.Add(vectorSnapshot.Warning);
-        if (!_embeddingGenerator.IsAvailable)
-        {
-            await _embeddingGenerator.ReloadAsync(cancellationToken).ConfigureAwait(false);
-        }
-        var semanticEnabled = _embeddingGenerator.IsAvailable && vectorSnapshot.Policy is not null &&
-            (vectorSnapshot.Entries.Count > 0 || vectorSnapshot.RequiresStreaming);
+        if (vectorMetadata.Warning is not null) warnings.Add(vectorMetadata.Warning);
+        if (vectorMetadata.EntryCount > 0)
+            await EnsureEmbeddingAvailableAsync(cancellationToken).ConfigureAwait(false);
+        var semanticEnabled = _embeddingGenerator.IsAvailable && vectorMetadata.Policy is not null &&
+            vectorMetadata.EntryCount > 0;
         if (!_embeddingGenerator.IsAvailable)
             warnings.Add(_embeddingGenerator.UnavailableReason ?? "Granite model assets are unavailable; using keyword search.");
-        else if (vectorSnapshot.Policy is null && vectorSnapshot.Entries.Count > 0)
+        else if (vectorMetadata.Policy is null && vectorMetadata.EntryCount > 0)
             warnings.Add("The project contains incompatible embedding policy generations; using keyword search until re-embedding completes.");
-        else if (vectorSnapshot.Policy is not null && !string.Equals(vectorSnapshot.Policy.Key, _embeddingGenerator.Policy?.Key, StringComparison.Ordinal))
+        else if (vectorMetadata.Policy is not null && !string.Equals(vectorMetadata.Policy.Key, _embeddingGenerator.Policy?.Key, StringComparison.Ordinal))
         {
             semanticEnabled = false;
             warnings.Add("The active embedding policy differs from the local model; using keyword search until re-embedding completes.");
@@ -82,12 +89,22 @@ public sealed class HybridSearchService(
             try
             {
                 var queryVector = await _embeddingGenerator.EmbedQueryAsync(request.Query, cancellationToken).ConfigureAwait(false);
-                semanticMatches = vectorSnapshot.RequiresStreaming
-                    ? (await FlatVectorIndex.SearchStreamingAsync(
-                        _store.StreamVectorEntriesAsync(request.ProjectId, vectorSnapshot.SearchGeneration, request.Filters, cancellationToken),
-                        queryVector, candidateK, cancellationToken).ConfigureAwait(false)).ToArray()
-                    : _cache.GetOrCreate(request.ProjectId, vectorSnapshot, _vectorFactory)
-                        .Search(queryVector, candidateK, request.Filters).ToArray();
+                if (vectorMetadata.RequiresStreaming)
+                {
+                    semanticMatches = (await FlatVectorIndex.SearchStreamingAsync(
+                        _store.StreamVectorEntriesAsync(request.ProjectId, vectorMetadata.SearchGeneration, request.Filters, cancellationToken),
+                        queryVector, candidateK, cancellationToken).ConfigureAwait(false)).ToArray();
+                }
+                else
+                {
+                    var vectorIndex = await GetVectorIndexAsync(request.ProjectId, vectorMetadata, cancellationToken)
+                        .ConfigureAwait(false);
+                    semanticMatches = vectorIndex.Search(queryVector, candidateK, request.Filters).ToArray();
+                }
+            }
+            catch (McpIndexException exception) when (exception.Code == "index_changed")
+            {
+                throw;
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
             {
@@ -95,15 +112,18 @@ public sealed class HybridSearchService(
             }
         }
 
-        var semanticCandidates = semanticMatches.Length == 0
-            ? []
-            : (await _store.LoadCandidatesAsync(request.ProjectId, semanticMatches.Select(match => match.PassageId).ToArray(),
-                    vectorSnapshot.SearchGeneration, cancellationToken)
+        SearchCandidate[] semanticCandidates = [];
+        if (semanticMatches.Length > 0)
+        {
+            var matchesByPassage = semanticMatches.ToDictionary(match => match.PassageId);
+            semanticCandidates = (await _store.LoadCandidatesAsync(request.ProjectId, matchesByPassage.Keys.ToArray(),
+                    vectorMetadata.SearchGeneration, cancellationToken)
                 .ConfigureAwait(false)).Select(candidate =>
                 {
-                    var match = semanticMatches.First(item => item.PassageId == candidate.PassageId);
+                    var match = matchesByPassage[candidate.PassageId];
                     return candidate with { SemanticRank = match.Rank, SemanticScore = match.Score };
                 }).ToArray();
+        }
 
         var fused = new Dictionary<Guid, Fused>();
         foreach (var candidate in keyword)
@@ -120,7 +140,7 @@ public sealed class HybridSearchService(
         var actualMode = semanticMatches.Length > 0 && keyword.Length > 0 ? "hybrid"
             : semanticMatches.Length > 0 ? "semantic" : "keyword";
         return new SearchResponse(actualMode, warnings.Distinct(StringComparer.Ordinal).ToArray(),
-            keywordPage.SearchGeneration != 0 ? keywordPage.SearchGeneration : vectorSnapshot.SearchGeneration, results);
+            keywordPage.SearchGeneration != 0 ? keywordPage.SearchGeneration : vectorMetadata.SearchGeneration, results);
 
         void Add(SearchCandidate candidate, int rank, bool keywordBranch)
         {
@@ -147,6 +167,50 @@ public sealed class HybridSearchService(
             candidate.SemanticScore, candidate.KeywordRank, candidate.SemanticRank);
     }
 
+    private async Task EnsureEmbeddingAvailableAsync(CancellationToken cancellationToken)
+    {
+        if (_embeddingGenerator.IsAvailable) return;
+        await _embeddingReloadGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (!_embeddingGenerator.IsAvailable)
+                await _embeddingGenerator.ReloadAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _embeddingReloadGate.Release();
+        }
+    }
+
+    private async Task<IVectorIndex> GetVectorIndexAsync(
+        Guid projectId,
+        VectorSnapshotMetadata metadata,
+        CancellationToken cancellationToken)
+    {
+        var policyKey = metadata.Policy!.Key;
+        if (_cache.TryGet(projectId, metadata.SearchGeneration, policyKey, out var cached))
+            return cached;
+
+        await _vectorLoadGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (_cache.TryGet(projectId, metadata.SearchGeneration, policyKey, out cached))
+                return cached;
+
+            var snapshot = await _store.LoadVectorSnapshotAsync(projectId, cancellationToken).ConfigureAwait(false);
+            if (snapshot.SearchGeneration != metadata.SearchGeneration ||
+                !string.Equals(snapshot.Policy?.Key, policyKey, StringComparison.Ordinal))
+                throw new McpIndexException("index_changed", "The project index changed while loading semantic vectors.", true);
+            if (snapshot.Warning is not null)
+                throw new McpIndexException("semantic_index_invalid", snapshot.Warning);
+            return _cache.GetOrCreate(projectId, snapshot, _vectorFactory);
+        }
+        finally
+        {
+            _vectorLoadGate.Release();
+        }
+    }
+
     private sealed record Fused(SearchCandidate Candidate, double Score);
 }
 
@@ -157,11 +221,27 @@ public sealed class VectorIndexCache
     private readonly Dictionary<(Guid ProjectId, long Generation, string Policy), Entry> _entries = [];
     private long _bytes;
 
+    public bool TryGet(Guid projectId, long generation, string policy, out IVectorIndex index)
+    {
+        lock (_gate)
+        {
+            if (_entries.TryGetValue((projectId, generation, policy), out var existing))
+            {
+                existing.LastAccessUtc = DateTime.UtcNow;
+                index = existing.Index;
+                return true;
+            }
+        }
+
+        index = null!;
+        return false;
+    }
+
     public IVectorIndex GetOrCreate(Guid projectId, VectorSnapshot snapshot, IVectorIndexFactory factory)
     {
         var policy = snapshot.Policy?.Key ?? string.Empty;
         var key = (projectId, snapshot.SearchGeneration, policy);
-        var bytes = (long)snapshot.Entries.Count * (1536 + 128);
+        var bytes = EstimateBytes(snapshot);
         if (bytes > Budget)
             return factory.Create(snapshot);
 
@@ -171,6 +251,14 @@ public sealed class VectorIndexCache
             {
                 existing.LastAccessUtc = DateTime.UtcNow;
                 return existing.Index;
+            }
+
+            foreach (var staleKey in _entries.Keys
+                         .Where(item => item.ProjectId == projectId && item != key)
+                         .ToArray())
+            {
+                _bytes -= _entries[staleKey].Bytes;
+                _entries.Remove(staleKey);
             }
 
             while (_bytes + bytes > Budget && _entries.Count > 0)
@@ -184,6 +272,20 @@ public sealed class VectorIndexCache
             _bytes += bytes;
             return index;
         }
+    }
+
+    private static long EstimateBytes(VectorSnapshot snapshot)
+    {
+        long bytes = 0;
+        foreach (var entry in snapshot.Entries)
+        {
+            var entryBytes = 512L + entry.Vector.LongLength * sizeof(float) +
+                             2L * (entry.SourcePath.Length + entry.Extension.Length);
+            if (entryBytes > Budget - bytes) return Budget + 1;
+            bytes += entryBytes;
+        }
+
+        return bytes;
     }
 
     private sealed class Entry(IVectorIndex index, long bytes, DateTime lastAccessUtc)

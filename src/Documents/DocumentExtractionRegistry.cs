@@ -16,11 +16,15 @@ using PDFtoImage.Exceptions;
 using SkiaSharp;
 using UglyToad.PdfPig;
 using UglyToad.PdfPig.Core;
+using UglyToad.PdfPig.Exceptions;
 
 namespace MCPIndexSearch.Documents;
 
 public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : IDocumentExtractor
 {
+    private const long MaxRasterPixels = 25_000_000;
+    private const int PdfOcrDpi = 300;
+    private const int MinimumPdfOcrDpi = 72;
     private static readonly Encoding Windows1252;
     private static readonly SemaphoreSlim PdfRenderGate = new(1, 1);
     private readonly IOcrEngine _ocrEngine = ocrEngine;
@@ -152,6 +156,17 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
                 continue;
             }
 
+            var renderDpi = SafePdfRenderDpi((double)page.Width, (double)page.Height);
+            if (renderDpi is null)
+            {
+                if (!string.IsNullOrWhiteSpace(text))
+                    sections.Add(new ExtractedSection(text, new SourceLocation(LocationKind.Page, Page: page.Number), ExtractionMethod.NativeText));
+                context.Errors.Add(new ExtractionError("image_dimensions_limit",
+                    $"PDF page {page.Number} is too large to render safely for OCR.", false, name));
+                continue;
+            }
+
+            byte[] renderedPage;
             await PdfRenderGate.WaitAsync(cancellationToken);
             try
             {
@@ -160,18 +175,23 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
                 await using var input = new MemoryStream(bytes, writable: false);
                 await using var png = new MemoryStream();
 #pragma warning disable CA1416 // Guarded above; all four supported desktop RIDs are supported by PDFtoImage.
-                Conversion.SavePng(png, input, page.Number - 1, leaveOpen: true, password: null, options: new RenderOptions { Dpi = 300 });
+                Conversion.SavePng(png, input, page.Number - 1, leaveOpen: true, password: null,
+                    options: new RenderOptions { Dpi = renderDpi.Value });
 #pragma warning restore CA1416
-                var ocr = await _ocrEngine.RecognizeAsync(new OcrRequest(png.ToArray(), ".png", TimeSpan.FromSeconds(120)), cancellationToken);
-                if (!string.IsNullOrWhiteSpace(ocr.Text))
-                    sections.Add(new ExtractedSection(ocr.Text, new SourceLocation(LocationKind.Page, Page: page.Number), ExtractionMethod.Ocr, ocr.Confidence));
-                else if (ocr.TimedOut)
-                    context.Errors.Add(new ExtractionError("ocr_timeout", $"OCR timed out for PDF page {page.Number}.", true, name));
+                renderedPage = png.ToArray();
             }
             finally
             {
                 PdfRenderGate.Release();
             }
+
+            var ocr = await _ocrEngine.RecognizeAsync(
+                new OcrRequest(renderedPage, ".png", TimeSpan.FromSeconds(120)), cancellationToken);
+            if (!string.IsNullOrWhiteSpace(ocr.Text))
+                sections.Add(new ExtractedSection(ocr.Text,
+                    new SourceLocation(LocationKind.Page, Page: page.Number), ExtractionMethod.Ocr, ocr.Confidence));
+            else if (ocr.TimedOut)
+                context.Errors.Add(new ExtractionError("ocr_timeout", $"OCR timed out for PDF page {page.Number}.", true, name));
         }
 
         if (pdf.Advanced.TryGetEmbeddedFiles(out var embeddedFiles))
@@ -191,6 +211,25 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
         return new ExtractedNode(name, mimeType, relationship, sections, attachments);
     }
 
+    private static int? SafePdfRenderDpi(double widthPoints, double heightPoints)
+    {
+        widthPoints = Math.Abs(widthPoints);
+        heightPoints = Math.Abs(heightPoints);
+        var area = widthPoints * heightPoints;
+        if (!double.IsFinite(area) || area <= 0) return null;
+
+        var safeDpi = (int)Math.Min(PdfOcrDpi,
+            Math.Floor(72d * Math.Sqrt(MaxRasterPixels / area)));
+        for (var dpi = safeDpi; dpi >= MinimumPdfOcrDpi; dpi--)
+        {
+            var widthPixels = Math.Ceiling(widthPoints * dpi / 72d);
+            var heightPixels = Math.Ceiling(heightPoints * dpi / 72d);
+            if (widthPixels * heightPixels <= MaxRasterPixels) return dpi;
+        }
+
+        return null;
+    }
+
     private async Task<ExtractedNode> ImageNodeAsync(byte[] bytes, string name, string? mimeType, string relationship,
         CancellationToken cancellationToken)
     {
@@ -208,7 +247,7 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
                 frame++;
                 var width = tiff.GetField(TiffTag.IMAGEWIDTH)?[0].ToInt() ?? 0;
                 var height = tiff.GetField(TiffTag.IMAGELENGTH)?[0].ToInt() ?? 0;
-                if (width <= 0 || height <= 0 || (long)width * height > 200_000_000)
+                if (width <= 0 || height <= 0 || (long)width * height > MaxRasterPixels)
                     throw new InvalidDataException("TIFF frame dimensions are invalid or exceed the safety limit.");
                 var raster = new int[width * height];
                 if (!tiff.ReadRGBAImageOriented(width, height, raster, Orientation.TOPLEFT, stopOnError: true))
@@ -275,9 +314,17 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
 
     private static async Task<byte[]> ReadBoundedAsync(Stream source, long maxBytes, CancellationToken cancellationToken)
     {
-        if (source.CanSeek && source.Length > maxBytes)
-            throw new InvalidDataException($"Attachment exceeds the {maxBytes} byte limit.");
-        await using var output = new MemoryStream(source.CanSeek ? checked((int)Math.Min(source.Length, int.MaxValue)) : 0);
+        if (source.CanSeek)
+        {
+            var remaining = source.Length - source.Position;
+            if (remaining < 0 || remaining > maxBytes || remaining > int.MaxValue)
+                throw new InvalidDataException($"Attachment exceeds the {maxBytes} byte limit.");
+            var bytes = GC.AllocateUninitializedArray<byte>((int)remaining);
+            await source.ReadExactlyAsync(bytes, cancellationToken).ConfigureAwait(false);
+            return bytes;
+        }
+
+        await using var output = new MemoryStream();
         var buffer = new byte[128 * 1024];
         long total = 0;
         int read;
@@ -342,8 +389,9 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
         {
             using var data = SKData.CreateCopy(bytes);
             using var codec = SKCodec.Create(data);
-            if (codec is null || codec.Info.Width <= 0 || codec.Info.Height <= 0)
-                throw new InvalidDataException("The image data is malformed or does not match a supported raster format.");
+            if (codec is null || codec.Info.Width <= 0 || codec.Info.Height <= 0 ||
+                (long)codec.Info.Width * codec.Info.Height > MaxRasterPixels)
+                throw new InvalidDataException("The image is malformed or its dimensions exceed the safety limit.");
         }
         catch (InvalidDataException)
         {
@@ -396,7 +444,7 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
         UnauthorizedAccessException => "access_denied",
         IOException => "io_error",
         PdfDocumentFormatException or PdfInvalidFormatException or PdfCannotOpenFileException => "malformed_document",
-        PdfPasswordProtectedException => "encrypted_document",
+        PdfPasswordProtectedException or PdfDocumentEncryptedException => "encrypted_document",
         InvalidDataException => "malformed_document",
         NotSupportedException => "unsupported_format",
         _ => "extraction_failed"

@@ -38,11 +38,17 @@ public partial class App : Application
         _quitting = true;
         _trayIcon?.Dispose();
         _trayIcon = null;
-        if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
+        var desktop = ApplicationLifetime as IClassicDesktopStyleApplicationLifetime;
+        try
         {
-            Program.Services.GetService<MainViewModel>()?.StopPolling();
-            await Program.ShutdownHostAsync();
-            desktop.Shutdown();
+            var pollingStop = Program.Services.GetService<MainViewModel>() is { } viewModel
+                ? viewModel.StopPollingAsync()
+                : Task.CompletedTask;
+            await Task.WhenAll(pollingStop, Program.ShutdownHostAsync());
+        }
+        finally
+        {
+            desktop?.Shutdown();
         }
     }
 

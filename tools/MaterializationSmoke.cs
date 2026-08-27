@@ -61,10 +61,12 @@ var paths = host.Services.GetRequiredService<IAppPaths>();
 var projectId = await writer.CreateProjectAsync(new CreateProjectRequest("Materialization smoke", [fixture]));
 await WaitForIdleAsync(store, projectId);
 
-var rootHit = (await search.SearchAsync(new SearchRequest(projectId, "Root materialization evidence", 10))).Results
-    .First(item => item.AttachmentChain.Count == 0);
-var attachmentHit = (await search.SearchAsync(new SearchRequest(projectId, "Materialized attachment evidence", 10))).Results
-    .First(item => item.AttachmentChain.Count > 0);
+var rootSearch = await search.SearchAsync(new SearchRequest(projectId, "Root materialization evidence", 10));
+var rootHit = rootSearch.Results.FirstOrDefault(item => item.AttachmentChain.Count == 0)
+    ?? throw new InvalidOperationException($"Root passage was not found. Mode={rootSearch.ActualMode}; warnings={string.Join(" | ", rootSearch.Warnings)}; results={rootSearch.Results.Count}.");
+var attachmentSearch = await search.SearchAsync(new SearchRequest(projectId, "Materialized attachment evidence", 10));
+var attachmentHit = attachmentSearch.Results.FirstOrDefault(item => item.AttachmentChain.Count > 0)
+    ?? throw new InvalidOperationException($"Attachment passage was not found. Mode={attachmentSearch.ActualMode}; warnings={string.Join(" | ", attachmentSearch.Warnings)}; results={attachmentSearch.Results.Count}.");
 var root = await materializer.MaterializeAsync(projectId, rootHit.ContentId);
 if (root.Temporary || !PathsEqual(root.LocalPath, source) || !PathsEqual(root.SourcePath, source) || root.AttachmentChain.Count != 0)
     throw new InvalidOperationException("Root materialization did not return the verified source file.");
@@ -97,7 +99,7 @@ var previousLimit = Environment.GetEnvironmentVariable(ContentMaterializationSer
 try
 {
     Environment.SetEnvironmentVariable(ContentMaterializationService.MaxBytesEnvironmentVariable, "32");
-    var limited = new ContentMaterializationService(store, paths);
+    var limited = new ContentMaterializationService(store, paths, host.Services.GetRequiredService<IGlobalCpuBudget>());
     await ExpectCodeAsync("size_limit_exceeded", () => limited.MaterializeAsync(projectId, rootHit.ContentId));
 }
 finally

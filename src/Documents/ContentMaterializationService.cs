@@ -8,25 +8,32 @@ using Storage = MsgReader.Outlook.Storage;
 
 namespace MCPIndexSearch.Documents;
 
-public sealed partial class ContentMaterializationService(ISearchStore store, IAppPaths paths) : IContentMaterializer
+public sealed partial class ContentMaterializationService(
+    ISearchStore store,
+    IAppPaths paths,
+    IGlobalCpuBudget cpuBudget) : IContentMaterializer
 {
     public const long DefaultMaxBytes = 250L * 1024 * 1024;
     public const string MaxBytesEnvironmentVariable = "MCPINDEXSEARCH_MATERIALIZE_MAX_BYTES";
 
     private readonly ISearchStore _store = store;
     private readonly IAppPaths _paths = paths;
+    private readonly IGlobalCpuBudget _cpuBudget = cpuBudget;
     private readonly long _maxBytes = ReadConfiguredMaxBytes();
 
     public async Task<MaterializedContent> MaterializeAsync(Guid projectId, Guid contentId,
         CancellationToken cancellationToken = default)
     {
+        using var worker = await _cpuBudget.AcquireWorkerAsync(cancellationToken).ConfigureAwait(false);
+        using var activeWorker = worker.Activate();
         var indexed = await _store.GetContentMaterializationAsync(projectId, contentId, cancellationToken).ConfigureAwait(false)
             ?? throw new McpIndexException("content_not_found", "The content ID was not found in the active index revision for this project.");
 
         ValidateContentChain(indexed);
         var sourcePath = ValidateAuthorizedSource(indexed.SourcePath, indexed.ProjectFolderPath);
-        var sourceBytes = await ReadVerifiedSourceAsync(sourcePath, indexed, cancellationToken).ConfigureAwait(false);
-        var sourceHash = Sha256(sourceBytes);
+        var verifiedSource = await ReadVerifiedSourceAsync(sourcePath, indexed, cancellationToken).ConfigureAwait(false);
+        var sourceBytes = verifiedSource.Bytes;
+        var sourceHash = verifiedSource.Sha256;
         var target = indexed.ContentChain[^1];
         var attachmentChain = indexed.ContentChain.Skip(1).Select(node => node.Name).ToArray();
 
@@ -94,7 +101,7 @@ public sealed partial class ContentMaterializationService(ISearchStore store, IA
             throw new McpIndexException("source_changed", "The active index revision changed during materialization.");
     }
 
-    private async Task<byte[]> ReadVerifiedSourceAsync(string sourcePath, IndexedContentMaterialization indexed,
+    private async Task<VerifiedSource> ReadVerifiedSourceAsync(string sourcePath, IndexedContentMaterialization indexed,
         CancellationToken cancellationToken)
     {
         try
@@ -112,9 +119,10 @@ public sealed partial class ContentMaterializationService(ISearchStore store, IA
             if (source.Length != indexed.IndexedSizeBytes)
                 throw new McpIndexException("source_changed", "The source file changed while it was being validated.");
             var bytes = await ReadBoundedAsync(source, cancellationToken).ConfigureAwait(false);
-            if (!string.Equals(Sha256(bytes), indexed.IndexFingerprint, StringComparison.OrdinalIgnoreCase))
+            var sha256 = Sha256(bytes);
+            if (!string.Equals(sha256, indexed.IndexFingerprint, StringComparison.OrdinalIgnoreCase))
                 throw new McpIndexException("source_changed", "The source fingerprint no longer matches the active index revision.");
-            return bytes;
+            return new VerifiedSource(bytes, sha256);
         }
         catch (McpIndexException)
         {
@@ -439,6 +447,8 @@ public sealed partial class ContentMaterializationService(ISearchStore store, IA
             throw new McpIndexException("source_not_authorized", "The indexed source is outside its authorized project folder.");
         if (!File.Exists(sourcePath))
             throw new McpIndexException("source_missing", "The indexed source file no longer exists.");
+        if (IsFileSystemLink(new DirectoryInfo(folderPath)))
+            throw new McpIndexException("source_not_authorized", "The authorized project folder is now a file-system link.");
 
         var current = new FileInfo(sourcePath) as FileSystemInfo;
         while (current is not null && !PathsEqual(current.FullName, folderPath))
@@ -460,6 +470,8 @@ public sealed partial class ContentMaterializationService(ISearchStore store, IA
         string.Equals(extracted.Relationship, indexed.Relationship, StringComparison.Ordinal) &&
         (string.IsNullOrWhiteSpace(indexed.MimeType) || string.IsNullOrWhiteSpace(extracted.MimeType) ||
          string.Equals(extracted.MimeType, indexed.MimeType, StringComparison.OrdinalIgnoreCase));
+
+    private sealed record VerifiedSource(byte[] Bytes, string Sha256);
 
     private static string SafeFileName(string indexedName, string? mimeType)
     {

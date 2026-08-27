@@ -11,6 +11,8 @@ namespace MCPIndexSearch.Storage;
 
 public sealed class SqliteSearchStore : ISearchStore
 {
+    private const long VectorCacheBudgetBytes = 512L * 1024 * 1024;
+    private const long VectorEntryBaseBytes = 2048;
     private static readonly JsonSerializerOptions StorageJsonOptions = new()
     {
         TypeInfoResolver = new DefaultJsonTypeInfoResolver()
@@ -357,53 +359,37 @@ public sealed class SqliteSearchStore : ISearchStore
         return new KeywordSearchPage(generation, rows);
     }
 
+    public async Task<VectorSnapshotMetadata> LoadVectorSnapshotMetadataAsync(Guid projectId,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenRequiredAsync(cancellationToken).ConfigureAwait(false);
+        using var transaction = connection.BeginTransaction(deferred: true);
+        var generation = await ReadGenerationAsync(connection, transaction, projectId, cancellationToken).ConfigureAwait(false);
+        var metadata = await ReadVectorMetadataAsync(connection, transaction, projectId, generation, cancellationToken)
+            .ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return metadata;
+    }
+
     public async Task<VectorSnapshot> LoadVectorSnapshotAsync(Guid projectId, CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenRequiredAsync(cancellationToken).ConfigureAwait(false);
         using var transaction = connection.BeginTransaction(deferred: true);
         var generation = await ReadGenerationAsync(connection, transaction, projectId, cancellationToken).ConfigureAwait(false);
-        await using var metadata = connection.CreateCommand();
-        metadata.Transaction = transaction;
-        metadata.CommandText = """
-            SELECT COUNT(*),COUNT(DISTINCT r.embedding_policy_json),MIN(r.embedding_policy_json)
-            FROM embeddings e
-            JOIN document_revisions r ON r.id=e.revision_id AND r.status='active'
-            JOIN documents d ON d.id=r.document_id AND d.active_revision_id=r.id AND d.tombstoned=0
-            WHERE d.project_id=$project;
-            """;
-        metadata.Parameters.AddWithValue("$project", projectId.ToString());
-        long total;
-        int policyCount;
-        EmbeddingPolicy? policy;
-        await using (var metadataReader = await metadata.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
-        {
-            await metadataReader.ReadAsync(cancellationToken).ConfigureAwait(false);
-            total = metadataReader.GetInt64(0);
-            policyCount = metadataReader.GetInt32(1);
-            policy = metadataReader.IsDBNull(2)
-                ? null
-                : JsonSerializer.Deserialize<EmbeddingPolicy>(metadataReader.GetString(2), StorageJsonOptions);
-        }
-        if (total == 0)
+        var snapshotMetadata = await ReadVectorMetadataAsync(connection, transaction, projectId, generation, cancellationToken)
+            .ConfigureAwait(false);
+        if (snapshotMetadata.EntryCount == 0 || snapshotMetadata.Policy is null || snapshotMetadata.RequiresStreaming)
         {
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-            return new VectorSnapshot(generation, null, []);
-        }
-        if (policyCount != 1 || policy is null)
-        {
-            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-            return new VectorSnapshot(generation, null, [], Warning: "The active project contains incompatible embedding policy generations.");
-        }
-        if (total * 1664L > 512L * 1024 * 1024)
-        {
-            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-            return new VectorSnapshot(generation, policy, [], RequiresStreaming: true);
+            return new VectorSnapshot(generation, snapshotMetadata.Policy, [], snapshotMetadata.RequiresStreaming,
+                snapshotMetadata.Warning);
         }
 
+        var policy = snapshotMetadata.Policy;
         await using var command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText = """
-            SELECT e.passage_id,d.id,c.id,d.path,d.extension,d.modified_utc,c.depth,e.vector,r.embedding_policy_json
+            SELECT e.passage_id,d.id,c.id,d.path,d.extension,d.modified_utc,c.depth,e.vector
             FROM embeddings e
             JOIN passages p ON p.rowid=e.passage_rowid
             JOIN document_revisions r ON r.id=e.revision_id AND r.status='active'
@@ -417,23 +403,6 @@ public sealed class SqliteSearchStore : ISearchStore
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-            if (reader.IsDBNull(8))
-            {
-                continue;
-            }
-
-            var current = JsonSerializer.Deserialize<EmbeddingPolicy>(reader.GetString(8), StorageJsonOptions);
-            if (current is null)
-            {
-                continue;
-            }
-
-            if (!string.Equals(policy.Key, current.Key, StringComparison.Ordinal))
-            {
-                incompatible = true;
-                break;
-            }
-
             var bytes = (byte[])reader[7];
             if (bytes.Length != 1536)
             {
@@ -451,6 +420,55 @@ public sealed class SqliteSearchStore : ISearchStore
         return incompatible
             ? new VectorSnapshot(generation, null, [], Warning: "An embedding vector or policy is invalid.")
             : new VectorSnapshot(generation, policy, entries);
+    }
+
+    private static async Task<VectorSnapshotMetadata> ReadVectorMetadataAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        Guid projectId,
+        long generation,
+        CancellationToken cancellationToken)
+    {
+        await using var metadata = connection.CreateCommand();
+        metadata.Transaction = transaction;
+        metadata.CommandText = """
+            SELECT COUNT(*),COUNT(DISTINCT r.embedding_policy_json),MIN(r.embedding_policy_json),
+                   COUNT(DISTINCT e.policy_key),MIN(e.policy_key),
+                   COALESCE(AVG(LENGTH(d.path) + LENGTH(d.extension)),0)
+            FROM embeddings e
+            JOIN document_revisions r ON r.id=e.revision_id AND r.status='active'
+            JOIN documents d ON d.id=r.document_id AND d.active_revision_id=r.id AND d.tombstoned=0
+            WHERE d.project_id=$project;
+            """;
+        metadata.Parameters.AddWithValue("$project", projectId.ToString());
+        long total;
+        int policyCount;
+        EmbeddingPolicy? policy;
+        int policyKeyCount;
+        string? policyKey;
+        double averageStringChars;
+        await using (var metadataReader = await metadata.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
+        {
+            await metadataReader.ReadAsync(cancellationToken).ConfigureAwait(false);
+            total = metadataReader.GetInt64(0);
+            policyCount = metadataReader.GetInt32(1);
+            policy = metadataReader.IsDBNull(2)
+                ? null
+                : JsonSerializer.Deserialize<EmbeddingPolicy>(metadataReader.GetString(2), StorageJsonOptions);
+            policyKeyCount = metadataReader.GetInt32(3);
+            policyKey = metadataReader.IsDBNull(4) ? null : metadataReader.GetString(4);
+            averageStringChars = metadataReader.GetDouble(5);
+        }
+        if (total == 0)
+            return new VectorSnapshotMetadata(generation, null, 0);
+        if (policyCount != 1 || policy is null || policyKeyCount != 1 ||
+            !string.Equals(policy.Key, policyKey, StringComparison.Ordinal))
+            return new VectorSnapshotMetadata(generation, null, total,
+                Warning: "The active project contains incompatible embedding policy generations.");
+        var estimatedEntryBytes = VectorEntryBaseBytes + averageStringChars * sizeof(char);
+        if (total > VectorCacheBudgetBytes / estimatedEntryBytes)
+            return new VectorSnapshotMetadata(generation, policy, total, RequiresStreaming: true);
+        return new VectorSnapshotMetadata(generation, policy, total);
     }
 
     public async IAsyncEnumerable<VectorEntry> StreamVectorEntriesAsync(Guid projectId, long expectedGeneration,
@@ -535,12 +553,16 @@ public sealed class SqliteSearchStore : ISearchStore
         contextBefore = Math.Clamp(contextBefore, 0, 3);
         contextAfter = Math.Clamp(contextAfter, 0, 3);
         await using var connection = await OpenRequiredAsync(cancellationToken).ConfigureAwait(false);
+        using var transaction = connection.BeginTransaction(deferred: true);
+        _ = await ReadGenerationAsync(connection, transaction, projectId, cancellationToken).ConfigureAwait(false);
         var requested = passageIds.ToHashSet();
         var found = new Dictionary<Guid, PassageInfo>();
+        var attachmentChains = new Dictionary<Guid, IReadOnlyList<string>>();
 
         foreach (var passageId in passageIds)
         {
-            var anchor = await LoadPassageAnchorAsync(connection, projectId, passageId, cancellationToken).ConfigureAwait(false);
+            var anchor = await LoadPassageAnchorAsync(connection, transaction, projectId, passageId, cancellationToken)
+                .ConfigureAwait(false);
             if (anchor is null)
             {
                 found[passageId] = new PassageInfo(passageId, Guid.Empty, Guid.Empty, 0, string.Empty, string.Empty,
@@ -550,6 +572,7 @@ public sealed class SqliteSearchStore : ISearchStore
             }
 
             await using var command = connection.CreateCommand();
+            command.Transaction = transaction;
             command.CommandText = """
                 SELECT p.id,d.id,c.id,p.ordinal,p.display_text,d.path,d.file_name,d.extension,d.modified_utc,
                        p.location_kind,p.page,p.sheet,p.cell_range,p.slide,p.structure_path,p.email_part,p.image_frame,
@@ -576,13 +599,19 @@ public sealed class SqliteSearchStore : ISearchStore
 
             foreach (var row in rows)
             {
-                var chain = await LoadAttachmentChainAsync(connection, row.ContentId, cancellationToken).ConfigureAwait(false);
+                if (!attachmentChains.TryGetValue(row.ContentId, out var chain))
+                {
+                    chain = await LoadAttachmentChainAsync(connection, row.ContentId, cancellationToken, transaction)
+                        .ConfigureAwait(false);
+                    attachmentChains[row.ContentId] = chain;
+                }
                 found[row.PassageId] = new PassageInfo(row.PassageId, row.DocumentId, row.ContentId, row.Ordinal,
                     row.Text, row.SourcePath, row.FileName, row.FileType, row.ModifiedUtc, row.Location, chain,
                     row.Method, row.OcrConfidence, requested.Contains(row.PassageId));
             }
         }
 
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         return found.Values.OrderByDescending(item => item.Requested).ThenBy(item => item.ContentId).ThenBy(item => item.Ordinal).ToArray();
     }
 
@@ -1049,9 +1078,24 @@ public sealed class SqliteSearchStore : ISearchStore
         }
 
         var result = new List<SearchCandidate>(raw.Count);
+        var attachmentChains = new Dictionary<Guid, IReadOnlyList<string>>();
         foreach (var row in raw)
         {
-            var chain = await LoadAttachmentChainAsync(connection, row.ContentId, cancellationToken).ConfigureAwait(false);
+            IReadOnlyList<string> chain;
+            if (row.Depth == 0)
+            {
+                chain = [];
+            }
+            else if (!attachmentChains.TryGetValue(row.ContentId, out var cachedChain))
+            {
+                chain = await LoadAttachmentChainAsync(connection, row.ContentId, cancellationToken, command.Transaction)
+                    .ConfigureAwait(false);
+                attachmentChains[row.ContentId] = chain;
+            }
+            else
+            {
+                chain = cachedChain;
+            }
             result.Add(new SearchCandidate(row.PassageId, row.DocumentId, row.ContentId, row.DisplayText, row.SourcePath,
                 row.FileName, row.FileType, row.ModifiedUtc, row.Location, chain, row.Method, row.OcrConfidence,
                 KeywordScore: row.Score));
@@ -1138,9 +1182,10 @@ public sealed class SqliteSearchStore : ISearchStore
     }
 
     private static async Task<IReadOnlyList<string>> LoadAttachmentChainAsync(SqliteConnection connection, Guid contentId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, SqliteTransaction? transaction = null)
     {
         await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
         command.CommandText = """
             WITH RECURSIVE chain(id,parent_id,name,depth) AS (
               SELECT id,parent_id,name,depth FROM content_nodes WHERE id=$content
@@ -1161,9 +1206,10 @@ public sealed class SqliteSearchStore : ISearchStore
     }
 
     private static async Task<(Guid ContentId, int Ordinal)?> LoadPassageAnchorAsync(SqliteConnection connection,
-        Guid projectId, Guid passageId, CancellationToken cancellationToken)
+        SqliteTransaction transaction, Guid projectId, Guid passageId, CancellationToken cancellationToken)
     {
         await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
         command.CommandText = """
             SELECT p.content_id,p.ordinal FROM passages p
             JOIN document_revisions r ON r.id=p.revision_id AND r.status='active'

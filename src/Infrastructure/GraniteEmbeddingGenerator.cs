@@ -59,8 +59,8 @@ public sealed class GraniteEmbeddingGenerator : IEmbeddingGenerator
     {
         var modelDirectory = Path.Combine(_paths.AssetsDirectory, "granite", Revision);
         var tokenizerPath = Path.Combine(modelDirectory, "tokenizer.json");
-        var useQuantized = System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture ==
-            System.Runtime.InteropServices.Architecture.X64 && Avx2.IsSupported &&
+        var quantizedSupported = RuntimeInformation.ProcessArchitecture == Architecture.X64 && Avx2.IsSupported;
+        var useQuantized = quantizedSupported &&
             !File.Exists(Path.Combine(modelDirectory, "quantization-disabled"));
         var modelFile = useQuantized ? "model_quint8_avx2.onnx" : "model.onnx";
         var modelPath = Path.Combine(modelDirectory, modelFile);
@@ -82,6 +82,13 @@ public sealed class GraniteEmbeddingGenerator : IEmbeddingGenerator
         if (!File.Exists(tokenizerPath) || !File.Exists(modelPath))
         {
             ReplaceResources(null, null, "Semantic-search model is not installed.");
+            return;
+        }
+        if (quantizedSupported &&
+            !File.Exists(Path.Combine(modelDirectory, "validation.json")) &&
+            !File.Exists(Path.Combine(modelDirectory, "installation-complete")))
+        {
+            ReplaceResources(null, null, "Semantic-search model installation has not finished validation.");
             return;
         }
 

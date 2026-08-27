@@ -105,6 +105,7 @@ public interface ISearchStore
         CancellationToken cancellationToken = default);
     Task<IReadOnlyList<ProjectErrorInfo>> ListProjectErrorsAsync(Guid projectId, int limit, CancellationToken cancellationToken = default);
     Task<KeywordSearchPage> KeywordSearchAsync(Guid projectId, string ftsQuery, int count, SearchFilters? filters, CancellationToken cancellationToken = default);
+    Task<VectorSnapshotMetadata> LoadVectorSnapshotMetadataAsync(Guid projectId, CancellationToken cancellationToken = default);
     Task<VectorSnapshot> LoadVectorSnapshotAsync(Guid projectId, CancellationToken cancellationToken = default);
     IAsyncEnumerable<VectorEntry> StreamVectorEntriesAsync(Guid projectId, long expectedGeneration, SearchFilters? filters,
         CancellationToken cancellationToken = default);

@@ -267,24 +267,41 @@ public sealed partial class DocumentExtractionRegistry
                 case MessagePart messagePart:
                 {
                     if (messagePart.Message is null) break;
-                    await using var output = new MemoryStream();
-                    await messagePart.Message.WriteToAsync(output, cancellationToken);
-                    output.Position = 0;
                     var suppliedName = messagePart.ContentDisposition?.FileName ?? messagePart.ContentType.Name;
                     var attachmentName = string.IsNullOrWhiteSpace(suppliedName) ? $"message-{ordinal}.eml" : suppliedName;
-                    attachments.Add(await ExtractStreamAsync(output, attachmentName, "message/rfc822", "email-attachment",
-                        depth + 1, context, cancellationToken));
+                    try
+                    {
+                        await using var output = new AttachmentBuffer(context.Request.MaxAttachmentBytes);
+                        await messagePart.Message.WriteToAsync(output, cancellationToken);
+                        output.Position = 0;
+                        attachments.Add(await ExtractStreamAsync(output, attachmentName, "message/rfc822", "email-attachment",
+                            depth + 1, context, cancellationToken));
+                    }
+                    catch (AttachmentSizeLimitException exception)
+                    {
+                        attachments.Add(Rejected(attachmentName, "message/rfc822", "email-attachment", context,
+                            "attachment_size_limit", exception.Message));
+                    }
                     break;
                 }
                 case MimePart mimePart:
                 {
                     if (mimePart.Content is null) break;
-                    await using var output = new MemoryStream();
-                    await mimePart.Content.DecodeToAsync(output, cancellationToken);
-                    output.Position = 0;
                     var attachmentName = string.IsNullOrWhiteSpace(mimePart.FileName) ? $"attachment-{ordinal}" : mimePart.FileName;
-                    attachments.Add(await ExtractStreamAsync(output, attachmentName, mimePart.ContentType.MimeType, mimePart.IsAttachment ? "email-attachment" : "email-inline",
-                        depth + 1, context, cancellationToken));
+                    var attachmentRelationship = mimePart.IsAttachment ? "email-attachment" : "email-inline";
+                    try
+                    {
+                        await using var output = new AttachmentBuffer(context.Request.MaxAttachmentBytes);
+                        await mimePart.Content.DecodeToAsync(output, cancellationToken);
+                        output.Position = 0;
+                        attachments.Add(await ExtractStreamAsync(output, attachmentName, mimePart.ContentType.MimeType,
+                            attachmentRelationship, depth + 1, context, cancellationToken));
+                    }
+                    catch (AttachmentSizeLimitException exception)
+                    {
+                        attachments.Add(Rejected(attachmentName, mimePart.ContentType.MimeType, attachmentRelationship,
+                            context, "attachment_size_limit", exception.Message));
+                    }
                     break;
                 }
             }
@@ -427,4 +444,53 @@ public sealed partial class DocumentExtractionRegistry
         "image/webp" => ".webp",
         _ => string.Empty
     };
+
+    private sealed class AttachmentBuffer(long maxBytes) : MemoryStream
+    {
+        public override void Write(byte[] buffer, int offset, int count)
+        {
+            EnsureCapacityFor(count);
+            base.Write(buffer, offset, count);
+        }
+
+        public override void Write(ReadOnlySpan<byte> buffer)
+        {
+            EnsureCapacityFor(buffer.Length);
+            base.Write(buffer);
+        }
+
+        public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+        {
+            EnsureCapacityFor(count);
+            return base.WriteAsync(buffer, offset, count, cancellationToken);
+        }
+
+        public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            EnsureCapacityFor(buffer.Length);
+            return base.WriteAsync(buffer, cancellationToken);
+        }
+
+        public override void WriteByte(byte value)
+        {
+            EnsureCapacityFor(1);
+            base.WriteByte(value);
+        }
+
+        public override void SetLength(long value)
+        {
+            if (value > maxBytes) throw LimitExceeded();
+            base.SetLength(value);
+        }
+
+        private void EnsureCapacityFor(long additionalBytes)
+        {
+            if (additionalBytes < 0 || Position > maxBytes - additionalBytes) throw LimitExceeded();
+        }
+
+        private static AttachmentSizeLimitException LimitExceeded() =>
+            new("Decoded attachment exceeds the configured per-attachment size limit.");
+    }
+
+    private sealed class AttachmentSizeLimitException(string message) : IOException(message);
 }

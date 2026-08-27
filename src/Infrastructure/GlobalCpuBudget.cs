@@ -7,8 +7,7 @@ public sealed class GlobalCpuBudget : IGlobalCpuBudget, IDisposable
     private readonly object _gate = new();
     private readonly ICpuUsageSettings _settings;
     private readonly AsyncLocal<WorkerLease?> _ambientWorker = new();
-    private readonly LinkedList<Waiter> _workerWaiters = [];
-    private readonly LinkedList<Waiter> _fullCapacityWaiters = [];
+    private readonly LinkedList<Waiter> _waiters = [];
     private int _activeCapacity;
     private bool _disposed;
 
@@ -50,9 +49,8 @@ public sealed class GlobalCpuBudget : IGlobalCpuBudget, IDisposable
         {
             if (_disposed) return;
             _disposed = true;
-            waiting = _workerWaiters.Concat(_fullCapacityWaiters).ToArray();
-            _workerWaiters.Clear();
-            _fullCapacityWaiters.Clear();
+            waiting = _waiters.ToArray();
+            _waiters.Clear();
             foreach (var waiter in waiting) waiter.Node = null;
         }
 
@@ -68,7 +66,7 @@ public sealed class GlobalCpuBudget : IGlobalCpuBudget, IDisposable
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
             var limit = _settings.ThreadLimit;
-            if (_activeCapacity < limit && (resumePriority || _fullCapacityWaiters.Count == 0))
+            if (_activeCapacity < limit && (resumePriority || _waiters.Count == 0))
             {
                 _activeCapacity++;
                 return Task.FromResult(new CapacityGrant(1));
@@ -76,8 +74,8 @@ public sealed class GlobalCpuBudget : IGlobalCpuBudget, IDisposable
 
             var waiter = new Waiter(fullCapacity: false, cancellationToken);
             waiter.Node = resumePriority
-                ? _workerWaiters.AddFirst(waiter)
-                : _workerWaiters.AddLast(waiter);
+                ? _waiters.AddFirst(waiter)
+                : _waiters.AddLast(waiter);
             RegisterCancellation(waiter);
             return AwaitWaiterAsync(waiter);
         }
@@ -99,7 +97,7 @@ public sealed class GlobalCpuBudget : IGlobalCpuBudget, IDisposable
                 _activeCapacity--;
             }
 
-            if (_activeCapacity == 0 && _fullCapacityWaiters.Count == 0)
+            if (_activeCapacity == 0 && _waiters.Count == 0)
             {
                 var capacity = _settings.ThreadLimit;
                 _activeCapacity = capacity;
@@ -107,7 +105,7 @@ public sealed class GlobalCpuBudget : IGlobalCpuBudget, IDisposable
             }
 
             var waiter = new Waiter(fullCapacity: true, cancellationToken);
-            waiter.Node = _fullCapacityWaiters.AddLast(waiter);
+            waiter.Node = _waiters.AddLast(waiter);
             RegisterCancellation(waiter);
             PumpWaitersLocked();
             return new FullCapacityRequest(AwaitWaiterAsync(waiter), suspendedWorker);
@@ -143,10 +141,7 @@ public sealed class GlobalCpuBudget : IGlobalCpuBudget, IDisposable
         lock (_gate)
         {
             if (waiter.Node is null) return;
-            if (waiter.FullCapacity)
-                _fullCapacityWaiters.Remove(waiter.Node);
-            else
-                _workerWaiters.Remove(waiter.Node);
+            _waiters.Remove(waiter.Node);
             waiter.Node = null;
             waiter.Completion.TrySetCanceled(waiter.CancellationToken);
             PumpWaitersLocked();
@@ -221,21 +216,21 @@ public sealed class GlobalCpuBudget : IGlobalCpuBudget, IDisposable
     {
         if (_disposed) return;
         var limit = _settings.ThreadLimit;
-        if (_fullCapacityWaiters.First is { } fullNode)
+        while (_waiters.First is { } node)
         {
-            if (_activeCapacity != 0) return;
-            var waiter = fullNode.Value;
-            _fullCapacityWaiters.Remove(fullNode);
-            waiter.Node = null;
-            _activeCapacity = limit;
-            waiter.Completion.TrySetResult(new CapacityGrant(limit));
-            return;
-        }
+            var waiter = node.Value;
+            if (waiter.FullCapacity)
+            {
+                if (_activeCapacity != 0) return;
+                _waiters.RemoveFirst();
+                waiter.Node = null;
+                _activeCapacity = limit;
+                waiter.Completion.TrySetResult(new CapacityGrant(limit));
+                return;
+            }
 
-        while (_activeCapacity < limit && _workerWaiters.First is { } workerNode)
-        {
-            var waiter = workerNode.Value;
-            _workerWaiters.Remove(workerNode);
+            if (_activeCapacity >= limit) return;
+            _waiters.RemoveFirst();
             waiter.Node = null;
             _activeCapacity++;
             waiter.Completion.TrySetResult(new CapacityGrant(1));

@@ -49,6 +49,7 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
     private readonly HttpClient _client;
     private readonly SemaphoreSlim _installGate = new(1, 1);
     private readonly SemaphoreSlim _inferenceGate = new(1, 1);
+    private readonly CancellationTokenSource _lifetime = new();
     private readonly object _stateGate = new();
     private InferenceSession? _detector;
     private InferenceSession? _recognizer;
@@ -56,6 +57,7 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
     private string? _detectorInputName;
     private string? _recognizerInputName;
     private volatile bool _isAvailable;
+    private int _disposed;
     private string? _unavailableReason;
     private int _configuredThreadCount;
 
@@ -94,6 +96,7 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
 
     public async Task EnsureAvailableAsync(CancellationToken cancellationToken = default)
     {
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
         if (IsAvailable) return;
         if (!IsPlatformSupported())
         {
@@ -101,9 +104,12 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
                 "PP-OCRv6 is unavailable because ONNX Runtime 1.29 does not provide an Intel macOS native library.");
         }
 
-        await _installGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        using var operation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _lifetime.Token);
+        var operationToken = operation.Token;
+        await _installGate.WaitAsync(operationToken).ConfigureAwait(false);
         try
         {
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
             if (IsAvailable) return;
 
             var directory = ModelDirectory;
@@ -120,10 +126,10 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
 
             foreach (var asset in assets)
             {
-                await DownloadVerifiedAsync(asset, cancellationToken).ConfigureAwait(false);
+                await DownloadVerifiedAsync(asset, operationToken).ConfigureAwait(false);
             }
 
-            await WritePolicyAsync(directory, cancellationToken).ConfigureAwait(false);
+            await WritePolicyAsync(directory, operationToken).ConfigureAwait(false);
             LoadCore(_cpuUsageSettings.ThreadLimit);
             if (!IsAvailable)
             {
@@ -152,22 +158,28 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
 
     public async Task<OcrResult> RecognizeAsync(OcrRequest request, CancellationToken cancellationToken)
     {
-        await EnsureAvailableAsync(cancellationToken).ConfigureAwait(false);
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(request.Timeout);
+        using var deadline = new CancellationTokenSource();
+        deadline.CancelAfter(request.Timeout);
+        using var operation = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken, _lifetime.Token, deadline.Token);
+        var operationToken = operation.Token;
 
         var inferenceGateHeld = false;
         try
         {
-            using var cpuCapacity = await _cpuBudget.AcquireFullCapacityAsync(timeout.Token).ConfigureAwait(false);
-            await _inferenceGate.WaitAsync(timeout.Token).ConfigureAwait(false);
+            await EnsureAvailableAsync(operationToken).ConfigureAwait(false);
+            using var cpuCapacity = await _cpuBudget.AcquireFullCapacityAsync(operationToken).ConfigureAwait(false);
+            await _inferenceGate.WaitAsync(operationToken).ConfigureAwait(false);
             inferenceGateHeld = true;
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
             if (_configuredThreadCount != cpuCapacity.ThreadCount)
                 LoadCore(cpuCapacity.ThreadCount);
 
-            return RecognizeCore(request.ImageBytes.Span, timeout.Token);
+            return RecognizeCore(request.ImageBytes.Span, operationToken);
         }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (deadline.IsCancellationRequested &&
+                                                 !cancellationToken.IsCancellationRequested &&
+                                                 !_lifetime.IsCancellationRequested)
         {
             return new OcrResult(string.Empty, null, TimedOut: true);
         }
@@ -208,7 +220,7 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
         {
             cancellationToken.ThrowIfCancellationRequested();
             using var crop = Crop(source, box);
-            var recognized = RecognizeLine(crop, recognizer, recognizerInputName, characters);
+            var recognized = RecognizeLine(crop, recognizer, recognizerInputName, characters, cancellationToken);
             if (!string.IsNullOrWhiteSpace(recognized.Text))
             {
                 lines.Add(new RecognizedLine(box, recognized.Text.Trim(), recognized.Confidence));
@@ -263,7 +275,8 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
         FillDetectionTensor(resized, input);
         cancellationToken.ThrowIfCancellationRequested();
 
-        using var output = session.Run([NamedOnnxValue.CreateFromTensor(inputName, input)]);
+        using var output = RunWithCancellation(session,
+            [NamedOnnxValue.CreateFromTensor(inputName, input)], cancellationToken);
         var map = output.First().AsTensor<float>();
         var dimensions = map.Dimensions.ToArray();
         int mapHeight;
@@ -379,11 +392,14 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
         SKBitmap crop,
         InferenceSession session,
         string inputName,
-        IReadOnlyList<string> characters)
+        IReadOnlyList<string> characters,
+        CancellationToken cancellationToken)
     {
         var input = new DenseTensor<float>([1, 3, RecognitionHeight, RecognitionWidth]);
         FillRecognitionTensor(crop, input);
-        using var output = session.Run([NamedOnnxValue.CreateFromTensor(inputName, input)]);
+        cancellationToken.ThrowIfCancellationRequested();
+        using var output = RunWithCancellation(session,
+            [NamedOnnxValue.CreateFromTensor(inputName, input)], cancellationToken);
         var probabilities = output.First().AsTensor<float>();
         var dimensions = probabilities.Dimensions.ToArray();
         if (dimensions.Length != 3 || dimensions[0] != 1)
@@ -428,6 +444,25 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
         }
 
         return (builder.ToString(), selected == 0 ? 0 : confidence / selected * 100d);
+    }
+
+    private static IDisposableReadOnlyCollection<DisposableNamedOnnxValue> RunWithCancellation(
+        InferenceSession session,
+        IReadOnlyCollection<NamedOnnxValue> inputs,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        using var runOptions = new RunOptions();
+        using var cancellationRegistration = cancellationToken.Register(
+            static state => ((RunOptions)state!).Terminate = true, runOptions);
+        try
+        {
+            return session.Run(inputs, session.OutputMetadata.Keys.ToArray(), runOptions);
+        }
+        catch (OnnxRuntimeException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw new OperationCanceledException(cancellationToken);
+        }
     }
 
     private static void FillDetectionTensor(SKBitmap image, DenseTensor<float> tensor)
@@ -726,11 +761,30 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
 
     public void Dispose()
     {
-        ReplaceResources(null, null, null, null, null, "PP-OCRv6 is shutting down.");
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+        _lifetime.Cancel();
+
+        _installGate.Wait();
+        try
+        {
+            _inferenceGate.Wait();
+            try
+            {
+                ReplaceResources(null, null, null, null, null, "PP-OCRv6 is shutting down.");
+            }
+            finally
+            {
+                _inferenceGate.Release();
+            }
+        }
+        finally
+        {
+            _installGate.Release();
+        }
+
         _client.Dispose();
-        _installGate.Dispose();
-        _inferenceGate.Dispose();
         _ownedCpuBudget?.Dispose();
+        _lifetime.Dispose();
     }
 
     private static StandaloneCpuDependencies CreateStandaloneCpuDependencies(IAppPaths paths)

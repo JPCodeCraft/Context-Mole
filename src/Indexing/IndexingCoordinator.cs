@@ -18,6 +18,10 @@ public sealed class IndexingCoordinator(
 {
     private static readonly TimeSpan ReconciliationInterval = TimeSpan.FromMinutes(15);
     private static readonly TimeSpan DebounceInterval = TimeSpan.FromSeconds(1);
+    private const int ChunkTargetTokens = 384;
+    private const int ChunkMaximumTokens = 512;
+    private const int ChunkOverlapTokens = 64;
+    private const int TokenProbeWordCount = 32;
     private readonly IIndexWriter _writer = writer;
     private readonly ISearchStore _searchStore = searchStore;
     private readonly IDocumentExtractor _extractor = extractor;
@@ -27,15 +31,18 @@ public sealed class IndexingCoordinator(
     private readonly ILogger<IndexingCoordinator> _logger = logger;
     private readonly Channel<WatchChange> _watchChanges = Channel.CreateUnbounded<WatchChange>(
         new UnboundedChannelOptions { SingleReader = true, SingleWriter = false });
+    private readonly object _watchersGate = new();
+    private readonly SemaphoreSlim _reconciliationGate = new(1, 1);
     private readonly Dictionary<Guid, FolderWatcher> _watchers = [];
-    private readonly HashSet<(Guid ProjectId, string Policy)> _policyRefreshQueued = [];
+    private readonly HashSet<(Guid ProjectId, string Policy)> _policyRefreshChecked = [];
+    private bool _stopping;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         try
         {
             await _writer.Ready.WaitAsync(stoppingToken).ConfigureAwait(false);
-            await RefreshWatchersAsync(stoppingToken).ConfigureAwait(false);
+            await RefreshWatchersAsync(stoppingToken, queueReconciliation: false).ConfigureAwait(false);
             await ReconcileAllAsync(stoppingToken).ConfigureAwait(false);
             await QueueEmbeddingPolicyRefreshAsync(stoppingToken).ConfigureAwait(false);
 
@@ -53,11 +60,22 @@ public sealed class IndexingCoordinator(
 
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
+        lock (_watchersGate) _stopping = true;
         _watchChanges.Writer.TryComplete();
-        foreach (var watcher in _watchers.Values)
-            watcher.Dispose();
-        _watchers.Clear();
-        await base.StopAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await base.StopAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            FolderWatcher[] watchers;
+            lock (_watchersGate)
+            {
+                watchers = _watchers.Values.ToArray();
+                _watchers.Clear();
+            }
+            foreach (var watcher in watchers) watcher.Dispose();
+        }
     }
 
     private async Task RefreshLoopAsync(CancellationToken cancellationToken)
@@ -65,8 +83,15 @@ public sealed class IndexingCoordinator(
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(5));
         while (await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
         {
-            await RefreshWatchersAsync(cancellationToken).ConfigureAwait(false);
-            await QueueEmbeddingPolicyRefreshAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await RefreshWatchersAsync(cancellationToken).ConfigureAwait(false);
+                await QueueEmbeddingPolicyRefreshAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                _logger.LogWarning(exception, "Periodic project refresh failed; it will be retried");
+            }
         }
     }
 
@@ -74,33 +99,62 @@ public sealed class IndexingCoordinator(
     {
         using var timer = new PeriodicTimer(ReconciliationInterval);
         while (await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
-            await ReconcileAllAsync(cancellationToken).ConfigureAwait(false);
+        {
+            try
+            {
+                await ReconcileAllAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                _logger.LogWarning(exception, "Periodic folder reconciliation failed; it will be retried");
+            }
+        }
     }
 
-    private async Task RefreshWatchersAsync(CancellationToken cancellationToken)
+    private async Task RefreshWatchersAsync(CancellationToken cancellationToken, bool queueReconciliation = true)
     {
         var projects = await _searchStore.ListProjectsAsync(cancellationToken).ConfigureAwait(false);
         var desired = projects.SelectMany(project => project.Folders.Select(folder => (project.Id, Folder: folder)))
             .ToDictionary(item => item.Folder.Id);
 
-        foreach (var removed in _watchers.Keys.Where(id => !desired.ContainsKey(id)).ToArray())
+        Guid[] existingIds;
+        lock (_watchersGate) existingIds = _watchers.Keys.ToArray();
+        foreach (var removed in existingIds.Where(id => !desired.ContainsKey(id)))
         {
-            _watchers.Remove(removed, out var watcher);
+            FolderWatcher? watcher;
+            lock (_watchersGate) _watchers.Remove(removed, out watcher);
             watcher?.Dispose();
         }
 
         foreach (var item in desired.Values)
         {
-            if (_watchers.TryGetValue(item.Folder.Id, out var existing) &&
-                string.Equals(existing.Path, item.Folder.Path, PathComparison()))
-                continue;
+            FolderWatcher? existing;
+            lock (_watchersGate)
+            {
+                if (_watchers.TryGetValue(item.Folder.Id, out existing) &&
+                    string.Equals(existing.Path, item.Folder.Path, PathComparison()))
+                    continue;
+                _watchers.Remove(item.Folder.Id);
+            }
             existing?.Dispose();
             try
             {
                 if (Directory.Exists(item.Folder.Path))
                 {
-                    _watchers[item.Folder.Id] = CreateWatcher(item.Id, item.Folder);
-                    Queue(item.Id, item.Folder.Id, item.Folder.Path, WatchChangeKind.Reconcile);
+                    var created = CreateWatcher(item.Id, item.Folder);
+                    var registered = false;
+                    lock (_watchersGate)
+                    {
+                        if (!_stopping)
+                        {
+                            _watchers[item.Folder.Id] = created;
+                            registered = true;
+                        }
+                        else
+                            created.Dispose();
+                    }
+                    if (queueReconciliation && registered)
+                        Queue(item.Id, item.Folder.Id, item.Folder.Path, WatchChangeKind.Reconcile);
                 }
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
@@ -162,15 +216,20 @@ public sealed class IndexingCoordinator(
     {
         if (change.Kind == WatchChangeKind.Reconcile)
         {
-            if (_watchers.TryGetValue(change.FolderId, out var watcher))
-                await ReconcileFolderAsync(change.ProjectId, change.FolderId, watcher.Path, cancellationToken).ConfigureAwait(false);
+            string? root = null;
+            lock (_watchersGate)
+            {
+                if (_watchers.TryGetValue(change.FolderId, out var watcher)) root = watcher.Path;
+            }
+            if (root is not null)
+                await ReconcileFolderAsync(change.ProjectId, change.FolderId, root, cancellationToken).ConfigureAwait(false);
             return;
         }
 
         if (change.Kind == WatchChangeKind.Rename && change.OldPath is not null && File.Exists(change.Path) && SupportedContent.IsSupported(change.Path))
         {
             await _writer.HandleRenamedAsync(change.ProjectId, change.FolderId, change.OldPath, change.Path, cancellationToken).ConfigureAwait(false);
-            await ObservePathAsync(change.ProjectId, change.FolderId, change.Path, null, false, cancellationToken).ConfigureAwait(false);
+            await ObservePathAsync(change.ProjectId, change.FolderId, change.Path, null, true, cancellationToken).ConfigureAwait(false);
             return;
         }
 
@@ -199,39 +258,48 @@ public sealed class IndexingCoordinator(
         foreach (var project in await _searchStore.ListProjectsAsync(cancellationToken).ConfigureAwait(false))
         {
             if (project.IndexedCount == 0 || project.State == ProjectState.Paused) continue;
-            if (_policyRefreshQueued.Contains((project.Id, _embeddings.Policy.Key))) continue;
-            var snapshot = await _searchStore.LoadVectorSnapshotAsync(project.Id, cancellationToken).ConfigureAwait(false);
-            if (!string.Equals(snapshot.Policy?.Key, _embeddings.Policy.Key, StringComparison.Ordinal))
+            var policyCheck = (project.Id, _embeddings.Policy.Key);
+            if (_policyRefreshChecked.Contains(policyCheck)) continue;
+            var metadata = await _searchStore.LoadVectorSnapshotMetadataAsync(project.Id, cancellationToken).ConfigureAwait(false);
+            if (!string.Equals(metadata.Policy?.Key, _embeddings.Policy.Key, StringComparison.Ordinal))
             {
                 _logger.LogInformation("Queueing project {Project} for embedding policy refresh", project.Name);
                 await _writer.RequestReindexAsync(project.Id, cancellationToken).ConfigureAwait(false);
-                _policyRefreshQueued.Add((project.Id, _embeddings.Policy.Key));
             }
+            _policyRefreshChecked.Add(policyCheck);
         }
     }
 
     private async Task ReconcileFolderAsync(Guid projectId, Guid folderId, string root, CancellationToken cancellationToken)
     {
-        if (!Directory.Exists(root))
-        {
-            _logger.LogInformation("Retaining index state because folder is unavailable: {Folder}", root);
-            return;
-        }
-
-        var token = Guid.CreateVersion7().ToString("N");
+        await _reconciliationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            foreach (var path in EnumerateFilesWithoutFollowingLinks(root))
+            if (!Directory.Exists(root))
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                if (SupportedContent.IsSupported(path))
-                    await ObservePathAsync(projectId, folderId, path, token, false, cancellationToken).ConfigureAwait(false);
+                _logger.LogInformation("Retaining index state because folder is unavailable: {Folder}", root);
+                return;
             }
-            await _writer.CompleteReconciliationAsync(projectId, folderId, token, cancellationToken).ConfigureAwait(false);
+
+            var token = Guid.CreateVersion7().ToString("N");
+            try
+            {
+                foreach (var path in EnumerateFilesWithoutFollowingLinks(root))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (SupportedContent.IsSupported(path))
+                        await ObservePathAsync(projectId, folderId, path, token, false, cancellationToken).ConfigureAwait(false);
+                }
+                await _writer.CompleteReconciliationAsync(projectId, folderId, token, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                _logger.LogWarning(exception, "Folder reconciliation was incomplete; no deletions were inferred for {Folder}", root);
+            }
         }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        finally
         {
-            _logger.LogWarning(exception, "Folder reconciliation was incomplete; no deletions were inferred for {Folder}", root);
+            _reconciliationGate.Release();
         }
     }
 
@@ -249,16 +317,24 @@ public sealed class IndexingCoordinator(
     {
         while (!cancellationToken.IsCancellationRequested)
         {
-            var capacity = await _cpuBudget.AcquireWorkerAsync(cancellationToken).ConfigureAwait(false);
+            ICpuWorkerLease? capacity = null;
             IndexJobLease? job;
             try
             {
+                capacity = await _cpuBudget.AcquireWorkerAsync(cancellationToken).ConfigureAwait(false);
                 job = await _writer.LeaseNextJobAsync(TimeSpan.FromMinutes(20), cancellationToken).ConfigureAwait(false);
             }
-            catch
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-                capacity.Dispose();
-                throw;
+                capacity?.Dispose();
+                return;
+            }
+            catch (Exception exception)
+            {
+                capacity?.Dispose();
+                _logger.LogWarning(exception, "An indexing worker could not lease a job; it will retry");
+                await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken).ConfigureAwait(false);
+                continue;
             }
 
             if (job is null)
@@ -286,8 +362,15 @@ public sealed class IndexingCoordinator(
                 {
                     _logger.LogError(exception, "Indexing failed for {Path}", job.SourcePath);
                     activity.SetStage(IndexingPipelineStage.RecordingError);
-                    await _writer.FailJobAsync(job, ErrorCode(exception), exception.Message, IsTemporary(exception), CancellationToken.None)
-                        .ConfigureAwait(false);
+                    try
+                    {
+                        await _writer.FailJobAsync(job, ErrorCode(exception), exception.Message, IsTemporary(exception), CancellationToken.None)
+                            .ConfigureAwait(false);
+                    }
+                    catch (Exception recordingException)
+                    {
+                        _logger.LogError(recordingException, "The indexing failure for {Path} could not be recorded", job.SourcePath);
+                    }
                     activity.Complete(false);
                 }
             }
@@ -371,10 +454,8 @@ public sealed class IndexingCoordinator(
             foreach (var section in node.Sections)
             foreach (var chunk in Chunk(section.Text))
             {
-                var display = TextNormalization.ForDisplay(chunk);
-                if (string.IsNullOrWhiteSpace(display)) continue;
-                passages.Add(new PassageDraft(Guid.CreateVersion7(), contentId, passageOrdinal++, display,
-                    TextNormalization.ForSearch(display, section.Method == ExtractionMethod.NativeText && section.Location.Kind == LocationKind.Page),
+                passages.Add(new PassageDraft(Guid.CreateVersion7(), contentId, passageOrdinal++, chunk,
+                    TextNormalization.ForSearch(chunk, section.Method == ExtractionMethod.NativeText && section.Location.Kind == LocationKind.Page),
                     section.Location, section.Method, section.OcrConfidence, null));
             }
             for (var index = 0; index < node.Attachments.Count; index++)
@@ -394,25 +475,49 @@ public sealed class IndexingCoordinator(
             var bestEnd = start + 1;
             while (end < words.Length)
             {
-                var candidate = string.Join(' ', words[start..(end + 1)]);
-                var count = _embeddings.CountTokens(candidate);
-                if (count > 512) break;
-                bestEnd = end + 1;
-                end++;
-                if (count >= 384) break;
+                var probeEnd = Math.Min(words.Length, end + TokenProbeWordCount);
+                if (CountTokens(start, probeEnd) < ChunkTargetTokens)
+                {
+                    bestEnd = probeEnd;
+                    end = probeEnd;
+                    continue;
+                }
+
+                while (end < probeEnd)
+                {
+                    end++;
+                    var count = CountTokens(start, end);
+                    if (count > ChunkMaximumTokens) break;
+                    bestEnd = end;
+                    if (count >= ChunkTargetTokens) break;
+                }
+                break;
             }
-            yield return string.Join(' ', words[start..bestEnd]);
+            yield return JoinWords(start, bestEnd);
             if (bestEnd >= words.Length) yield break;
 
             var overlapStart = bestEnd;
             while (overlapStart > start)
             {
-                var candidate = string.Join(' ', words[(overlapStart - 1)..bestEnd]);
-                if (_embeddings.CountTokens(candidate) > 64) break;
-                overlapStart--;
+                var probeStart = Math.Max(start, overlapStart - TokenProbeWordCount);
+                if (CountTokens(probeStart, bestEnd) <= ChunkOverlapTokens)
+                {
+                    overlapStart = probeStart;
+                    continue;
+                }
+
+                while (overlapStart > probeStart)
+                {
+                    if (CountTokens(overlapStart - 1, bestEnd) > ChunkOverlapTokens) break;
+                    overlapStart--;
+                }
+                break;
             }
             start = overlapStart == start ? bestEnd : overlapStart;
         }
+
+        int CountTokens(int first, int end) => _embeddings.CountTokens(JoinWords(first, end));
+        string JoinWords(int first, int end) => string.Join(" ", words, first, end - first);
     }
 
     private static async Task<string> HashAsync(string path, CancellationToken cancellationToken)

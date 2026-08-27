@@ -74,6 +74,21 @@ using (adaptiveWorker.Activate())
 
 adaptiveWorker.Dispose();
 
+using var fairWorker = await budget.AcquireWorkerAsync(timeout.Token);
+using var fairCompetitor = await budget.AcquireWorkerAsync(timeout.Token);
+var olderWorker = budget.AcquireWorkerAsync(timeout.Token).AsTask();
+using (fairWorker.Activate())
+{
+    var laterFullCapacity = budget.AcquireFullCapacityAsync(timeout.Token).AsTask();
+    using var admittedOlderWorker = await olderWorker.WaitAsync(timeout.Token);
+    if (laterFullCapacity.IsCompleted)
+        throw new InvalidOperationException("A later full-capacity request bypassed an older worker request.");
+    fairCompetitor.Dispose();
+    admittedOlderWorker.Dispose();
+    using var fairFullCapacity = await laterFullCapacity.WaitAsync(timeout.Token);
+}
+fairWorker.Dispose();
+
 using var cancellationWorker = await budget.AcquireWorkerAsync(timeout.Token);
 using var cancellationCompetitor = await budget.AcquireWorkerAsync(timeout.Token);
 using (cancellationWorker.Activate())

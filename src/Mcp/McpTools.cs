@@ -1,17 +1,24 @@
 using System.ComponentModel;
 using MCPIndexSearch.Core;
 using MCPIndexSearch.Search;
+using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Server;
 
 namespace MCPIndexSearch.Mcp;
 
 [McpServerToolType]
-public sealed class McpTools(ISearchStore store, HybridSearchService search, IContentMaterializer materializer, IAppPaths paths)
+public sealed class McpTools(
+    ISearchStore store,
+    HybridSearchService search,
+    IContentMaterializer materializer,
+    IAppPaths paths,
+    ILogger<McpTools> logger)
 {
     private readonly ISearchStore _store = store;
     private readonly HybridSearchService _search = search;
     private readonly IContentMaterializer _materializer = materializer;
     private readonly IAppPaths _paths = paths;
+    private readonly ILogger<McpTools> _logger = logger;
 
     [McpServerTool(Name = "list_projects", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false, UseStructuredContent = true)]
     [Description("Use when the project ID is unknown or to inspect available indexes. Lists every initialized project, including paused projects, with authorized folders, search generation, and document status counts; it does not search file contents.")]
@@ -27,6 +34,7 @@ public sealed class McpTools(ISearchStore store, HybridSearchService search, ICo
         CancellationToken cancellationToken = default) => RunAsync(async () =>
     {
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+        ValidateSearchInput(query, filters);
         return await _search.SearchAsync(new SearchRequest(project_id, query, limit, filters?.ToDomain()), cancellationToken).ConfigureAwait(false);
     });
 
@@ -140,7 +148,7 @@ public sealed class McpTools(ISearchStore store, HybridSearchService search, ICo
         _ => throw new McpIndexException("invalid_filter", "sort_direction must be asc or desc.")
     };
 
-    private static async Task<object> RunAsync(Func<Task<object>> action)
+    private async Task<object> RunAsync(Func<Task<object>> action)
     {
         try
         {
@@ -156,8 +164,30 @@ public sealed class McpTools(ISearchStore store, HybridSearchService search, ICo
         }
         catch (Exception exception)
         {
-            return new ErrorEnvelope(new ToolError("internal_error", exception.Message, false));
+            _logger.LogError(exception, "Unhandled MCP tool failure");
+            return new ErrorEnvelope(new ToolError("internal_error", "The local index request failed unexpectedly.", false));
         }
+    }
+
+    private static void ValidateSearchInput(string query, McpSearchFilters? filters)
+    {
+        if (string.IsNullOrWhiteSpace(query))
+            throw new McpIndexException("invalid_request", "query must not be empty.");
+        if (query.Length > 4096)
+            throw new McpIndexException("invalid_request", "query must not exceed 4096 characters.");
+        if (filters is null) return;
+        if (!Enum.IsDefined(filters.AttachmentScope))
+            throw new McpIndexException("invalid_filter", "attachment_scope is invalid.");
+        if (filters.DocumentIds is { Count: > 100 })
+            throw new McpIndexException("invalid_filter", "document_ids must contain at most 100 IDs.");
+        if (filters.PathPrefixes is { Count: > 50 } ||
+            filters.PathPrefixes?.Any(path => string.IsNullOrWhiteSpace(path) || path.Length > 1024) == true)
+            throw new McpIndexException("invalid_filter", "path_prefixes must contain at most 50 non-empty paths of up to 1024 characters.");
+        if (filters.Extensions is { Count: > 50 } ||
+            filters.Extensions?.Any(extension => string.IsNullOrWhiteSpace(extension) || extension.Length > 32) == true)
+            throw new McpIndexException("invalid_filter", "extensions must contain at most 50 non-empty values of up to 32 characters.");
+        if (filters.ModifiedFromUtc is { } from && filters.ModifiedToUtc is { } to && from > to)
+            throw new McpIndexException("invalid_filter", "modified_from_utc must not be later than modified_to_utc.");
     }
 }
 

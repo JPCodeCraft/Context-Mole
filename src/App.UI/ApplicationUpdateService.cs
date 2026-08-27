@@ -255,6 +255,7 @@ internal sealed class ApplicationUpdateService : IDisposable
         ApplicationUpdateState previousState;
         lock (_sync)
         {
+            if (_snapshot == snapshot) return;
             previousState = _snapshot.State;
             _snapshot = snapshot;
         }
