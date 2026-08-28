@@ -39,6 +39,11 @@
             <Setter Property="FontWeight" Value="SemiBold" />
             <Setter Property="LetterSpacing" Value="-0.3" />
         </Style>
+        <Style Selector="TextBlock.detailTitle">
+            <Setter Property="FontSize" Value="24" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="LetterSpacing" Value="-0.2" />
+        </Style>
         <Style Selector="TextBlock.sectionTitle">
             <Setter Property="FontSize" Value="17" />
             <Setter Property="FontWeight" Value="SemiBold" />
@@ -58,6 +63,12 @@
             <Setter Property="FontSize" Value="11" />
             <Setter Property="FontWeight" Value="SemiBold" />
             <Setter Property="LetterSpacing" Value="0.7" />
+        </Style>
+        <Style Selector="StackPanel.pageContent">
+            <Setter Property="Margin" Value="30,24,30,40" />
+            <Setter Property="Spacing" Value="18" />
+            <Setter Property="MaxWidth" Value="1120" />
+            <Setter Property="HorizontalAlignment" Value="Center" />
         </Style>
 
         <Style Selector="Button">
@@ -187,11 +198,58 @@
         <Style Selector="Border.phaseBadge.paused">
             <Setter Property="Background" Value="{DynamicResource WarningSubtleBrush}" />
         </Style>
+        <Style Selector="Border.phaseBadge.ready">
+            <Setter Property="Background" Value="{DynamicResource SuccessSubtleBrush}" />
+        </Style>
+        <Style Selector="Border.phaseBadge.retrying">
+            <Setter Property="Background" Value="{DynamicResource WarningSubtleBrush}" />
+        </Style>
+        <Style Selector="Border.phaseBadge.attention">
+            <Setter Property="Background" Value="{DynamicResource DangerSubtleBrush}" />
+        </Style>
         <Style Selector="TextBlock.phaseText">
             <Setter Property="Foreground" Value="{DynamicResource AccentBrush}" />
         </Style>
         <Style Selector="TextBlock.phaseText.paused">
             <Setter Property="Foreground" Value="{DynamicResource WarningBrush}" />
+        </Style>
+        <Style Selector="TextBlock.phaseText.ready">
+            <Setter Property="Foreground" Value="{DynamicResource SuccessBrush}" />
+        </Style>
+        <Style Selector="TextBlock.phaseText.retrying">
+            <Setter Property="Foreground" Value="{DynamicResource WarningBrush}" />
+        </Style>
+        <Style Selector="TextBlock.phaseText.attention">
+            <Setter Property="Foreground" Value="{DynamicResource DangerBrush}" />
+        </Style>
+
+        <Style Selector="Border.statusBadge">
+            <Setter Property="Background" Value="{DynamicResource SurfaceHoverBrush}" />
+            <Setter Property="CornerRadius" Value="8" />
+            <Setter Property="Padding" Value="8,2" />
+        </Style>
+        <Style Selector="Border.statusBadge.ready">
+            <Setter Property="Background" Value="{DynamicResource SuccessSubtleBrush}" />
+        </Style>
+        <Style Selector="Border.statusBadge.warning">
+            <Setter Property="Background" Value="{DynamicResource WarningSubtleBrush}" />
+        </Style>
+        <Style Selector="Border.statusBadge.danger">
+            <Setter Property="Background" Value="{DynamicResource DangerSubtleBrush}" />
+        </Style>
+        <Style Selector="TextBlock.statusText">
+            <Setter Property="Foreground" Value="{DynamicResource TextSecondaryBrush}" />
+            <Setter Property="FontSize" Value="10" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+        </Style>
+        <Style Selector="TextBlock.statusText.ready">
+            <Setter Property="Foreground" Value="{DynamicResource SuccessBrush}" />
+        </Style>
+        <Style Selector="TextBlock.statusText.warning">
+            <Setter Property="Foreground" Value="{DynamicResource WarningBrush}" />
+        </Style>
+        <Style Selector="TextBlock.statusText.danger">
+            <Setter Property="Foreground" Value="{DynamicResource DangerBrush}" />
         </Style>
     </Application.Styles>
 </Application>

@@ -240,35 +240,52 @@ public sealed class GraniteEmbeddingGenerator : IEmbeddingGenerator
                 throw new ContextMoleException("model_unavailable", UnavailableReason ?? "Granite assets are unavailable.");
             }
 
-            for (var offset = 0; offset < texts.Count; offset += 8)
+            try
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                var count = Math.Min(8, texts.Count - offset);
-                var encoded = new List<long[]>(count);
-                lock (tokenizer)
+                for (var offset = 0; offset < texts.Count; offset += 8)
                 {
-                    for (var index = 0; index < count; index++)
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var count = Math.Min(8, texts.Count - offset);
+                    var encoded = new List<long[]>(count);
+                    lock (tokenizer)
                     {
-                        var ids = new[] { selectedModel.BosTokenId }.Concat(tokenizer.Encode(texts[offset + index], false).First().Ids
-                            .Take(maximumTokens - 1)
-                            .Select(value => (long)value)
-                            ).ToArray();
-                        encoded.Add(ids);
+                        for (var index = 0; index < count; index++)
+                        {
+                            var ids = new[] { selectedModel.BosTokenId }.Concat(tokenizer.Encode(texts[offset + index], false).First().Ids
+                                .Take(maximumTokens - 1)
+                                .Select(value => (long)value)
+                                ).ToArray();
+                            encoded.Add(ids);
+                        }
+                    }
+
+                    try
+                    {
+                        all.AddRange(RunBatch(session, encoded, selectedModel.SourceDimensions, selectedModel.Dimensions));
+                    }
+                    catch (Exception exception) when (count > 1 && IsMemoryPressure(exception))
+                    {
+                        foreach (var item in encoded)
+                        {
+                            cancellationToken.ThrowIfCancellationRequested();
+                            all.Add(RunBatch(session, [item], selectedModel.SourceDimensions, selectedModel.Dimensions)[0]);
+                        }
                     }
                 }
-
+            }
+            catch (Exception exception) when (IsPermanentInferenceFailure(exception))
+            {
+                var reason = $"Granite inference failed and the selected model needs repair: {exception.Message}";
                 try
                 {
-                    all.AddRange(RunBatch(session, encoded, selectedModel.SourceDimensions, selectedModel.Dimensions));
+                    GraniteModelInstallation.MarkForRepair(_paths, selectedModel, reason);
                 }
-                catch (Exception exception) when (count > 1 && IsMemoryPressure(exception))
+                catch (Exception markerException) when (markerException is IOException or UnauthorizedAccessException)
                 {
-                    foreach (var item in encoded)
-                    {
-                        cancellationToken.ThrowIfCancellationRequested();
-                        all.Add(RunBatch(session, [item], selectedModel.SourceDimensions, selectedModel.Dimensions)[0]);
-                    }
+                    reason += $" The repair marker could not be written: {markerException.Message}";
                 }
+                ReplaceResources(null, null, reason, policy, null, 0, null);
+                throw new ContextMoleException("model_inference_failed", reason);
             }
 
             return new EmbeddingBatch(all, policy);
@@ -329,6 +346,10 @@ public sealed class GraniteEmbeddingGenerator : IEmbeddingGenerator
     private static bool IsMemoryPressure(Exception exception) => exception is OutOfMemoryException ||
         exception is OnnxRuntimeException && (exception.Message.Contains("memory", StringComparison.OrdinalIgnoreCase) ||
                                                exception.Message.Contains("alloc", StringComparison.OrdinalIgnoreCase));
+
+    private static bool IsPermanentInferenceFailure(Exception exception) =>
+        exception is ContextMoleException { Code: "model_output_invalid" } ||
+        exception is OnnxRuntimeException && !IsMemoryPressure(exception);
 
     private string GetInstallationFingerprint(GraniteEmbeddingModelDefinition model)
     {

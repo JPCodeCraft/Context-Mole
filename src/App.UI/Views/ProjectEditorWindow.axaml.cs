@@ -15,6 +15,7 @@ public sealed record ProjectEditorResult(string Name, IReadOnlyList<string> Fold
 public partial class ProjectEditorWindow : Window
 {
     private readonly ObservableCollection<string> _folders = [];
+    private readonly HashSet<string> _originalFolderKeys = new(PathComparer());
 
     public ProjectEditorWindow() : this(null)
     {
@@ -24,9 +25,18 @@ public partial class ProjectEditorWindow : Window
     {
         InitializeComponent();
         ProjectNameBox.Text = project?.Name ?? string.Empty;
-        foreach (var folder in project?.Folders ?? []) _folders.Add(folder.Path);
+        foreach (var folder in project?.Folders ?? [])
+        {
+            _folders.Add(folder.Path);
+            _originalFolderKeys.Add(CanonicalPath(folder.Path));
+        }
         FoldersList.ItemsSource = _folders;
         Title = project is null ? "Add project" : "Edit project";
+        Opened += (_, _) =>
+        {
+            ProjectNameBox.Focus();
+            ProjectNameBox.SelectAll();
+        };
     }
 
     private async void AddFolders(object? sender, RoutedEventArgs args)
@@ -54,6 +64,11 @@ public partial class ProjectEditorWindow : Window
     private void FolderSelectionChanged(object? sender, SelectionChangedEventArgs args) =>
         RemoveFolderButton.IsEnabled = FoldersList.SelectedItem is not null;
 
+    private void ProjectNameChanged(object? sender, TextChangedEventArgs args)
+    {
+        if (!string.IsNullOrEmpty(ValidationBlock.Text)) ValidateInput();
+    }
+
     private void Cancel(object? sender, RoutedEventArgs args) => Close(null);
 
     private void Save(object? sender, RoutedEventArgs args)
@@ -73,10 +88,11 @@ public partial class ProjectEditorWindow : Window
             var appData = Path.TrimEndingDirectorySeparator(Program.Services.GetRequiredService<IAppPaths>().DataDirectory);
             if (canonical.Any(path => string.Equals(path, appData, PathComparison()) || IsWithin(path, appData) || IsWithin(appData, path)))
                 error = "The application data directory and its parent folders cannot be indexed.";
-            else if (canonical.Any(path => !Directory.Exists(path)))
-                error = "Every selected folder must be available.";
+            else if (canonical.Any(path => !Directory.Exists(path) && !_originalFolderKeys.Contains(path)))
+                error = "Newly added folders must be available.";
             else if (canonical.Any(path =>
                      {
+                         if (!Directory.Exists(path)) return false;
                          var info = new DirectoryInfo(path);
                          return (info.Attributes & FileAttributes.ReparsePoint) != 0 && !string.IsNullOrEmpty(info.LinkTarget);
                      }))
@@ -96,6 +112,7 @@ public partial class ProjectEditorWindow : Window
     }
 
     private static bool IsWithin(string child, string parent) => child.StartsWith(parent + Path.DirectorySeparatorChar, PathComparison());
+    private static string CanonicalPath(string path) => Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
     private static StringComparer PathComparer() => OperatingSystem.IsWindows() || OperatingSystem.IsMacOS() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
     private static StringComparison PathComparison() => OperatingSystem.IsWindows() || OperatingSystem.IsMacOS() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
 }

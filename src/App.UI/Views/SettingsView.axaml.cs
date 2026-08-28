@@ -70,6 +70,9 @@ public partial class SettingsView : UserControl
         await RunUiActionAsync(() => ViewModel.SetCpuUsageProfileAsync(profile));
     }
 
+    private async void RetryOcrSetup(object? sender, RoutedEventArgs args) =>
+        await RunUiActionAsync(() => ViewModel.RetryOcrSetupAsync());
+
     private async void EmbeddingModelChanged(object? sender, SelectionChangedEventArgs args)
     {
         if (_changingEmbeddingModel ||

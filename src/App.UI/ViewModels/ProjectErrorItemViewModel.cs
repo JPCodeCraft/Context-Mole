@@ -15,7 +15,8 @@ public sealed class ProjectErrorItemViewModel(ProjectErrorInfo source)
         .Split('_', StringSplitOptions.RemoveEmptyEntries)
         .Select(word => char.ToUpperInvariant(word[0]) + word[1..].ToLowerInvariant()));
     public string CreatedDisplay => Source.CreatedUtc.ToLocalTime().ToString("g");
-    public string AttemptDisplay => Source.Attempt <= 1 ? "First attempt" : $"Attempt {Source.Attempt}";
+    public string AttemptDisplay => $"Attempt {Source.Attempt}";
+    public bool HasRetried => Source.Attempt > 1;
     public bool IsRetryable => Source.Retryable;
     public bool IsPermanent => !Source.Retryable;
 }

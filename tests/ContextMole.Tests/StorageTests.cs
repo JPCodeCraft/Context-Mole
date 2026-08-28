@@ -64,6 +64,29 @@ public sealed class StorageTests
     }
 
     [Fact]
+    public async Task ExistingOfflineFolderCanBeKeptWhileEditingProject()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var database = await StorageTestDatabase.CreateAsync(cancellationToken);
+        var (projectId, _) = await database.CreateProjectAsync("Offline edit", cancellationToken);
+        var offlineDirectory = Path.Combine(Path.GetDirectoryName(database.Paths.SourceDirectory)!, "source-offline");
+        Directory.Move(database.Paths.SourceDirectory, offlineDirectory);
+
+        await database.Writer.UpdateProjectAsync(new UpdateProjectRequest(
+            projectId, "Renamed while offline", [database.Paths.SourceDirectory]), cancellationToken);
+
+        var updated = (await database.Store.ListProjectsAsync(cancellationToken)).Single(project => project.Id == projectId);
+        Assert.Equal("Renamed while offline", updated.Name);
+        Assert.Equal(Path.GetFullPath(database.Paths.SourceDirectory), Assert.Single(updated.Folders).Path);
+
+        var newUnavailableFolder = Path.Combine(Path.GetDirectoryName(database.Paths.SourceDirectory)!, "not-present");
+        var exception = await Assert.ThrowsAsync<ContextMoleException>(() =>
+            database.Writer.UpdateProjectAsync(new UpdateProjectRequest(
+                projectId, "Still offline", [database.Paths.SourceDirectory, newUnavailableFolder]), cancellationToken));
+        Assert.Equal("folder_unavailable", exception.Code);
+    }
+
+    [Fact]
     public async Task SupersededJobCannotActivateAStaleRevision()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -135,10 +158,11 @@ public sealed class StorageTests
             .Single(item => item.Id == projectId).SearchGeneration;
         await database.Writer.RequestEmbeddingRefreshAsync(projectId, targetPolicy, retryFailed: false,
             cancellationToken);
-        var cleared = await database.Store.LoadVectorSnapshotMetadataAsync(projectId, cancellationToken);
-        Assert.Equal(0, cleared.EntryCount);
-        Assert.False(cleared.IsComplete);
-        Assert.True(cleared.SearchGeneration > generationBeforeMigration);
+        var retained = await database.Store.LoadVectorSnapshotMetadataAsync(projectId, cancellationToken);
+        Assert.Equal(1, retained.EntryCount);
+        Assert.True(retained.IsComplete);
+        Assert.Equal(StorageTestDatabase.TestEmbeddingPolicy.Key, retained.Policy?.Key);
+        Assert.Equal(generationBeforeMigration, retained.SearchGeneration);
         Assert.Single((await database.Store.KeywordSearchAsync(projectId,
             TextNormalization.QuoteFtsTerms("second"), 10, null, cancellationToken)).Candidates);
 
@@ -153,7 +177,9 @@ public sealed class StorageTests
         await database.Writer.FailJobAsync(migration, "embedding_refresh_failed", "Migration failed",
             retryable: false,
             cancellationToken: cancellationToken);
-        Assert.Equal(0, (await database.Store.LoadVectorSnapshotMetadataAsync(projectId, cancellationToken)).EntryCount);
+        var afterFailure = await database.Store.LoadVectorSnapshotMetadataAsync(projectId, cancellationToken);
+        Assert.Equal(1, afterFailure.EntryCount);
+        Assert.Equal(StorageTestDatabase.TestEmbeddingPolicy.Key, afterFailure.Policy?.Key);
         await database.Writer.RequestEmbeddingRefreshAsync(projectId, targetPolicy, retryFailed: false,
             cancellationToken);
         Assert.Null(await database.Writer.LeaseNextJobAsync(TimeSpan.FromMinutes(1), cancellationToken));
@@ -204,6 +230,41 @@ public sealed class StorageTests
         Assert.Equal(1, completed.EntryCount);
         Assert.Single((await database.Store.KeywordSearchAsync(projectId,
             TextNormalization.QuoteFtsTerms("second"), 10, null, cancellationToken)).Candidates);
+    }
+
+    [Fact]
+    public async Task FailedEmbeddingPolicyDoesNotBlockAReplacementPolicy()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var database = await StorageTestDatabase.CreateAsync(cancellationToken);
+        var (projectId, folderId) = await database.CreateProjectAsync("Embedding policy fencing", cancellationToken);
+        var source = await WriteAsync("policy.txt", "policy passage", database.Paths.SourceDirectory,
+            cancellationToken);
+        var pending = await database.ObserveAndLeaseAsync(projectId, folderId, source, false, cancellationToken);
+        var modified = new DateTimeOffset(pending.File.LastWriteTimeUtc, TimeSpan.Zero);
+        await database.CommitAsync(pending.Job, pending.Sha256, pending.File.Length, modified, "policy passage",
+            cancellationToken: cancellationToken);
+
+        var failedPolicy = StorageTestDatabase.TestEmbeddingPolicy with { ModelId = "failed-policy" };
+        await database.Writer.RequestEmbeddingRefreshAsync(projectId, failedPolicy, retryFailed: false,
+            cancellationToken);
+        var failedJob = await database.Writer.LeaseNextJobAsync(TimeSpan.FromMinutes(1), cancellationToken);
+        Assert.NotNull(failedJob);
+        await database.Writer.FailJobAsync(failedJob, "embedding_refresh_failed", "Failed policy",
+            retryable: false, cancellationToken: cancellationToken);
+
+        await database.Writer.RequestEmbeddingRefreshAsync(projectId, failedPolicy, retryFailed: false,
+            cancellationToken);
+        Assert.Null(await database.Writer.LeaseNextJobAsync(TimeSpan.FromMinutes(1), cancellationToken));
+
+        var replacementPolicy = failedPolicy with { ModelId = "replacement-policy" };
+        await database.Writer.RequestEmbeddingRefreshAsync(projectId, replacementPolicy, retryFailed: false,
+            cancellationToken);
+        var replacementJob = await database.Writer.LeaseNextJobAsync(TimeSpan.FromMinutes(1), cancellationToken);
+        Assert.NotNull(replacementJob);
+        Assert.Equal(IndexJobKind.EmbeddingRefresh, replacementJob.Kind);
+        await database.Writer.FailJobAsync(replacementJob, "cleanup", "Deliberate cleanup", retryable: false,
+            cancellationToken: cancellationToken);
     }
 
     [Fact]

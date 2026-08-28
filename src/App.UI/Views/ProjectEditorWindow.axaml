@@ -15,7 +15,7 @@
       <Grid RowDefinitions="Auto,Auto,Auto,*">
         <TextBlock Text="PROJECT NAME" Classes="eyebrow" />
         <TextBox x:Name="ProjectNameBox" Grid.Row="1" Margin="0,7,0,18"
-                 PlaceholderText="e.g. Client research" />
+                 PlaceholderText="e.g. Client research" TextChanged="ProjectNameChanged" />
 
         <Grid Grid.Row="2" ColumnDefinitions="*,Auto,Auto" Margin="0,0,0,8">
           <StackPanel Spacing="2">
@@ -33,7 +33,8 @@
     </Border>
 
     <TextBlock x:Name="ValidationBlock" Grid.Row="2" Foreground="{DynamicResource DangerBrush}"
-               TextWrapping="Wrap" MinHeight="24" Margin="4,12,4,4" />
+               TextWrapping="Wrap" MinHeight="24" Margin="4,12,4,4"
+               AutomationProperties.LiveSetting="Assertive" />
 
     <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
       <Button Classes="ghost" Content="Cancel" Click="Cancel" IsCancel="True" />

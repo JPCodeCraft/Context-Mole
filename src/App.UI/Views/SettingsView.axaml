@@ -4,23 +4,26 @@
              x:Class="ContextMole.App.UI.Views.SettingsView"
              x:DataType="vm:MainViewModel">
   <ScrollViewer>
-    <StackPanel Margin="30,24,30,40" Spacing="18" MaxWidth="920" HorizontalAlignment="Center">
+    <StackPanel Classes="pageContent">
       <Border Classes="card">
         <Grid ColumnDefinitions="*,Auto" ColumnSpacing="24">
           <StackPanel Spacing="7">
             <StackPanel Orientation="Horizontal" Spacing="9">
               <TextBlock Text="Application updates" Classes="sectionTitle" />
-              <Border Classes="statusBadge" VerticalAlignment="Center">
-                <TextBlock Text="{Binding ApplicationUpdateStatusLabel}" Foreground="{DynamicResource AccentBrush}"
-                           FontSize="10" FontWeight="SemiBold" />
+              <Border Classes="statusBadge" Classes.ready="{Binding IsApplicationUpdateReadyStatus}"
+                      Classes.warning="{Binding IsApplicationUpdateWarningStatus}" VerticalAlignment="Center">
+                <TextBlock Text="{Binding ApplicationUpdateStatusLabel}" Classes="statusText"
+                           Classes.ready="{Binding IsApplicationUpdateReadyStatus}"
+                           Classes.warning="{Binding IsApplicationUpdateWarningStatus}" />
               </Border>
             </StackPanel>
             <TextBlock Text="{Binding ApplicationUpdateMessage}" Classes="muted" TextWrapping="Wrap" />
             <ProgressBar IsVisible="{Binding IsApplicationUpdateProgressVisible}"
                          Minimum="0" Maximum="100" Value="{Binding ApplicationUpdate.ProgressPercent}"
-                         Height="6" Margin="0,5,0,0" />
+                         Height="6" Margin="0,5,0,0"
+                         AutomationProperties.Name="Application update download progress" />
           </StackPanel>
-          <Button Grid.Column="1" Content="Restart to update"
+          <Button Grid.Column="1" Classes="primary" Content="Restart to update"
                   IsVisible="{Binding IsApplicationUpdateReady}"
                   IsEnabled="{Binding CanRestartForUpdate}"
                   Click="RestartToUpdate" VerticalAlignment="Center" />
@@ -31,16 +34,22 @@
         <StackPanel Spacing="12">
           <ToggleButton Classes="sectionToggle"
                         IsChecked="{Binding IsAiConnectionsExpanded, Mode=TwoWay}">
-            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
-              <TextBlock Text="AI Connections" Classes="sectionTitle" VerticalAlignment="Center" />
-              <TextBlock Grid.Column="1" Text="⌄" IsVisible="{Binding IsAiConnectionsCollapsed}"
+            <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="12">
+              <TextBlock Text="AI connections" Classes="sectionTitle" VerticalAlignment="Center" />
+              <Border Grid.Column="1" Classes="statusBadge" Classes.ready="{Binding AreAiConnectionsReady}"
+                      Classes.warning="{Binding DoAiConnectionsNeedAttention}" VerticalAlignment="Center">
+                <TextBlock Text="{Binding AiConnectionsStatusLabel}" Classes="statusText"
+                           Classes.ready="{Binding AreAiConnectionsReady}"
+                           Classes.warning="{Binding DoAiConnectionsNeedAttention}" />
+              </Border>
+              <TextBlock Grid.Column="2" Text="⌄" IsVisible="{Binding IsAiConnectionsCollapsed}"
                          Classes="muted" FontSize="18" VerticalAlignment="Center" />
-              <TextBlock Grid.Column="1" Text="⌃" IsVisible="{Binding IsAiConnectionsExpanded}"
+              <TextBlock Grid.Column="2" Text="⌃" IsVisible="{Binding IsAiConnectionsExpanded}"
                          Classes="muted" FontSize="18" VerticalAlignment="Center" />
             </Grid>
           </ToggleButton>
           <StackPanel IsVisible="{Binding IsAiConnectionsExpanded}" Spacing="4">
-            <TextBlock Text="Make the same private, read-only Context Mole index available to your AI tools. Each client starts its own local MCP process; no index or embeddings are duplicated."
+            <TextBlock Text="Connect AI tools to the same private, read-only index. Your documents stay on this computer."
                        Classes="muted" TextWrapping="Wrap" Margin="0,0,0,10" />
 
             <ItemsControl ItemsSource="{Binding AiConnections}">
@@ -51,13 +60,18 @@
                       <StackPanel Spacing="5">
                         <StackPanel Orientation="Horizontal" Spacing="9">
                           <TextBlock Text="{Binding DisplayName}" Classes="cardTitle" />
-                          <Border Classes="statusBadge" VerticalAlignment="Center">
-                            <TextBlock Text="{Binding StatusLabel}" Foreground="{DynamicResource AccentBrush}"
-                                       FontSize="10" FontWeight="SemiBold" />
+                          <Border Classes="statusBadge" Classes.ready="{Binding IsReadyStatus}"
+                                  Classes.warning="{Binding IsWarningStatus}" Classes.danger="{Binding IsErrorStatus}"
+                                  VerticalAlignment="Center">
+                            <TextBlock Text="{Binding StatusLabel}" Classes="statusText"
+                                       Classes.ready="{Binding IsReadyStatus}"
+                                       Classes.warning="{Binding IsWarningStatus}"
+                                       Classes.danger="{Binding IsErrorStatus}" />
                           </Border>
                         </StackPanel>
                         <TextBlock Text="{Binding Description}" Classes="quiet" FontSize="12" TextWrapping="Wrap" />
-                        <TextBlock Text="{Binding Message}" Classes="muted" TextWrapping="Wrap" />
+                        <TextBlock IsVisible="{Binding HasDetailMessage}" Text="{Binding Message}"
+                                   Classes="muted" TextWrapping="Wrap" />
                       </StackPanel>
                       <Button Grid.Column="1" Content="{Binding ActionLabel}"
                               IsVisible="{Binding SupportsAutomaticSetup}"
@@ -81,7 +95,7 @@
       <Border Classes="card">
         <StackPanel Spacing="4">
           <TextBlock Text="Local search features" Classes="sectionTitle" />
-          <TextBlock Text="Processing stays on this computer. These statuses apply to every project."
+          <TextBlock Text="Optional local features used while indexing and searching."
                      Classes="muted" TextWrapping="Wrap" Margin="0,0,0,10" />
 
           <Border Classes="settingsRow">
@@ -89,19 +103,17 @@
               <StackPanel Spacing="5">
                 <StackPanel Orientation="Horizontal" Spacing="9">
                   <TextBlock Text="Document OCR" Classes="cardTitle" />
-                  <Border IsVisible="{Binding IsOcrAvailable}" Classes="statusBadge readyBadge" VerticalAlignment="Center">
-                    <TextBlock Text="Ready" Foreground="{DynamicResource SuccessBrush}"
-                               FontSize="10" FontWeight="SemiBold" />
-                  </Border>
-                  <Border IsVisible="{Binding IsOcrUnavailable}" Classes="statusBadge warningBadge" VerticalAlignment="Center">
-                    <TextBlock Text="Needs attention" Foreground="{DynamicResource WarningBrush}"
-                               FontSize="10" FontWeight="SemiBold" />
+                  <Border Classes="statusBadge" Classes.ready="{Binding IsOcrReadyStatus}"
+                          Classes.warning="{Binding IsOcrWarningStatus}" VerticalAlignment="Center">
+                    <TextBlock Text="{Binding OcrStatusLabel}" Classes="statusText"
+                               Classes.ready="{Binding IsOcrReadyStatus}"
+                               Classes.warning="{Binding IsOcrWarningStatus}" />
                   </Border>
                 </StackPanel>
                 <TextBlock Text="{Binding OcrStatusMessage}" Classes="muted" TextWrapping="Wrap" />
               </StackPanel>
-              <TextBlock Grid.Column="1" Text="Automatic" Classes="quiet" FontSize="12"
-                         VerticalAlignment="Center" />
+              <Button Grid.Column="1" IsVisible="{Binding CanRetryOcrSetup}" Content="Try again"
+                      Click="RetryOcrSetup" VerticalAlignment="Center" />
             </Grid>
           </Border>
 
@@ -110,9 +122,13 @@
               <StackPanel Spacing="5">
                 <StackPanel Orientation="Horizontal" Spacing="9">
                   <TextBlock Text="Semantic search" Classes="cardTitle" />
-                  <Border Classes="statusBadge" VerticalAlignment="Center">
-                    <TextBlock Text="{Binding SemanticSearchStatusLabel}" Foreground="{DynamicResource AccentBrush}"
-                               FontSize="10" FontWeight="SemiBold" />
+                  <Border Classes="statusBadge" Classes.ready="{Binding IsSemanticSearchReadyStatus}"
+                          Classes.warning="{Binding IsSemanticSearchWarningStatus}"
+                          Classes.danger="{Binding IsSemanticSearchErrorStatus}" VerticalAlignment="Center">
+                    <TextBlock Text="{Binding SemanticSearchStatusLabel}" Classes="statusText"
+                               Classes.ready="{Binding IsSemanticSearchReadyStatus}"
+                               Classes.warning="{Binding IsSemanticSearchWarningStatus}"
+                               Classes.danger="{Binding IsSemanticSearchErrorStatus}" />
                   </Border>
                 </StackPanel>
                 <TextBlock Text="{Binding SemanticSearchStatusMessage}" Classes="muted" TextWrapping="Wrap" />
@@ -125,9 +141,10 @@
                           ItemsSource="{Binding EmbeddingModelChoices}"
                           SelectedItem="{Binding SelectedEmbeddingModel, Mode=OneWay}"
                           IsEnabled="{Binding CanChangeEmbeddingModel}"
-                          SelectionChanged="EmbeddingModelChanged" />
+                          SelectionChanged="EmbeddingModelChanged"
+                          AutomationProperties.Name="Embedding model" />
                 <Button IsVisible="{Binding CanSetUpSemanticSearch}"
-                        Classes="primary" Content="Download selected model"
+                        Classes="primary" Content="{Binding SemanticSearchSetupButtonLabel}"
                         Click="SetupSemanticSearch" HorizontalAlignment="Stretch" />
               </StackPanel>
             </Grid>
@@ -139,7 +156,7 @@
         <Grid ColumnDefinitions="*,220" ColumnSpacing="28">
           <StackPanel Spacing="7">
             <TextBlock Text="Performance" Classes="sectionTitle" />
-            <TextBlock Text="Set the shared CPU budget for indexing, OCR, and semantic search. The limit is enforced across all projects."
+            <TextBlock Text="Choose how much processing power Context Mole may use for background work."
                        Classes="muted" TextWrapping="Wrap" />
             <TextBlock Text="{Binding CpuUsageSummary}" Foreground="{DynamicResource AccentBrush}"
                        FontSize="12" TextWrapping="Wrap" />
@@ -148,19 +165,20 @@
             <TextBlock Text="CPU USAGE PROFILE" Classes="eyebrow" />
             <ComboBox ItemsSource="{Binding CpuUsageProfiles}"
                       SelectedItem="{Binding SelectedCpuUsageProfile, Mode=OneWay}"
-                      SelectionChanged="CpuUsageProfileChanged" />
+                      SelectionChanged="CpuUsageProfileChanged"
+                      AutomationProperties.Name="CPU usage profile" />
           </StackPanel>
         </Grid>
       </Border>
 
-      <Border Classes="card">
+      <Border Classes="card" IsVisible="{Binding IsWindowsStartupSupported}">
         <Grid ColumnDefinitions="*,Auto" ColumnSpacing="24">
           <StackPanel Spacing="6">
             <TextBlock Text="Start with Windows" Classes="sectionTitle" />
             <TextBlock Text="Keep the local index available after you sign in. The app starts in the background and remains accessible from the system tray."
                        Classes="muted" TextWrapping="Wrap" />
           </StackPanel>
-          <CheckBox Grid.Column="1" IsVisible="{Binding IsWindowsStartupSupported}"
+          <CheckBox Grid.Column="1"
                     IsChecked="{Binding StartWithWindowsEnabled, Mode=OneWay}"
                     Content="Launch automatically" Click="StartWithWindowsChanged"
                     VerticalAlignment="Center" />
@@ -176,17 +194,6 @@
       <Setter Property="BorderThickness" Value="1" />
       <Setter Property="CornerRadius" Value="9" />
       <Setter Property="Padding" Value="15" />
-    </Style>
-    <Style Selector="Border.statusBadge">
-      <Setter Property="Background" Value="{DynamicResource AccentSubtleBrush}" />
-      <Setter Property="CornerRadius" Value="8" />
-      <Setter Property="Padding" Value="8,2" />
-    </Style>
-    <Style Selector="Border.statusBadge.readyBadge">
-      <Setter Property="Background" Value="{DynamicResource SuccessSubtleBrush}" />
-    </Style>
-    <Style Selector="Border.statusBadge.warningBadge">
-      <Setter Property="Background" Value="{DynamicResource WarningSubtleBrush}" />
     </Style>
   </UserControl.Styles>
 </UserControl>

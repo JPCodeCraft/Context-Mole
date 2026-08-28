@@ -229,22 +229,55 @@ public sealed class IndexingCoordinator(
             return;
         }
 
-        if (change.Kind == WatchChangeKind.Rename && change.OldPath is not null && File.Exists(change.Path) && SupportedContent.IsSupported(change.Path))
+        if (change.Kind == WatchChangeKind.Rename && change.OldPath is not null)
         {
-            await _writer.HandleRenamedAsync(change.ProjectId, change.FolderId, change.OldPath, change.Path, cancellationToken).ConfigureAwait(false);
-            await ObservePathAsync(change.ProjectId, change.FolderId, change.Path, null, true, cancellationToken).ConfigureAwait(false);
+            if (File.Exists(change.Path) && SupportedContent.IsSupported(change.Path))
+            {
+                await _writer.HandleRenamedAsync(change.ProjectId, change.FolderId, change.OldPath, change.Path,
+                    cancellationToken).ConfigureAwait(false);
+                await ObservePathAsync(change.ProjectId, change.FolderId, change.Path, null, true,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            else if (SupportedContent.IsSupported(change.OldPath) &&
+                     await IsFolderAvailableAsync(change.ProjectId, change.FolderId, cancellationToken).ConfigureAwait(false))
+            {
+                await _writer.HandleDeletedAsync(change.ProjectId, change.FolderId, change.OldPath, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            else
+            {
+                await ReconcileFolderIfAvailableAsync(change.ProjectId, change.FolderId, cancellationToken)
+                    .ConfigureAwait(false);
+            }
             return;
         }
 
-        if (change.Kind == WatchChangeKind.Delete || !File.Exists(change.Path))
+        if (change.Kind == WatchChangeKind.Delete)
         {
-            if (SupportedContent.IsSupported(change.Path))
-                await _writer.HandleDeletedAsync(change.ProjectId, change.FolderId, change.Path, cancellationToken).ConfigureAwait(false);
+            if (File.Exists(change.Path))
+            {
+                if (SupportedContent.IsSupported(change.Path))
+                    await ObservePathAsync(change.ProjectId, change.FolderId, change.Path, null, true,
+                        cancellationToken).ConfigureAwait(false);
+            }
+            else if (SupportedContent.IsSupported(change.Path))
+            {
+                if (await IsFolderAvailableAsync(change.ProjectId, change.FolderId, cancellationToken).ConfigureAwait(false))
+                    await _writer.HandleDeletedAsync(change.ProjectId, change.FolderId, change.Path, cancellationToken)
+                        .ConfigureAwait(false);
+            }
+            else
+            {
+                await ReconcileFolderIfAvailableAsync(change.ProjectId, change.FolderId, cancellationToken)
+                    .ConfigureAwait(false);
+            }
             return;
         }
+
+        if (!File.Exists(change.Path)) return;
 
         if (SupportedContent.IsSupported(change.Path))
-            await ObservePathAsync(change.ProjectId, change.FolderId, change.Path, null, false, cancellationToken).ConfigureAwait(false);
+            await ObservePathAsync(change.ProjectId, change.FolderId, change.Path, null, true, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task ReconcileAllAsync(CancellationToken cancellationToken)
@@ -287,11 +320,10 @@ public sealed class IndexingCoordinator(
                         continue;
                     }
 
-                    if (_policyRefreshes.IsRefreshPending(project.Id, policy.Key)) continue;
-                    if (!_policyRefreshes.TryBeginRefresh(project.Id, policy.Key)) continue;
-
-                    _logger.LogInformation("Queueing project {Project} for embedding policy refresh", project.Name);
-                    await _writer.RequestEmbeddingRefreshAsync(project.Id, policy, retryFailed: false,
+                    var firstRequestForPolicy = _policyRefreshes.TryBeginRefresh(project.Id, policy.Key);
+                    if (firstRequestForPolicy)
+                        _logger.LogInformation("Queueing project {Project} for embedding policy refresh", project.Name);
+                    await _writer.RequestEmbeddingRefreshAsync(project.Id, policy, retryFailed: firstRequestForPolicy,
                         cancellationToken).ConfigureAwait(false);
                 }
                 catch
@@ -322,6 +354,11 @@ public sealed class IndexingCoordinator(
                     cancellationToken.ThrowIfCancellationRequested();
                     if (SupportedContent.IsSupported(path))
                         await ObservePathAsync(projectId, folderId, path, token, false, cancellationToken).ConfigureAwait(false);
+                }
+                if (!Directory.Exists(root))
+                {
+                    _logger.LogInformation("Retaining index state because folder became unavailable: {Folder}", root);
+                    return;
                 }
                 await _writer.CompleteReconciliationAsync(projectId, folderId, token, cancellationToken).ConfigureAwait(false);
             }
@@ -422,7 +459,32 @@ public sealed class IndexingCoordinator(
         var before = new FileInfo(job.SourcePath);
         if (!before.Exists)
         {
-            await _writer.HandleDeletedAsync(job.ProjectId, job.FolderId, job.SourcePath, cancellationToken).ConfigureAwait(false);
+            if (await IsFolderAvailableAsync(job.ProjectId, job.FolderId, cancellationToken).ConfigureAwait(false))
+            {
+                await _writer.HandleDeletedAsync(job.ProjectId, job.FolderId, job.SourcePath, cancellationToken)
+                    .ConfigureAwait(false);
+                await _writer.FailJobAsync(job, "source_changed",
+                    "The source path changed or disappeared while it was being indexed.", true,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            else
+                await _writer.FailJobAsync(job, "folder_unavailable",
+                    "The source folder is unavailable; the last successful index revision was retained.", true,
+                    cancellationToken).ConfigureAwait(false);
+            return false;
+        }
+        if (!await IsFolderAvailableAsync(job.ProjectId, job.FolderId, cancellationToken).ConfigureAwait(false))
+        {
+            await _writer.FailJobAsync(job, "folder_unavailable",
+                "The source folder is unavailable; the last successful index revision was retained.", true,
+                cancellationToken).ConfigureAwait(false);
+            return false;
+        }
+        if (!await IsAuthorizedSourceAsync(job, before, cancellationToken).ConfigureAwait(false))
+        {
+            await _writer.FailJobAsync(job, "source_not_authorized",
+                "The source path became a file-system link or left its authorized project folder.", false,
+                cancellationToken).ConfigureAwait(false);
             return false;
         }
         if (IsCloudPlaceholder(before.Attributes))
@@ -438,8 +500,7 @@ public sealed class IndexingCoordinator(
         var afterHash = new FileInfo(job.SourcePath);
         if (!afterHash.Exists || afterHash.Length != initialLength || new DateTimeOffset(afterHash.LastWriteTimeUtc, TimeSpan.Zero) != initialModified)
         {
-            if (afterHash.Exists)
-                await ObservePathAsync(job.ProjectId, job.FolderId, job.SourcePath, null, false, cancellationToken).ConfigureAwait(false);
+            await RequeueChangedSourceAsync(job, cancellationToken).ConfigureAwait(false);
             return false;
         }
 
@@ -452,23 +513,64 @@ public sealed class IndexingCoordinator(
         var extraction = await _extractor.ExtractAsync(new ExtractionRequest(job.SourcePath), cancellationToken).ConfigureAwait(false);
         activity.SetStage(IndexingPipelineStage.ChunkingText);
         var (contentNodes, passageSeeds) = FlattenAndChunk(extraction.Root);
+        if (passageSeeds.Count == 0 && extraction.Errors.Count > 0)
+        {
+            var failure = extraction.Errors.FirstOrDefault(error => error.Retryable) ?? extraction.Errors[0];
+            throw new ContextMoleException(failure.Code,
+                failure.ItemName is null ? failure.Message : $"{failure.ItemName}: {failure.Message}",
+                failure.Retryable);
+        }
+
+        var indexingErrors = extraction.Errors.ToList();
         IReadOnlyList<float[]> vectors = [];
         EmbeddingPolicy? embeddingPolicy = null;
         if (_embeddings.IsAvailable && passageSeeds.Count > 0)
         {
-            activity.SetStage(IndexingPipelineStage.GeneratingEmbeddings);
-            var embeddingBatch = await _embeddings.EmbedPassagesAsync(
-                passageSeeds.Select(seed => seed.SearchText).ToArray(), cancellationToken).ConfigureAwait(false);
-            vectors = embeddingBatch.Vectors;
-            embeddingPolicy = embeddingBatch.Policy;
+            try
+            {
+                activity.SetStage(IndexingPipelineStage.GeneratingEmbeddings);
+                var embeddingBatch = await _embeddings.EmbedPassagesAsync(
+                    passageSeeds.Select(seed => seed.SearchText).ToArray(), cancellationToken).ConfigureAwait(false);
+                if (embeddingBatch.Policy.Dimensions != 384 || embeddingBatch.Vectors.Count != passageSeeds.Count ||
+                    embeddingBatch.Vectors.Any(vector => vector.Length != 384))
+                    throw new ContextMoleException("model_output_invalid",
+                        "The embedding model returned an invalid passage vector set.");
+                vectors = embeddingBatch.Vectors;
+                embeddingPolicy = embeddingBatch.Policy;
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                _logger.LogWarning(exception,
+                    "Semantic embedding failed for {Path}; committing keyword-search content", job.SourcePath);
+                indexingErrors.Add(new ExtractionError("embedding_refresh_failed",
+                    $"Semantic embeddings could not be generated: {exception.Message}",
+                    IsTemporary(exception) || exception is ContextMoleException { Code: "model_unavailable" },
+                    Path.GetFileName(job.SourcePath)));
+                vectors = [];
+                embeddingPolicy = null;
+            }
         }
 
         activity.SetStage(IndexingPipelineStage.VerifyingSource);
         var finalInfo = new FileInfo(job.SourcePath);
-        if (!finalInfo.Exists || finalInfo.Length != initialLength || new DateTimeOffset(finalInfo.LastWriteTimeUtc, TimeSpan.Zero) != initialModified)
+        if (!finalInfo.Exists || finalInfo.Length != initialLength ||
+            new DateTimeOffset(finalInfo.LastWriteTimeUtc, TimeSpan.Zero) != initialModified ||
+            !await IsAuthorizedSourceAsync(job, finalInfo, cancellationToken).ConfigureAwait(false))
         {
-            if (finalInfo.Exists)
-                await ObservePathAsync(job.ProjectId, job.FolderId, job.SourcePath, null, false, cancellationToken).ConfigureAwait(false);
+            await RequeueChangedSourceAsync(job, cancellationToken).ConfigureAwait(false);
+            return false;
+        }
+        var finalSha256 = await HashAsync(job.SourcePath, cancellationToken).ConfigureAwait(false);
+        finalInfo = new FileInfo(job.SourcePath);
+        if (!finalInfo.Exists || finalInfo.Length != initialLength ||
+            new DateTimeOffset(finalInfo.LastWriteTimeUtc, TimeSpan.Zero) != initialModified ||
+            !string.Equals(finalSha256, sha256, StringComparison.OrdinalIgnoreCase))
+        {
+            await RequeueChangedSourceAsync(job, cancellationToken).ConfigureAwait(false);
             return false;
         }
 
@@ -479,8 +581,93 @@ public sealed class IndexingCoordinator(
         activity.SetStage(IndexingPipelineStage.WritingIndex);
         return await _writer.CommitRevisionAsync(new IndexCommitRequest(job.JobId, job.ProjectId, job.DocumentId, begin.RevisionId.Value,
             job.ExpectedObservationEpoch, sha256, initialLength, initialModified, contentNodes, passages,
-            vectors.Count == passageSeeds.Count ? embeddingPolicy : null, extraction.Errors), cancellationToken).ConfigureAwait(false);
+            vectors.Count == passageSeeds.Count ? embeddingPolicy : null, indexingErrors), cancellationToken).ConfigureAwait(false);
     }
+
+    private async Task RequeueChangedSourceAsync(IndexJobLease job, CancellationToken cancellationToken)
+    {
+        var current = new FileInfo(job.SourcePath);
+        if (!current.Exists)
+        {
+            if (await IsFolderAvailableAsync(job.ProjectId, job.FolderId, cancellationToken).ConfigureAwait(false))
+            {
+                await _writer.HandleDeletedAsync(job.ProjectId, job.FolderId, job.SourcePath, cancellationToken)
+                    .ConfigureAwait(false);
+                await _writer.FailJobAsync(job, "source_changed",
+                    "The source path changed or disappeared while it was being indexed.", true,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            else
+                await _writer.FailJobAsync(job, "folder_unavailable",
+                    "The source folder became unavailable; the last successful index revision was retained.", true,
+                    cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        if (!await IsFolderAvailableAsync(job.ProjectId, job.FolderId, cancellationToken).ConfigureAwait(false))
+        {
+            await _writer.FailJobAsync(job, "folder_unavailable",
+                "The source folder became unavailable; the last successful index revision was retained.", true,
+                cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        if (!await IsAuthorizedSourceAsync(job, current, cancellationToken).ConfigureAwait(false))
+        {
+            await _writer.FailJobAsync(job, "source_not_authorized",
+                "The source path became a file-system link or left its authorized project folder.", false,
+                cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        await ObservePathAsync(job.ProjectId, job.FolderId, job.SourcePath, null, true, cancellationToken)
+            .ConfigureAwait(false);
+        await _writer.FailJobAsync(job, "source_changed",
+            "The source changed while it was being indexed; indexing was restarted.", true, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private async Task<bool> IsAuthorizedSourceAsync(IndexJobLease job, FileInfo source,
+        CancellationToken cancellationToken)
+    {
+        if (IsFileSystemLink(source)) return false;
+        var root = await GetFolderRootAsync(job.ProjectId, job.FolderId, cancellationToken).ConfigureAwait(false);
+        if (root is null) return false;
+
+        var fullRoot = Path.GetFullPath(root);
+        var fullSource = Path.GetFullPath(source.FullName);
+        var relative = Path.GetRelativePath(fullRoot, fullSource);
+        if (Path.IsPathRooted(relative) || relative == ".." ||
+            relative.StartsWith($"..{Path.DirectorySeparatorChar}", StringComparison.Ordinal) ||
+            relative.StartsWith($"..{Path.AltDirectorySeparatorChar}", StringComparison.Ordinal))
+            return false;
+
+        for (var directory = source.Directory; directory is not null; directory = directory.Parent)
+        {
+            if (IsFileSystemLink(directory)) return false;
+            if (string.Equals(Path.GetFullPath(directory.FullName), fullRoot, PathComparison())) return true;
+        }
+        return false;
+    }
+
+    private async Task ReconcileFolderIfAvailableAsync(Guid projectId, Guid folderId,
+        CancellationToken cancellationToken)
+    {
+        var root = await GetFolderRootAsync(projectId, folderId, cancellationToken).ConfigureAwait(false);
+        if (root is not null && Directory.Exists(root))
+            await ReconcileFolderAsync(projectId, folderId, root, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<bool> IsFolderAvailableAsync(Guid projectId, Guid folderId,
+        CancellationToken cancellationToken) =>
+        await GetFolderRootAsync(projectId, folderId, cancellationToken).ConfigureAwait(false) is { } root &&
+        Directory.Exists(root);
+
+    private async Task<string?> GetFolderRootAsync(Guid projectId, Guid folderId,
+        CancellationToken cancellationToken) =>
+        (await _searchStore.ListProjectsAsync(cancellationToken).ConfigureAwait(false))
+        .FirstOrDefault(project => project.Id == projectId)?.Folders
+        .FirstOrDefault(folder => folder.Id == folderId)?.Path;
 
     private async Task<bool> ProcessEmbeddingRefreshAsync(IndexJobLease job, IndexingActivityHandle activity,
         CancellationToken cancellationToken)

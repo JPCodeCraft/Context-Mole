@@ -201,6 +201,27 @@ public sealed class CoreAndInfrastructureTests
     }
 
     [Fact]
+    public void ModelInstallerDistinguishesMissingAssetsFromAssetsNeedingRepair()
+    {
+        using var paths = new TemporaryAppPaths();
+        var cpuSettings = new TestCpuUsageSettings(CpuUsageProfile.Normal, logicalProcessorCount: 8);
+        var cpuBudget = new CountingCpuBudget(cpuSettings);
+        var modelSettings = new EmbeddingModelSettings(paths);
+        using var installer = new GraniteModelInstaller(paths, modelSettings, cpuBudget);
+        var model = GraniteEmbeddingModels.Get(modelSettings.Model);
+        var modelDirectory = Path.Combine(paths.AssetsDirectory, "granite", model.Revision);
+
+        Assert.False(installer.HasModelAssets(model.Choice));
+        Directory.CreateDirectory(modelDirectory);
+        File.WriteAllText(Path.Combine(modelDirectory, "tokenizer.json"), "test tokenizer");
+        File.WriteAllText(Path.Combine(modelDirectory, "model.onnx"), "test model");
+        File.WriteAllText(Path.Combine(modelDirectory, "model_quint8_avx2.onnx"), "test model");
+
+        Assert.True(installer.HasModelAssets(model.Choice));
+        Assert.False(installer.IsModelInstalled(model.Choice));
+    }
+
+    [Fact]
     public void GraniteModelCatalog_PreservesPinnedCompatibilityMetadata()
     {
         Assert.Equal(EmbeddingModelChoice.Granite311M, GraniteEmbeddingModels.DefaultChoice);

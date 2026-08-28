@@ -7,11 +7,13 @@ namespace ContextMole.App.UI.Views;
 
 public sealed class ConfirmWindow : Window
 {
-    private ConfirmWindow(string title, string message, bool singleAction, string acceptLabel, bool destructive)
+    private ConfirmWindow(string title, string message, bool singleAction, string acceptLabel, bool destructive,
+        bool isError = false)
     {
         Title = title;
         Width = 480;
         MinHeight = 220;
+        MaxHeight = 560;
         CanResize = false;
         SizeToContent = SizeToContent.Height;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
@@ -46,18 +48,19 @@ public sealed class ConfirmWindow : Window
         }
         buttons.Children.Add(accept);
 
+        var showDangerMarker = destructive || isError;
         var marker = new Border
         {
             Width = 36,
             Height = 36,
             CornerRadius = new CornerRadius(11),
-            Background = new SolidColorBrush(Color.Parse(destructive ? "#2A1820" : "#182A47")),
+            Background = new SolidColorBrush(Color.Parse(showDangerMarker ? "#2A1820" : "#182A47")),
             Child = new TextBlock
             {
-                Text = destructive ? "!" : "i",
+                Text = showDangerMarker ? "!" : "i",
                 FontSize = 17,
                 FontWeight = FontWeight.Bold,
-                Foreground = new SolidColorBrush(Color.Parse(destructive ? "#FF8996" : "#6E9FFF")),
+                Foreground = new SolidColorBrush(Color.Parse(showDangerMarker ? "#FF8996" : "#6E9FFF")),
                 HorizontalAlignment = HorizontalAlignment.Center,
                 VerticalAlignment = VerticalAlignment.Center,
             },
@@ -88,12 +91,17 @@ public sealed class ConfirmWindow : Window
             Children =
             {
                 heading,
-                new TextBlock
+                new ScrollViewer
                 {
-                    Text = message,
-                    TextWrapping = TextWrapping.Wrap,
-                    Foreground = new SolidColorBrush(Color.Parse("#A2AEC0")),
-                    LineHeight = 20,
+                    MaxHeight = 340,
+                    VerticalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Auto,
+                    Content = new SelectableTextBlock
+                    {
+                        Text = message,
+                        TextWrapping = TextWrapping.Wrap,
+                        Foreground = new SolidColorBrush(Color.Parse("#A2AEC0")),
+                        LineHeight = 20,
+                    },
                 },
                 buttons,
             },
@@ -105,7 +113,7 @@ public sealed class ConfirmWindow : Window
         new ConfirmWindow(title, message, false, acceptLabel, destructive).ShowDialog<bool>(owner);
 
     public static Task<bool> ShowErrorAsync(Window owner, string message) =>
-        new ConfirmWindow("Operation failed", message, true, "OK", true).ShowDialog<bool>(owner);
+        new ConfirmWindow("Operation failed", message, true, "OK", false, isError: true).ShowDialog<bool>(owner);
 
     public static Task<bool> ShowMessageAsync(Window owner, string title, string message) =>
         new ConfirmWindow(title, message, true, "OK", false).ShowDialog<bool>(owner);

@@ -41,19 +41,41 @@ public sealed class ProjectItemViewModel : ViewModelBase
 
     public string Phase => State == ProjectState.Paused ? "Paused"
         : CurrentFile is not null ? "Indexing"
-        : PendingCount > 0 ? "Queued" : "Ready";
+        : PendingCount > 0 && ErrorCount > 0 ? "Retrying"
+        : PendingCount > 0 ? "Queued"
+        : ErrorCount > 0 ? "Needs attention" : "Ready";
 
     public bool IsPaused => State == ProjectState.Paused;
-    public int SkippedCount => Math.Max(0, DocumentCount - IndexedCount - PendingCount);
-    public bool CanRetryFailedFiles => State == ProjectState.Active && ErrorCount > 0;
+    public bool IsReady => Phase == "Ready";
+    public bool IsRetrying => Phase == "Retrying";
+    public bool NeedsAttention => Phase == "Needs attention";
+    public bool HasErrors => ErrorCount > 0;
+    public bool CanReindex => State == ProjectState.Active;
+    public bool CanRetryFailedFiles => State == ProjectState.Active && ErrorCount > 0 &&
+        PendingCount == 0 && CurrentFile is null;
+    public string ReindexToolTip => IsPaused
+        ? "Resume indexing before rebuilding this project."
+        : "Rebuild the local index from the watched folders.";
+    public string RetryFailedFilesToolTip => IsPaused
+        ? "Resume indexing before retrying failed files."
+        : PendingCount > 0 || CurrentFile is not null
+            ? "Wait for the current indexing work to finish."
+            : "Queue only the files that currently have errors.";
     public bool HasFileTypeCounts => FileTypeCounts.Count > 0;
     public bool HasNoFileTypeCounts => !HasFileTypeCounts;
-    public bool HasNoRecentErrors => RecentErrors.Count == 0;
+    public bool HasRecentErrors => RecentErrors.Count > 0;
     public string PauseActionLabel => State == ProjectState.Paused ? "Resume indexing" : "Pause indexing";
-    public string FolderCountDisplay => Folders.Count == 1 ? "1 indexed folder" : $"{Folders.Count} indexed folders";
+    public string FolderCountDisplay => Folders.Count == 1 ? "1 folder" : $"{Folders.Count} folders";
+    public string DocumentCountDisplay => DocumentCount == 1 ? "1 file" : $"{DocumentCount} files";
+    public string SidebarErrorCountDisplay => ErrorCount == 1 ? "1 error" : $"{ErrorCount} errors";
     public string ErrorCountDisplay => ErrorCount == 1 ? "1 unresolved error" : $"{ErrorCount} unresolved errors";
-    public string CurrentFileDisplay => string.IsNullOrWhiteSpace(CurrentFile) ? "—" : CurrentFile;
+    public string RecentErrorsSummary => ErrorCount <= RecentErrors.Count
+        ? ErrorCountDisplay
+        : $"{RecentErrors.Count} of {ErrorCount} unresolved errors shown";
     public string LastCompletedDisplay => LastCompletedUtc?.ToLocalTime().ToString("g") ?? "Not yet completed";
+    public string ProjectDetailsDisplay => LastCompletedUtc is null
+        ? $"{FolderCountDisplay} · Not indexed yet"
+        : $"{FolderCountDisplay} · Last completed {LastCompletedDisplay}";
 
     public void UpdateFrom(ProjectSummary project)
     {
@@ -64,11 +86,20 @@ public sealed class ProjectItemViewModel : ViewModelBase
 
         var previousPhase = Phase;
         var previousIsPaused = IsPaused;
-        var previousSkipped = SkippedCount;
+        var previousIsReady = IsReady;
+        var previousIsRetrying = IsRetrying;
+        var previousNeedsAttention = NeedsAttention;
+        var previousHasErrors = HasErrors;
+        var previousCanReindex = CanReindex;
         var previousCanRetryFailedFiles = CanRetryFailedFiles;
+        var previousReindexToolTip = ReindexToolTip;
+        var previousRetryFailedFilesToolTip = RetryFailedFilesToolTip;
         var previousPauseActionLabel = PauseActionLabel;
         var previousFolderCountDisplay = FolderCountDisplay;
-        var previousCurrentFileDisplay = CurrentFileDisplay;
+        var previousDocumentCountDisplay = DocumentCountDisplay;
+        var previousSidebarErrorCountDisplay = SidebarErrorCountDisplay;
+        var previousRecentErrorsSummary = RecentErrorsSummary;
+        var previousProjectDetailsDisplay = ProjectDetailsDisplay;
         var previousLastCompletedDisplay = LastCompletedDisplay;
 
         Name = project.Name;
@@ -84,12 +115,21 @@ public sealed class ProjectItemViewModel : ViewModelBase
 
         if (!string.Equals(previousPhase, Phase, StringComparison.Ordinal)) OnPropertyChanged(nameof(Phase));
         if (previousIsPaused != IsPaused) OnPropertyChanged(nameof(IsPaused));
-        if (previousSkipped != SkippedCount) OnPropertyChanged(nameof(SkippedCount));
+        if (previousIsReady != IsReady) OnPropertyChanged(nameof(IsReady));
+        if (previousIsRetrying != IsRetrying) OnPropertyChanged(nameof(IsRetrying));
+        if (previousNeedsAttention != NeedsAttention) OnPropertyChanged(nameof(NeedsAttention));
+        if (previousHasErrors != HasErrors) OnPropertyChanged(nameof(HasErrors));
+        if (previousCanReindex != CanReindex) OnPropertyChanged(nameof(CanReindex));
         if (previousCanRetryFailedFiles != CanRetryFailedFiles) OnPropertyChanged(nameof(CanRetryFailedFiles));
+        if (!string.Equals(previousReindexToolTip, ReindexToolTip, StringComparison.Ordinal)) OnPropertyChanged(nameof(ReindexToolTip));
+        if (!string.Equals(previousRetryFailedFilesToolTip, RetryFailedFilesToolTip, StringComparison.Ordinal)) OnPropertyChanged(nameof(RetryFailedFilesToolTip));
         if (!string.Equals(previousPauseActionLabel, PauseActionLabel, StringComparison.Ordinal)) OnPropertyChanged(nameof(PauseActionLabel));
         if (!string.Equals(previousFolderCountDisplay, FolderCountDisplay, StringComparison.Ordinal)) OnPropertyChanged(nameof(FolderCountDisplay));
+        if (!string.Equals(previousDocumentCountDisplay, DocumentCountDisplay, StringComparison.Ordinal)) OnPropertyChanged(nameof(DocumentCountDisplay));
+        if (!string.Equals(previousSidebarErrorCountDisplay, SidebarErrorCountDisplay, StringComparison.Ordinal)) OnPropertyChanged(nameof(SidebarErrorCountDisplay));
         OnPropertyChanged(nameof(ErrorCountDisplay));
-        if (!string.Equals(previousCurrentFileDisplay, CurrentFileDisplay, StringComparison.Ordinal)) OnPropertyChanged(nameof(CurrentFileDisplay));
+        if (!string.Equals(previousRecentErrorsSummary, RecentErrorsSummary, StringComparison.Ordinal)) OnPropertyChanged(nameof(RecentErrorsSummary));
+        if (!string.Equals(previousProjectDetailsDisplay, ProjectDetailsDisplay, StringComparison.Ordinal)) OnPropertyChanged(nameof(ProjectDetailsDisplay));
         if (!string.Equals(previousLastCompletedDisplay, LastCompletedDisplay, StringComparison.Ordinal)) OnPropertyChanged(nameof(LastCompletedDisplay));
     }
 
@@ -117,7 +157,8 @@ public sealed class ProjectItemViewModel : ViewModelBase
         }
 
         while (RecentErrors.Count > errors.Count) RecentErrors.RemoveAt(RecentErrors.Count - 1);
-        OnPropertyChanged(nameof(HasNoRecentErrors));
+        OnPropertyChanged(nameof(HasRecentErrors));
+        OnPropertyChanged(nameof(RecentErrorsSummary));
     }
 
     public void UpdateFileTypeCounts(IReadOnlyList<ProjectFileTypeCount> counts)

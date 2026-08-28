@@ -96,6 +96,8 @@ internal partial class MainViewModel : ViewModelBase
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsProjectsSection))]
     [NotifyPropertyChangedFor(nameof(IsSettingsSection))]
+    [NotifyPropertyChangedFor(nameof(ProjectsNavigationAutomationName))]
+    [NotifyPropertyChangedFor(nameof(SettingsNavigationAutomationName))]
     public partial MainSection CurrentSection { get; set; } = MainSection.Projects;
 
     [ObservableProperty]
@@ -118,7 +120,12 @@ internal partial class MainViewModel : ViewModelBase
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(EmbeddingModelSummary))]
+    [NotifyPropertyChangedFor(nameof(SemanticSearchStatusLabel))]
     [NotifyPropertyChangedFor(nameof(SemanticSearchStatusMessage))]
+    [NotifyPropertyChangedFor(nameof(SemanticSearchSetupButtonLabel))]
+    [NotifyPropertyChangedFor(nameof(IsSemanticSearchReadyStatus))]
+    [NotifyPropertyChangedFor(nameof(IsSemanticSearchWarningStatus))]
+    [NotifyPropertyChangedFor(nameof(IsSemanticSearchErrorStatus))]
     public partial GraniteEmbeddingModelDefinition SelectedEmbeddingModel { get; set; } = GraniteEmbeddingModels.All[0];
 
     [ObservableProperty]
@@ -131,7 +138,18 @@ internal partial class MainViewModel : ViewModelBase
     [NotifyPropertyChangedFor(nameof(CanSetUpSemanticSearch))]
     [NotifyPropertyChangedFor(nameof(SemanticSearchStatusLabel))]
     [NotifyPropertyChangedFor(nameof(SemanticSearchStatusMessage))]
+    [NotifyPropertyChangedFor(nameof(IsSemanticSearchReadyStatus))]
+    [NotifyPropertyChangedFor(nameof(IsSemanticSearchWarningStatus))]
+    [NotifyPropertyChangedFor(nameof(IsSemanticSearchErrorStatus))]
     public partial bool IsPreparingEmbeddingModel { get; set; } = true;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(OcrStatusLabel))]
+    [NotifyPropertyChangedFor(nameof(OcrStatusMessage))]
+    [NotifyPropertyChangedFor(nameof(CanRetryOcrSetup))]
+    [NotifyPropertyChangedFor(nameof(IsOcrReadyStatus))]
+    [NotifyPropertyChangedFor(nameof(IsOcrWarningStatus))]
+    public partial bool IsPreparingOcr { get; set; } = true;
 
     [ObservableProperty]
     public partial bool StartWithWindowsEnabled { get; set; }
@@ -142,6 +160,8 @@ internal partial class MainViewModel : ViewModelBase
     [NotifyPropertyChangedFor(nameof(CanRestartForUpdate))]
     [NotifyPropertyChangedFor(nameof(ApplicationUpdateMessage))]
     [NotifyPropertyChangedFor(nameof(ApplicationUpdateStatusLabel))]
+    [NotifyPropertyChangedFor(nameof(IsApplicationUpdateReadyStatus))]
+    [NotifyPropertyChangedFor(nameof(IsApplicationUpdateWarningStatus))]
     public partial ApplicationUpdateSnapshot ApplicationUpdate { get; set; } = ApplicationUpdateSnapshot.Disabled;
 
     public bool IsOcrUnavailable => !_ocrEngine.IsAvailable;
@@ -158,34 +178,76 @@ internal partial class MainViewModel : ViewModelBase
                 CpuUsageProfile.Heavy => 80,
                 _ => throw new ArgumentOutOfRangeException()
             };
-            return $"{SelectedCpuUsageProfile}: max {percentage}% — up to {_cpuUsageSettings.ThreadLimit} of " +
-                   $"{_cpuUsageSettings.LogicalProcessorCount} logical threads globally across all projects.";
+            return $"{SelectedCpuUsageProfile} · up to {percentage}% CPU";
         }
     }
-    public string OcrStatusMessage => _ocrEngine.UnavailableReason ?? "Local PP-OCRv6 medium OCR is ready.";
+    public string OcrStatusLabel => IsPreparingOcr ? "Setting up" : IsOcrAvailable ? "Ready" : "Needs attention";
+    public string OcrStatusMessage => IsPreparingOcr
+        ? "Preparing OCR for scanned documents and images…"
+        : _ocrEngine.UnavailableReason ?? "OCR is ready for scanned documents and images.";
+    public bool CanRetryOcrSetup => !IsPreparingOcr && IsOcrUnavailable;
+    public bool IsOcrReadyStatus => !IsPreparingOcr && IsOcrAvailable;
+    public bool IsOcrWarningStatus => !IsPreparingOcr && IsOcrUnavailable;
     public bool IsSemanticSearchUnavailable => !_embeddingGenerator.IsAvailable;
     public bool CanInstallSemanticModel => _modelInstaller.IsSupported;
     public bool CanSetUpSemanticSearch => IsSemanticSearchUnavailable && CanInstallSemanticModel &&
         !IsChangingEmbeddingModel && !IsPreparingEmbeddingModel;
     public bool CanChangeEmbeddingModel => CanInstallSemanticModel &&
         !IsChangingEmbeddingModel && !IsPreparingEmbeddingModel;
-    public string EmbeddingModelSummary => $"{SelectedEmbeddingModel.Description}. Both choices support multilingual search and use the same 384-dimensional index format.";
+    public string EmbeddingModelSummary => $"{SelectedEmbeddingModel.Description}. Supports multilingual search.";
     public string SemanticSearchStatusLabel => IsPreparingEmbeddingModel ? "Loading"
-        : IsSemanticSearchUnavailable ? "Optional" : "Ready";
+        : IsSemanticSearchUnavailable && !_modelInstaller.IsSupported ? "Unavailable"
+        : IsSemanticSearchUnavailable && _modelInstaller.HasModelAssets(SelectedEmbeddingModel.Choice)
+            ? "Needs attention"
+            : IsSemanticSearchUnavailable ? "Optional" : "Ready";
     public string SemanticSearchStatusMessage => IsPreparingEmbeddingModel
         ? $"Loading {SelectedEmbeddingModel.DisplayName} in the background."
         : !IsSemanticSearchUnavailable
         ? $"{SelectedEmbeddingModel.DisplayName} is ready for multilingual meaning-based search."
         : !_modelInstaller.IsSupported
             ? _embeddingGenerator.UnavailableReason ?? "Semantic search is unavailable on this platform."
-            : $"Keyword search is ready. Download {SelectedEmbeddingModel.DisplayName} to add multilingual meaning-based search.";
+            : _modelInstaller.HasModelAssets(SelectedEmbeddingModel.Choice)
+                ? $"Keyword search remains ready. {_embeddingGenerator.UnavailableReason ?? "The selected semantic model needs verification or repair."}"
+                : $"Keyword search is ready. Download {SelectedEmbeddingModel.DisplayName} to add multilingual meaning-based search.";
+    public string SemanticSearchSetupButtonLabel =>
+        _modelInstaller.HasModelAssets(SelectedEmbeddingModel.Choice)
+            ? "Verify and repair selected model"
+            : "Download selected model";
+    public bool IsSemanticSearchReadyStatus => !IsPreparingEmbeddingModel && !IsSemanticSearchUnavailable;
+    public bool IsSemanticSearchWarningStatus => !IsPreparingEmbeddingModel && IsSemanticSearchUnavailable &&
+        CanInstallSemanticModel && _modelInstaller.HasModelAssets(SelectedEmbeddingModel.Choice);
+    public bool IsSemanticSearchErrorStatus => !IsPreparingEmbeddingModel && IsSemanticSearchUnavailable &&
+        !CanInstallSemanticModel;
     public bool HasSelection => SelectedProject is not null;
     public bool HasNoSelection => SelectedProject is null;
     public bool IsProjectsSection => CurrentSection == MainSection.Projects;
     public bool IsSettingsSection => CurrentSection == MainSection.Settings;
+    public string ProjectsNavigationAutomationName => IsProjectsSection ? "Projects, current section" : "Projects";
+    public string SettingsNavigationAutomationName => IsSettingsSection ? "Settings, current section" : "Settings";
     public bool IsActiveIndexingCollapsed => !IsActiveIndexingExpanded;
     public bool IsAiConnectionsCollapsed => !IsAiConnectionsExpanded;
     public bool HasActiveIndexingItems => ActiveIndexingItems.Count > 0;
+    public string AiConnectionsStatusLabel
+    {
+        get
+        {
+            if (AiConnections.Any(connection => connection.IsBusy)) return "Checking";
+            if (AiConnections.Any(connection => connection.IsWarningStatus || connection.IsErrorStatus))
+                return "Needs attention";
+            var configured = AiConnections.Count(connection => connection.IsReadyStatus);
+            return configured switch
+            {
+                0 => "None configured",
+                1 => "1 configured",
+                _ => $"{configured} configured"
+            };
+        }
+    }
+    public bool AreAiConnectionsReady => !AiConnections.Any(connection => connection.IsBusy) &&
+        AiConnections.Any(connection => connection.IsReadyStatus) &&
+        !AiConnections.Any(connection => connection.IsWarningStatus || connection.IsErrorStatus);
+    public bool DoAiConnectionsNeedAttention => !AiConnections.Any(connection => connection.IsBusy) &&
+        AiConnections.Any(connection => connection.IsWarningStatus || connection.IsErrorStatus);
     public bool IsApplicationUpdateProgressVisible => ApplicationUpdate.State == ApplicationUpdateState.Downloading;
     public bool IsApplicationUpdateReady => ApplicationUpdate.State == ApplicationUpdateState.Ready;
     public bool CanRestartForUpdate => IsApplicationUpdateReady && !_hasAnyActiveIndexingItems;
@@ -201,6 +263,9 @@ internal partial class MainViewModel : ViewModelBase
         ApplicationUpdateState.Error => "Needs attention",
         _ => "Installed builds",
     };
+    public bool IsApplicationUpdateReadyStatus => ApplicationUpdate.State is ApplicationUpdateState.Current
+        or ApplicationUpdateState.Ready;
+    public bool IsApplicationUpdateWarningStatus => ApplicationUpdate.State == ApplicationUpdateState.Error;
     public void RefreshAssetAvailability()
     {
         SelectedEmbeddingModel = GraniteEmbeddingModels.Get(_embeddingModelSettings.Model);
@@ -212,6 +277,10 @@ internal partial class MainViewModel : ViewModelBase
         OnPropertyChanged(nameof(EmbeddingModelSummary));
         OnPropertyChanged(nameof(SemanticSearchStatusLabel));
         OnPropertyChanged(nameof(SemanticSearchStatusMessage));
+        OnPropertyChanged(nameof(SemanticSearchSetupButtonLabel));
+        OnPropertyChanged(nameof(IsSemanticSearchReadyStatus));
+        OnPropertyChanged(nameof(IsSemanticSearchWarningStatus));
+        OnPropertyChanged(nameof(IsSemanticSearchErrorStatus));
     }
 
     public void ShowProjects() => CurrentSection = MainSection.Projects;
@@ -301,6 +370,9 @@ internal partial class MainViewModel : ViewModelBase
         StatusMessage = $"CPU usage is now {SelectedCpuUsageProfile}. {CpuUsageSummary}";
         return Task.CompletedTask;
     }
+
+    public Task RetryOcrSetupAsync(CancellationToken cancellationToken = default) =>
+        IsPreparingOcr ? Task.CompletedTask : PrepareOcrAsync(cancellationToken);
 
     public async Task SetEmbeddingModelAsync(GraniteEmbeddingModelDefinition model)
     {
@@ -421,6 +493,7 @@ internal partial class MainViewModel : ViewModelBase
             return await _aiConnections.GetStatusAsync(connection.Id).ConfigureAwait(false);
 
         connection.IsBusy = true;
+        NotifyAiConnectionsSummaryChanged();
         try
         {
             var result = connection.IsConfigured
@@ -431,7 +504,11 @@ internal partial class MainViewModel : ViewModelBase
         }
         finally
         {
-            await Dispatcher.UIThread.InvokeAsync(() => connection.IsBusy = false);
+            await Dispatcher.UIThread.InvokeAsync(() =>
+            {
+                connection.IsBusy = false;
+                NotifyAiConnectionsSummaryChanged();
+            });
         }
     }
 
@@ -500,7 +577,7 @@ internal partial class MainViewModel : ViewModelBase
                     if (++summaryTick % 4 != 0) continue;
 
                     await RefreshAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
-                    await Dispatcher.UIThread.InvokeAsync(RefreshOcrAvailability);
+                    await Dispatcher.UIThread.InvokeAsync(RefreshAssetAvailability);
                     Guid? selectedId = null;
                     await Dispatcher.UIThread.InvokeAsync(() => selectedId = SelectedProject?.Id);
                     if (selectedId is { } id)
@@ -546,6 +623,7 @@ internal partial class MainViewModel : ViewModelBase
 
     private async Task PrepareOcrAsync(CancellationToken cancellationToken)
     {
+        await Dispatcher.UIThread.InvokeAsync(() => IsPreparingOcr = true);
         try
         {
             await _ocrEngine.EnsureAvailableAsync(cancellationToken).ConfigureAwait(false);
@@ -561,7 +639,13 @@ internal partial class MainViewModel : ViewModelBase
         finally
         {
             if (!cancellationToken.IsCancellationRequested)
-                await Dispatcher.UIThread.InvokeAsync(RefreshOcrAvailability);
+            {
+                await Dispatcher.UIThread.InvokeAsync(() =>
+                {
+                    IsPreparingOcr = false;
+                    RefreshOcrAvailability();
+                });
+            }
         }
     }
 
@@ -585,7 +669,11 @@ internal partial class MainViewModel : ViewModelBase
             }
             finally
             {
-                await Dispatcher.UIThread.InvokeAsync(() => connection.IsBusy = false);
+                await Dispatcher.UIThread.InvokeAsync(() =>
+                {
+                    connection.IsBusy = false;
+                    NotifyAiConnectionsSummaryChanged();
+                });
             }
         })).ConfigureAwait(false);
     }
@@ -594,6 +682,14 @@ internal partial class MainViewModel : ViewModelBase
     {
         connection.Apply(status);
         SortAiConnections();
+        NotifyAiConnectionsSummaryChanged();
+    }
+
+    private void NotifyAiConnectionsSummaryChanged()
+    {
+        OnPropertyChanged(nameof(AiConnectionsStatusLabel));
+        OnPropertyChanged(nameof(AreAiConnectionsReady));
+        OnPropertyChanged(nameof(DoAiConnectionsNeedAttention));
     }
 
     private void SortAiConnections()
@@ -621,7 +717,11 @@ internal partial class MainViewModel : ViewModelBase
         _reportedOcrMessage = message;
         OnPropertyChanged(nameof(IsOcrUnavailable));
         OnPropertyChanged(nameof(IsOcrAvailable));
+        OnPropertyChanged(nameof(OcrStatusLabel));
         OnPropertyChanged(nameof(OcrStatusMessage));
+        OnPropertyChanged(nameof(CanRetryOcrSetup));
+        OnPropertyChanged(nameof(IsOcrReadyStatus));
+        OnPropertyChanged(nameof(IsOcrWarningStatus));
     }
 
     private async Task RefreshErrorsSafeAsync(Guid projectId)

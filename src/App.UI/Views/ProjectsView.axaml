@@ -5,7 +5,7 @@
              x:Class="ContextMole.App.UI.Views.ProjectsView"
              x:DataType="vm:MainViewModel">
   <ScrollViewer>
-    <StackPanel Margin="30,24,30,38" Spacing="18">
+    <StackPanel Classes="pageContent">
       <Border IsVisible="{Binding HasNoSelection}" Classes="card" MinHeight="260">
         <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="9" MaxWidth="420">
           <Border Width="48" Height="48" CornerRadius="14" Background="{DynamicResource AccentSubtleBrush}">
@@ -15,8 +15,6 @@
           <TextBlock Text="Create your first project" Classes="sectionTitle" HorizontalAlignment="Center" />
           <TextBlock Text="Choose one or more folders and Context Mole will build a private, local search index."
                      Classes="muted" TextWrapping="Wrap" TextAlignment="Center" />
-          <TextBlock Text="Use Add project above to get started." Classes="quiet" FontSize="12"
-                     HorizontalAlignment="Center" />
         </StackPanel>
       </Border>
 
@@ -26,27 +24,32 @@
             <StackPanel Spacing="18">
               <Grid ColumnDefinitions="*,Auto" ColumnSpacing="24">
                 <StackPanel Spacing="5">
-                  <StackPanel Orientation="Horizontal" Spacing="10">
-                    <TextBlock Text="{Binding Name}" FontSize="28" FontWeight="SemiBold"
-                               TextTrimming="CharacterEllipsis" />
-                    <Border Classes="phaseBadge" Classes.paused="{Binding IsPaused}"
+                  <Grid ColumnDefinitions="*,Auto" ColumnSpacing="10">
+                    <TextBlock Text="{Binding Name}" Classes="detailTitle"
+                               TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding Name}" />
+                    <Border Grid.Column="1" Classes="phaseBadge" Classes.paused="{Binding IsPaused}"
+                            Classes.ready="{Binding IsReady}" Classes.retrying="{Binding IsRetrying}"
+                            Classes.attention="{Binding NeedsAttention}"
                             CornerRadius="10" Padding="9,3" VerticalAlignment="Center">
                       <TextBlock Text="{Binding Phase}" Classes="phaseText"
-                                 Classes.paused="{Binding IsPaused}" FontSize="11" FontWeight="SemiBold" />
+                                 Classes.paused="{Binding IsPaused}" Classes.ready="{Binding IsReady}"
+                                 Classes.retrying="{Binding IsRetrying}" Classes.attention="{Binding NeedsAttention}"
+                                 FontSize="11" FontWeight="SemiBold" />
                     </Border>
-                  </StackPanel>
-                  <TextBlock Text="{Binding FolderCountDisplay}" Classes="muted" />
+                  </Grid>
+                  <TextBlock Text="{Binding ProjectDetailsDisplay}" Classes="muted" />
                 </StackPanel>
                 <WrapPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right"
                            VerticalAlignment="Center">
                   <Button Content="{Binding PauseActionLabel}" Click="TogglePause" Margin="0,0,8,8" />
-                  <Button Content="Reindex" Click="ReindexProject" Margin="0,0,8,8" />
+                  <Button Content="Reindex" Click="ReindexProject" IsEnabled="{Binding CanReindex}"
+                          ToolTip.Tip="{Binding ReindexToolTip}" Margin="0,0,8,8" />
                   <Button Content="Edit" Click="EditProject" Margin="0,0,8,8" />
                   <Button Classes="danger" Content="Remove" Click="RemoveProject" Margin="0,0,0,8" />
                 </WrapPanel>
               </Grid>
 
-              <UniformGrid Columns="5">
+              <UniformGrid Columns="4">
                 <Border Classes="metricCard" Margin="0,0,9,0">
                   <StackPanel Spacing="5">
                     <TextBlock Text="TOTAL FILES" Classes="eyebrow" />
@@ -55,26 +58,21 @@
                 </Border>
                 <Border Classes="metricCard" Margin="0,0,9,0">
                   <StackPanel Spacing="5">
-                    <TextBlock Text="INDEXED" Classes="eyebrow" />
+                    <TextBlock Text="SEARCHABLE" Classes="eyebrow" />
                     <TextBlock Text="{Binding IndexedCount}" Classes="metricValue" />
                   </StackPanel>
                 </Border>
                 <Border Classes="metricCard" Margin="0,0,9,0">
                   <StackPanel Spacing="5">
-                    <TextBlock Text="QUEUED" Classes="eyebrow" />
+                    <TextBlock Text="IN PROGRESS" Classes="eyebrow" />
                     <TextBlock Text="{Binding PendingCount}" Classes="metricValue" />
                   </StackPanel>
                 </Border>
-                <Border Classes="metricCard" Margin="0,0,9,0">
+                <Border Classes="metricCard" Classes.hasErrors="{Binding HasErrors}">
                   <StackPanel Spacing="5">
-                    <TextBlock Text="SKIPPED" Classes="eyebrow" />
-                    <TextBlock Text="{Binding SkippedCount}" Classes="metricValue" />
-                  </StackPanel>
-                </Border>
-                <Border Classes="metricCard errorMetric">
-                  <StackPanel Spacing="5">
-                    <TextBlock Text="ERRORS" Classes="eyebrow" />
-                    <TextBlock Text="{Binding ErrorCount}" Classes="metricValue errorValue" />
+                    <TextBlock Text="ISSUES" Classes="eyebrow" />
+                    <TextBlock Text="{Binding ErrorCount}" Classes="metricValue"
+                               Classes.hasErrors="{Binding HasErrors}" />
                   </StackPanel>
                 </Border>
               </UniformGrid>
@@ -103,8 +101,7 @@
                                  Classes="muted" FontSize="18" VerticalAlignment="Center" />
                     </Grid>
                   </ToggleButton>
-                  <ItemsControl Margin="0,12,0,0"
-                                IsVisible="{Binding $parent[UserControl].((vm:MainViewModel)DataContext).IsActiveIndexingExpanded}"
+                  <ItemsControl IsVisible="{Binding $parent[UserControl].((vm:MainViewModel)DataContext).IsActiveIndexingExpanded}"
                                 ItemsSource="{Binding $parent[UserControl].((vm:MainViewModel)DataContext).ActiveIndexingItems}">
                     <ItemsControl.ItemTemplate>
                       <DataTemplate x:DataType="vm:IndexingActivityItemViewModel">
@@ -123,7 +120,8 @@
                                        Foreground="{DynamicResource AccentBrush}" FontSize="12"
                                        FontWeight="SemiBold" Margin="0,9,0,5" />
                             <ProgressBar Grid.Row="3" Grid.ColumnSpan="2" Minimum="0" Maximum="100"
-                                         Value="{Binding PipelinePosition}" Height="5" />
+                                         Value="{Binding PipelinePosition}" Height="5"
+                                         AutomationProperties.Name="File indexing progress" />
                           </Grid>
                         </Border>
                       </DataTemplate>
@@ -137,7 +135,7 @@
                   <StackPanel Spacing="13">
                     <StackPanel Spacing="3">
                       <TextBlock Text="File types" Classes="sectionTitle" />
-                      <TextBlock Text="All active files in this project." Classes="quiet" FontSize="12" />
+                      <TextBlock Text="Files currently included in this project." Classes="quiet" FontSize="12" />
                     </StackPanel>
                     <TextBlock IsVisible="{Binding HasNoFileTypeCounts}" Text="File-type totals will appear after discovery begins."
                                Classes="muted" TextWrapping="Wrap" />
@@ -167,76 +165,40 @@
                 <Border Grid.Column="1" Classes="card">
                   <StackPanel Spacing="13">
                     <StackPanel Spacing="3">
-                      <TextBlock Text="Index details" Classes="sectionTitle" />
-                      <TextBlock Text="Current local search state." Classes="quiet" FontSize="12" />
+                      <TextBlock Text="Folders" Classes="sectionTitle" />
+                      <TextBlock Text="Watched for changes when available." Classes="quiet" FontSize="12" />
                     </StackPanel>
-                    <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto,Auto"
-                          ColumnSpacing="18" RowSpacing="10">
-                      <TextBlock Text="Last completed" Classes="muted" FontSize="12" />
-                      <TextBlock Grid.Column="1" Text="{Binding LastCompletedDisplay}"
-                                 HorizontalAlignment="Right" FontSize="12" />
-                      <TextBlock Grid.Row="1" Text="Generation" Classes="muted" FontSize="12" />
-                      <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding SearchGeneration}"
-                                 HorizontalAlignment="Right" FontFamily="Consolas" FontSize="12" />
-                      <TextBlock Grid.Row="2" Text="Current file" Classes="muted" FontSize="12" />
-                      <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding CurrentFileDisplay}"
-                                 HorizontalAlignment="Right" TextTrimming="CharacterEllipsis" MaxWidth="220"
-                                 ToolTip.Tip="{Binding CurrentFile}" FontSize="12" />
-                    </Grid>
+                    <ItemsControl ItemsSource="{Binding Folders}">
+                      <ItemsControl.ItemTemplate>
+                        <DataTemplate x:DataType="core:ProjectFolderInfo">
+                          <Border Classes="folderRow" Margin="0,3">
+                            <Grid ColumnDefinitions="Auto,*" ColumnSpacing="10">
+                              <Border Width="8" Height="8" CornerRadius="4" Background="{DynamicResource AccentBrush}"
+                                      VerticalAlignment="Center" />
+                              <TextBlock Grid.Column="1" Text="{Binding Path}" Classes="muted"
+                                         TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding Path}" />
+                            </Grid>
+                          </Border>
+                        </DataTemplate>
+                      </ItemsControl.ItemTemplate>
+                    </ItemsControl>
                   </StackPanel>
                 </Border>
               </Grid>
 
-              <Border Classes="card">
-                <StackPanel Spacing="12">
-                  <StackPanel Spacing="3">
-                    <TextBlock Text="Indexed folders" Classes="sectionTitle" />
-                    <TextBlock Text="Context Mole watches these locations for changes." Classes="quiet" FontSize="12" />
-                  </StackPanel>
-                  <ItemsControl ItemsSource="{Binding Folders}">
-                    <ItemsControl.ItemTemplate>
-                      <DataTemplate x:DataType="core:ProjectFolderInfo">
-                        <Border Classes="folderRow" Margin="0,3">
-                          <Grid ColumnDefinitions="Auto,*" ColumnSpacing="10">
-                            <Border Width="8" Height="8" CornerRadius="4" Background="{DynamicResource AccentBrush}"
-                                    VerticalAlignment="Center" />
-                            <TextBlock Grid.Column="1" Text="{Binding Path}" Classes="muted"
-                                       TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding Path}" />
-                          </Grid>
-                        </Border>
-                      </DataTemplate>
-                    </ItemsControl.ItemTemplate>
-                  </ItemsControl>
-                </StackPanel>
-              </Border>
-
-              <Border Classes="card">
+              <Border Classes="card" IsVisible="{Binding HasRecentErrors}">
                 <StackPanel Spacing="13">
                   <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
                     <StackPanel Spacing="3">
                       <TextBlock Text="Recent errors" Classes="sectionTitle" />
                       <StackPanel Orientation="Horizontal" Spacing="5">
-                        <TextBlock Text="{Binding ErrorCountDisplay}" Classes="quiet" FontSize="12" />
-                        <TextBlock Text="· up to 12 shown" Classes="quiet" FontSize="12" />
+                        <TextBlock Text="{Binding RecentErrorsSummary}" Classes="quiet" FontSize="12" />
                       </StackPanel>
                     </StackPanel>
                     <Button Grid.Column="1" Content="Retry failed files" Click="RetryFailedFiles"
-                            IsEnabled="{Binding CanRetryFailedFiles}" VerticalAlignment="Center" />
+                            IsEnabled="{Binding CanRetryFailedFiles}"
+                            ToolTip.Tip="{Binding RetryFailedFilesToolTip}" VerticalAlignment="Center" />
                   </Grid>
-
-                  <Border IsVisible="{Binding HasNoRecentErrors}" Background="{DynamicResource SurfaceRaisedBrush}"
-                          CornerRadius="9" Padding="18">
-                    <Grid ColumnDefinitions="Auto,*" ColumnSpacing="12">
-                      <Border Width="28" Height="28" CornerRadius="14" Background="{DynamicResource SuccessSubtleBrush}">
-                        <TextBlock Text="✓" Foreground="{DynamicResource SuccessBrush}"
-                                   HorizontalAlignment="Center" VerticalAlignment="Center" />
-                      </Border>
-                      <StackPanel Grid.Column="1" Spacing="2">
-                        <TextBlock Text="No recent errors" FontWeight="SemiBold" />
-                        <TextBlock Text="Files that need attention will be listed here." Classes="muted" FontSize="12" />
-                      </StackPanel>
-                    </Grid>
-                  </Border>
 
                   <ItemsControl ItemsSource="{Binding RecentErrors}">
                     <ItemsControl.ItemTemplate>
@@ -271,7 +233,7 @@
                                         CornerRadius="8" Padding="8,2">
                                   <TextBlock Text="Manual review" Classes="muted" FontSize="10" FontWeight="SemiBold" />
                                 </Border>
-                                <TextBlock Text="{Binding AttemptDisplay}" Classes="quiet" FontSize="11"
+                                <TextBlock IsVisible="{Binding HasRetried}" Text="{Binding AttemptDisplay}" Classes="quiet" FontSize="11"
                                            VerticalAlignment="Center" />
                               </StackPanel>
                             </StackPanel>
@@ -298,7 +260,7 @@
       <Setter Property="Padding" Value="16" />
       <Setter Property="MinHeight" Value="86" />
     </Style>
-    <Style Selector="Border.metricCard.errorMetric">
+    <Style Selector="Border.metricCard.hasErrors">
       <Setter Property="Background" Value="{DynamicResource DangerSubtleBrush}" />
       <Setter Property="BorderBrush" Value="#50303B" />
     </Style>
@@ -306,7 +268,7 @@
       <Setter Property="FontSize" Value="25" />
       <Setter Property="FontWeight" Value="SemiBold" />
     </Style>
-    <Style Selector="TextBlock.metricValue.errorValue">
+    <Style Selector="TextBlock.metricValue.hasErrors">
       <Setter Property="Foreground" Value="{DynamicResource DangerBrush}" />
     </Style>
     <Style Selector="Border.fileTypeChip">

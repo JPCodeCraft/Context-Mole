@@ -7,6 +7,8 @@ namespace ContextMole.App.UI.Views;
 
 public partial class ProjectsView : UserControl
 {
+    private bool _projectActionBusy;
+
     public ProjectsView()
     {
         InitializeComponent();
@@ -17,42 +19,53 @@ public partial class ProjectsView : UserControl
 
     private async void EditProject(object? sender, RoutedEventArgs args)
     {
-        if (ViewModel.SelectedProject is not { } project) return;
+        if (_projectActionBusy || ViewModel.SelectedProject is not { } project) return;
         var result = await new ProjectEditorWindow(project.ToSummary()).ShowDialog<ProjectEditorResult?>(Owner);
         if (result is null) return;
-        await RunUiActionAsync(() => ViewModel.UpdateAsync(project.Id, result.Name, result.Folders));
+        await RunUiActionAsync(sender as Control,
+            () => ViewModel.UpdateAsync(project.Id, result.Name, result.Folders));
     }
 
-    private async void TogglePause(object? sender, RoutedEventArgs args) =>
-        await RunUiActionAsync(ViewModel.TogglePauseAsync);
+    private async void TogglePause(object? sender, RoutedEventArgs args)
+    {
+        if (_projectActionBusy) return;
+        await RunUiActionAsync(sender as Control, ViewModel.TogglePauseAsync);
+    }
 
     private async void RetryFailedFiles(object? sender, RoutedEventArgs args)
     {
-        if (ViewModel.SelectedProject is not { CanRetryFailedFiles: true }) return;
+        if (_projectActionBusy || ViewModel.SelectedProject is not { CanRetryFailedFiles: true }) return;
         if (!await ConfirmWindow.AskAsync(Owner, "Retry failed files?",
                 "Only documents currently marked with errors will be queued again. Successfully indexed files will not be touched.")) return;
-        await RunUiActionAsync(ViewModel.RetryFailedFilesAsync);
+        await RunUiActionAsync(sender as Control, ViewModel.RetryFailedFilesAsync);
     }
 
     private async void ReindexProject(object? sender, RoutedEventArgs args)
     {
-        if (ViewModel.SelectedProject is null) return;
+        if (_projectActionBusy || ViewModel.SelectedProject is null) return;
         if (!await ConfirmWindow.AskAsync(Owner, "Reindex project?",
                 "A fresh index will be built. Original files remain untouched.", "Reindex")) return;
-        await RunUiActionAsync(ViewModel.ReindexAsync);
+        await RunUiActionAsync(sender as Control, ViewModel.ReindexAsync);
     }
 
     private async void RemoveProject(object? sender, RoutedEventArgs args)
     {
-        if (ViewModel.SelectedProject is not { } project) return;
+        if (_projectActionBusy || ViewModel.SelectedProject is not { } project) return;
         if (!await ConfirmWindow.AskAsync(Owner, "Remove project?",
                 $"Remove the local index for “{project.Name}”? Original files remain untouched.",
                 "Remove project", destructive: true)) return;
-        await RunUiActionAsync(ViewModel.RemoveAsync);
+        await RunUiActionAsync(sender as Control, ViewModel.RemoveAsync);
     }
 
-    private async Task RunUiActionAsync(Func<Task> action)
+    private async Task RunUiActionAsync(Control? source, Func<Task> action)
     {
+        if (_projectActionBusy) return;
+        _projectActionBusy = true;
+        if (source is not null)
+        {
+            source.IsHitTestVisible = false;
+            source.Opacity = 0.65;
+        }
         try
         {
             await action();
@@ -60,6 +73,15 @@ public partial class ProjectsView : UserControl
         catch (Exception exception)
         {
             await ConfirmWindow.ShowErrorAsync(Owner, exception.Message);
+        }
+        finally
+        {
+            if (source is not null)
+            {
+                source.IsHitTestVisible = true;
+                source.Opacity = 1;
+            }
+            _projectActionBusy = false;
         }
     }
 }

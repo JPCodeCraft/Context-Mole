@@ -24,20 +24,20 @@
         <StackPanel Grid.Row="1" Spacing="5" HorizontalAlignment="Stretch">
           <Button Classes="navButton" Classes.active="{Binding IsProjectsSection}"
                   Content="Projects" HorizontalAlignment="Stretch"
-                  HorizontalContentAlignment="Left" Click="ShowProjects" />
+                  HorizontalContentAlignment="Left" Click="ShowProjects"
+                  AutomationProperties.Name="{Binding ProjectsNavigationAutomationName}" />
           <Button Classes="navButton" Classes.active="{Binding IsSettingsSection}"
                   Content="Settings" HorizontalAlignment="Stretch"
-                  HorizontalContentAlignment="Left" Click="ShowSettings" />
+                  HorizontalContentAlignment="Left" Click="ShowSettings"
+                  AutomationProperties.Name="{Binding SettingsNavigationAutomationName}" />
         </StackPanel>
 
-        <Grid Grid.Row="2" ColumnDefinitions="*,Auto" Margin="7,22,5,9">
-          <TextBlock Text="YOUR PROJECTS" Classes="eyebrow" VerticalAlignment="Center" />
-          <Button Grid.Column="1" Classes="ghost compact" Content="+ Add" Click="AddProject"
-                  ToolTip.Tip="Add a new project" />
-        </Grid>
+        <TextBlock Grid.Row="2" Text="YOUR PROJECTS" Classes="eyebrow"
+                   Margin="7,25,5,11" VerticalAlignment="Center" />
 
         <ListBox Grid.Row="3" Classes="projectList" ItemsSource="{Binding Projects}"
-                 SelectedItem="{Binding SelectedProject}" SelectionChanged="ProjectSelectionChanged">
+                 SelectedItem="{Binding SelectedProject}" SelectionChanged="ProjectSelectionChanged"
+                 AutomationProperties.Name="Projects">
           <ListBox.ItemTemplate>
             <DataTemplate x:DataType="vm:ProjectItemViewModel">
               <Border Classes="projectCard" Classes.paused="{Binding IsPaused}"
@@ -48,20 +48,26 @@
                     <TextBlock Text="{Binding Name}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"
                                ToolTip.Tip="{Binding Name}" />
                     <Border Grid.Column="1" Classes="phaseBadge" Classes.paused="{Binding IsPaused}"
+                            Classes.ready="{Binding IsReady}" Classes.retrying="{Binding IsRetrying}"
+                            Classes.attention="{Binding NeedsAttention}"
                             Padding="7,2" CornerRadius="8">
                       <TextBlock Text="{Binding Phase}" Classes="phaseText"
-                                 Classes.paused="{Binding IsPaused}" FontSize="10" FontWeight="SemiBold" />
+                                 Classes.paused="{Binding IsPaused}" Classes.ready="{Binding IsReady}"
+                                 Classes.retrying="{Binding IsRetrying}" Classes.attention="{Binding NeedsAttention}"
+                                 FontSize="10" FontWeight="SemiBold" />
                     </Border>
                   </Grid>
                   <StackPanel Orientation="Horizontal" Spacing="5">
-                    <TextBlock Text="{Binding DocumentCount}" Classes="muted" FontSize="11" />
-                    <TextBlock Text="files" Classes="quiet" FontSize="11" />
-                    <TextBlock Text="·" Classes="quiet" FontSize="11" />
-                    <TextBlock Text="{Binding ErrorCount}" Classes="muted" FontSize="11" />
-                    <TextBlock Text="errors" Classes="quiet" FontSize="11" />
+                    <TextBlock Text="{Binding DocumentCountDisplay}" Classes="muted" FontSize="11" />
+                    <StackPanel IsVisible="{Binding HasErrors}" Orientation="Horizontal" Spacing="5">
+                      <TextBlock Text="·" Classes="quiet" FontSize="11" />
+                      <TextBlock Text="{Binding SidebarErrorCountDisplay}" Foreground="{DynamicResource DangerBrush}"
+                                 FontSize="11" />
+                    </StackPanel>
                   </StackPanel>
                   <ProgressBar Minimum="0" Maximum="{Binding DocumentCount}" Value="{Binding IndexedCount}"
-                               Height="4" />
+                               Classes.paused="{Binding IsPaused}" Height="4"
+                               AutomationProperties.Name="Project indexing progress" />
                 </StackPanel>
               </Border>
             </DataTemplate>
@@ -71,10 +77,10 @@
         <StackPanel Grid.Row="4" Spacing="10" Margin="3,12,3,0">
           <Border Background="{DynamicResource SurfaceBrush}" CornerRadius="8" Padding="10,9">
             <Grid ColumnDefinitions="Auto,*" ColumnSpacing="8">
-              <Border Width="7" Height="7" CornerRadius="4" Background="{DynamicResource AccentBrush}"
+              <Border Width="7" Height="7" CornerRadius="4" Background="{DynamicResource BorderStrongBrush}"
                       VerticalAlignment="Top" Margin="0,4,0,0" />
               <TextBlock Grid.Column="1" Text="{Binding StatusMessage}" Classes="quiet" FontSize="11"
-                         TextWrapping="Wrap" MaxHeight="48" />
+                         TextWrapping="Wrap" MaxHeight="48" AutomationProperties.LiveSetting="Polite" />
             </Grid>
           </Border>
           <Button Classes="ghost compact" Content="Quit Context Mole" HorizontalContentAlignment="Left"
@@ -173,6 +179,9 @@
     <Style Selector="ListBox.projectList ListBoxItem:selected Border.projectCard.paused">
       <Setter Property="Background" Value="#342B1A" />
       <Setter Property="BorderBrush" Value="{DynamicResource WarningBrush}" />
+    </Style>
+    <Style Selector="ProgressBar.paused">
+      <Setter Property="Foreground" Value="{DynamicResource WarningBrush}" />
     </Style>
   </Window.Styles>
 </Window>

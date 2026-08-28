@@ -101,7 +101,6 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
         EnqueueAsync<object?>(async (connection, token) =>
         {
             var name = ValidateName(request.Name);
-            var folders = ValidateFolders(request.Folders);
             var now = DateTimeOffset.UtcNow.ToString("O");
             using var transaction = connection.BeginTransaction();
             await EnsureProjectExistsAsync(connection, transaction, request.ProjectId, token).ConfigureAwait(false);
@@ -119,6 +118,7 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                 }
             }
 
+            var folders = ValidateFolders(request.Folders, existing.Keys.ToHashSet(StringComparer.Ordinal));
             var requested = folders.ToDictionary(PathKey, StringComparer.Ordinal);
             var removed = existing.Where(pair => !requested.ContainsKey(pair.Key)).Select(pair => pair.Value).ToArray();
             foreach (var folderId in removed)
@@ -223,7 +223,8 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                 JOIN document_revisions r ON r.id=d.active_revision_id AND r.status='active'
                 WHERE d.project_id=$project AND d.tombstoned=0
                   AND ($retry_failed=1 OR COALESCE((
-                    SELECT CASE WHEN j.kind=$embedding_refresh AND j.state='failed' THEN 1 ELSE 0 END
+                    SELECT CASE WHEN j.kind=$embedding_refresh AND j.state='failed'
+                                      AND j.target_policy_key=$policy_key THEN 1 ELSE 0 END
                     FROM index_jobs j
                     WHERE j.project_id=$project AND j.document_id=d.id
                     ORDER BY j.updated_utc DESC,j.id DESC LIMIT 1
@@ -255,21 +256,10 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
             }
 
             var now = DateTimeOffset.UtcNow.ToString("O");
-            var cleared = 0;
             foreach (var document in documents)
             {
-                cleared += await ExecuteAsync(connection, transaction,
-                    "DELETE FROM embeddings WHERE revision_id=$revision;",
-                    [new("$revision", document.RevisionId.ToString())], token).ConfigureAwait(false);
                 await UpsertOpenJobAsync(connection, transaction, projectId, document.Id, document.Epoch,
-                    IndexJobKind.EmbeddingRefresh, now, token).ConfigureAwait(false);
-            }
-
-            if (cleared > 0)
-            {
-                await ExecuteAsync(connection, transaction,
-                    "UPDATE projects SET search_generation=search_generation+1,updated_utc=$now WHERE id=$project;",
-                    [new("$now", now), new("$project", projectId.ToString())], token).ConfigureAwait(false);
+                    IndexJobKind.EmbeddingRefresh, now, token, targetPolicy.Key).ConfigureAwait(false);
             }
 
             await transaction.CommitAsync(token).ConfigureAwait(false);
@@ -291,17 +281,18 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
             select.CommandText =
                 """
                 WITH ranked_jobs AS (
-                  SELECT document_id,state,kind,
+                  SELECT document_id,state,kind,target_policy_key,
                     ROW_NUMBER() OVER (PARTITION BY document_id ORDER BY updated_utc DESC,id DESC) AS job_rank
                   FROM index_jobs
                   WHERE project_id=$project
                 ),
                 latest_jobs AS (
-                  SELECT document_id,state,kind FROM ranked_jobs WHERE job_rank=1
+                  SELECT document_id,state,kind,target_policy_key FROM ranked_jobs WHERE job_rank=1
                 )
                 SELECT d.id,d.observation_epoch,
                   CASE WHEN latest.state='failed' AND latest.kind=$embedding_refresh
-                    THEN $embedding_refresh ELSE $reindex END
+                    THEN $embedding_refresh ELSE $reindex END,
+                  latest.target_policy_key
                 FROM documents d
                 LEFT JOIN latest_jobs latest ON latest.document_id=d.id
                 WHERE d.project_id=$project AND d.tombstoned=0
@@ -319,13 +310,13 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
             select.Parameters.AddWithValue("$project", projectId.ToString());
             select.Parameters.AddWithValue("$embedding_refresh", (int)IndexJobKind.EmbeddingRefresh);
             select.Parameters.AddWithValue("$reindex", (int)IndexJobKind.Reindex);
-            var documents = new List<(Guid Id, long Epoch, IndexJobKind Kind)>();
+            var documents = new List<(Guid Id, long Epoch, IndexJobKind Kind, string? TargetPolicyKey)>();
             await using (var reader = await select.ExecuteReaderAsync(token).ConfigureAwait(false))
             {
                 while (await reader.ReadAsync(token).ConfigureAwait(false))
                 {
                     documents.Add((Guid.Parse(reader.GetString(0)), reader.GetInt64(1),
-                        (IndexJobKind)reader.GetInt32(2)));
+                        (IndexJobKind)reader.GetInt32(2), reader.IsDBNull(3) ? null : reader.GetString(3)));
                 }
             }
 
@@ -343,7 +334,7 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                         .ConfigureAwait(false);
                 }
                 await UpsertOpenJobAsync(connection, transaction, projectId, document.Id, nextEpoch,
-                    document.Kind, now, token).ConfigureAwait(false);
+                    document.Kind, now, token, document.TargetPolicyKey).ConfigureAwait(false);
             }
 
             await transaction.CommitAsync(token).ConfigureAwait(false);
@@ -492,8 +483,17 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
     public async Task CompleteReconciliationAsync(Guid projectId, Guid folderId, string tokenValue,
         CancellationToken cancellationToken = default)
     {
-        var missing = await EnqueueAsync(async (connection, token) =>
+        var reconciliation = await EnqueueAsync(async (connection, token) =>
         {
+            string? rootPath;
+            await using (var folder = connection.CreateCommand())
+            {
+                folder.CommandText = "SELECT path FROM project_folders WHERE id=$folder AND project_id=$project;";
+                folder.Parameters.AddWithValue("$folder", folderId.ToString());
+                folder.Parameters.AddWithValue("$project", projectId.ToString());
+                rootPath = (string?)await folder.ExecuteScalarAsync(token).ConfigureAwait(false);
+            }
+
             var candidates = new List<(string PathKey, string Path, string UpdatedUtc)>();
             await using (var select = connection.CreateCommand())
             {
@@ -507,11 +507,13 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                     candidates.Add((reader.GetString(0), reader.GetString(1), reader.GetString(2)));
                 }
             }
-            return candidates;
+            return (RootPath: rootPath, Candidates: candidates);
         }, cancellationToken).ConfigureAwait(false);
 
+        if (reconciliation.RootPath is null || !Directory.Exists(reconciliation.RootPath)) return;
+
         var tombstones = new List<(string PathKey, string UpdatedUtc)>();
-        foreach (var candidate in missing)
+        foreach (var candidate in reconciliation.Candidates)
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (!File.Exists(candidate.Path) || IsFileSystemLink(new FileInfo(candidate.Path)))
@@ -521,6 +523,7 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
 
         await EnqueueAsync<object?>(async (connection, token) =>
         {
+            if (!Directory.Exists(reconciliation.RootPath)) return null;
             using var transaction = connection.BeginTransaction();
             foreach (var (pathKey, updatedUtc) in tombstones)
             {
@@ -688,20 +691,6 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                 return new BeginRevisionResult(false, false, null, "The SHA-256 fingerprint is unchanged.");
             }
 
-            if (job.Kind == IndexJobKind.Index && activeRevision is not null && !string.Equals(existingSha, sha256, StringComparison.OrdinalIgnoreCase))
-            {
-                await DeleteFtsRevisionAsync(connection, transaction, activeRevision.Value, token).ConfigureAwait(false);
-                await ExecuteAsync(connection, transaction,
-                    "UPDATE document_revisions SET status='superseded' WHERE id=$revision;",
-                    [new("$revision", activeRevision.Value.ToString())], token).ConfigureAwait(false);
-                await ExecuteAsync(connection, transaction,
-                    "UPDATE documents SET active_revision_id=NULL WHERE id=$document;",
-                    [new("$document", job.DocumentId.ToString())], token).ConfigureAwait(false);
-                await ExecuteAsync(connection, transaction,
-                    "UPDATE projects SET search_generation=search_generation+1,updated_utc=$now WHERE id=$project;",
-                    [new("$now", now), new("$project", job.ProjectId.ToString())], token).ConfigureAwait(false);
-            }
-
             await ExecuteAsync(connection, transaction,
                 "DELETE FROM document_revisions WHERE document_id=$document AND status='staging';",
                 [new("$document", job.DocumentId.ToString())], token).ConfigureAwait(false);
@@ -709,10 +698,6 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
             await ExecuteAsync(connection, transaction,
                 "INSERT INTO document_revisions(id,document_id,sha256,status,created_utc) VALUES($id,$document,$sha,'staging',$now);",
                 [new("$id", revisionId.ToString()), new("$document", job.DocumentId.ToString()), new("$sha", sha256), new("$now", now)], token).ConfigureAwait(false);
-            await ExecuteAsync(connection, transaction,
-                "UPDATE documents SET sha256=$sha,size=$size,modified_utc=$modified,available=1,updated_utc=$now WHERE id=$document;",
-                [new("$sha", sha256), new("$size", size), new("$modified", modifiedUtc.ToString("O")),
-                 new("$now", now), new("$document", job.DocumentId.ToString())], token).ConfigureAwait(false);
             await transaction.CommitAsync(token).ConfigureAwait(false);
             return new BeginRevisionResult(true, false, revisionId);
         }, cancellationToken);
@@ -1162,22 +1147,24 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
     }
 
     private static async Task UpsertOpenJobAsync(SqliteConnection connection, SqliteTransaction transaction, Guid projectId,
-        Guid documentId, long epoch, IndexJobKind kind, string now, CancellationToken cancellationToken)
+        Guid documentId, long epoch, IndexJobKind kind, string now, CancellationToken cancellationToken,
+        string? targetPolicyKey = null)
     {
         if (kind == IndexJobKind.EmbeddingRefresh)
         {
             await ExecuteAsync(connection, transaction,
                 """
-                INSERT INTO index_jobs(id,project_id,document_id,kind,state,expected_epoch,not_before_utc,created_utc,updated_utc)
-                SELECT $id,$project,$document,$kind,'queued',$epoch,$now,$now,$now
+                INSERT INTO index_jobs(id,project_id,document_id,kind,state,expected_epoch,not_before_utc,created_utc,updated_utc,target_policy_key)
+                SELECT $id,$project,$document,$kind,'queued',$epoch,$now,$now,$now,$target_policy
                 WHERE NOT EXISTS(
                   SELECT 1 FROM index_jobs
                   WHERE document_id=$document AND state IN ('queued','retry_wait','running')
                 );
                 """,
                 [new("$id", Guid.CreateVersion7().ToString()), new("$project", projectId.ToString()),
-                 new("$document", documentId.ToString()), new("$kind", (int)kind), new("$epoch", epoch),
-                 new("$now", now)], cancellationToken).ConfigureAwait(false);
+                  new("$document", documentId.ToString()), new("$kind", (int)kind), new("$epoch", epoch),
+                  new("$now", now), new("$target_policy", (object?)targetPolicyKey ?? DBNull.Value)], cancellationToken)
+                .ConfigureAwait(false);
             return;
         }
 
@@ -1195,6 +1182,7 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                 not_before_utc=CASE WHEN state='running' THEN not_before_utc ELSE $now END,
                 lease_until_utc=CASE WHEN state='running' THEN lease_until_utc ELSE NULL END,
                 last_error=CASE WHEN state='running' THEN last_error ELSE NULL END,
+                target_policy_key=NULL,
                 updated_utc=$now
             WHERE document_id=$document AND state IN ('queued','retry_wait','running');
             """,
@@ -1365,7 +1353,8 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
         return normalized;
     }
 
-    private IReadOnlyList<string> ValidateFolders(IReadOnlyList<string> folders)
+    private IReadOnlyList<string> ValidateFolders(IReadOnlyList<string> folders,
+        IReadOnlySet<string>? allowedUnavailableFolderKeys = null)
     {
         if (folders.Count == 0)
         {
@@ -1376,18 +1365,18 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
         var appDataKey = PathKey(_paths.DataDirectory);
         for (var index = 0; index < canonical.Length; index++)
         {
-            if (!Directory.Exists(canonical[index]))
+            var key = PathKey(canonical[index]);
+            var exists = Directory.Exists(canonical[index]);
+            if (!exists && !(allowedUnavailableFolderKeys?.Contains(key) ?? false))
             {
                 throw new ContextMoleException("folder_unavailable", $"Folder does not exist or is unavailable: {canonical[index]}", true);
             }
 
-            var rootInfo = new DirectoryInfo(canonical[index]);
-            if (IsFileSystemLink(rootInfo))
+            if (exists && IsFileSystemLink(new DirectoryInfo(canonical[index])))
             {
                 throw new ContextMoleException("unsafe_folder", $"Folder roots cannot be symbolic links: {canonical[index]}");
             }
 
-            var key = PathKey(canonical[index]);
             if (IsSameOrChild(key, appDataKey))
             {
                 throw new ContextMoleException("unsafe_folder", "The application data directory cannot be indexed.");

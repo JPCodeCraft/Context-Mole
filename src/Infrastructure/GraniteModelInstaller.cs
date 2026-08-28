@@ -75,8 +75,19 @@ public sealed class GraniteModelInstaller : IDisposable
             !File.Exists(Path.Combine(directory, "quantization-disabled"));
         var modelPath = Path.Combine(directory, useQuantized ? "model_quint8_avx2.onnx" : "model.onnx");
         return File.Exists(Path.Combine(directory, "tokenizer.json")) && File.Exists(modelPath) &&
-                GraniteModelInstallation.IsComplete(_paths, model) &&
+               GraniteModelInstallation.IsComplete(_paths, model) &&
                (!useQuantized || File.Exists(Path.Combine(directory, "validation.json")));
+    }
+
+    public bool HasModelAssets(EmbeddingModelChoice choice)
+    {
+        var model = GraniteEmbeddingModels.Get(choice);
+        var directory = GraniteModelInstallation.GetDirectory(_paths, model);
+        var useQuantized = System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture ==
+            System.Runtime.InteropServices.Architecture.X64 && Avx2.IsSupported &&
+            !File.Exists(Path.Combine(directory, "quantization-disabled"));
+        var modelPath = Path.Combine(directory, useQuantized ? "model_quint8_avx2.onnx" : "model.onnx");
+        return File.Exists(Path.Combine(directory, "tokenizer.json")) && File.Exists(modelPath);
     }
 
     public void MarkModelForRepair(EmbeddingModelChoice choice, string reason) =>

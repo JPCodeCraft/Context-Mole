@@ -9,6 +9,8 @@ namespace ContextMole.App.UI.Views;
 
 public partial class MainWindow : Window
 {
+    private bool _addingProject;
+
     public MainWindow()
     {
         InitializeComponent();
@@ -42,9 +44,29 @@ public partial class MainWindow : Window
 
     private async void AddProject(object? sender, RoutedEventArgs args)
     {
+        if (_addingProject) return;
         var result = await new ProjectEditorWindow().ShowDialog<ProjectEditorResult?>(this);
         if (result is null) return;
-        await RunUiActionAsync(() => ViewModel.CreateAsync(result.Name, result.Folders));
+        _addingProject = true;
+        var actionControl = sender as Control;
+        if (actionControl is not null)
+        {
+            actionControl.IsHitTestVisible = false;
+            actionControl.Opacity = 0.65;
+        }
+        try
+        {
+            await RunUiActionAsync(() => ViewModel.CreateAsync(result.Name, result.Folders));
+        }
+        finally
+        {
+            if (actionControl is not null)
+            {
+                actionControl.IsHitTestVisible = true;
+                actionControl.Opacity = 1;
+            }
+            _addingProject = false;
+        }
     }
 
     private async void QuitApplication(object? sender, RoutedEventArgs args)

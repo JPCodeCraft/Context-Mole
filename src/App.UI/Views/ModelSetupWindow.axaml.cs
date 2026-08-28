@@ -29,9 +29,20 @@ public partial class ModelSetupWindow : Window
         _installer = installer;
         _model = model;
         InitializeComponent();
+        var isRepair = _installer.HasModelAssets(_model.Choice);
+        if (isRepair)
+        {
+            Title = "Repair semantic search";
+            SetupTitleBlock.Text = "Repair semantic search";
+            ValidationTitleBlock.Text = "Verification and repair";
+            StatusBlock.Text = "Ready to verify the local model files.";
+            InstallButton.Content = "Verify and repair";
+        }
         ModelNameBlock.Text = _model.DisplayName;
         ModelDescriptionBlock.Text = $"{_model.Description}. It supports Portuguese, English, Spanish, and 200+ languages. Keyword search remains available without this download.";
-        DownloadDescriptionBlock.Text = $"{_model.DisplayName} is stored only on this computer. Downloads are checksum-verified, resumable, and never include your documents.";
+        DownloadDescriptionBlock.Text = isRepair
+            ? "Existing files will be verified. Only missing or damaged model files will be downloaded again. Your documents are never included."
+            : $"{_model.DisplayName} is stored only on this computer. Downloads are checksum-verified, resumable, and never include your documents.";
 
         if (!_model.RequiresGemmaTerms)
         {
@@ -53,9 +64,16 @@ public partial class ModelSetupWindow : Window
         };
     }
 
-    private void OpenTerms(object? sender, RoutedEventArgs args)
+    private async void OpenTerms(object? sender, RoutedEventArgs args)
     {
-        Process.Start(new ProcessStartInfo(GraniteModelInstaller.GemmaTermsUrl) { UseShellExecute = true });
+        try
+        {
+            Process.Start(new ProcessStartInfo(GraniteModelInstaller.GemmaTermsUrl) { UseShellExecute = true });
+        }
+        catch (Exception exception)
+        {
+            await ConfirmWindow.ShowErrorAsync(this, $"Could not open the Gemma terms: {exception.Message}");
+        }
     }
 
     private void AcceptanceChanged(object? sender, RoutedEventArgs args) =>

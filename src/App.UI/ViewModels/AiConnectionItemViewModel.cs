@@ -28,7 +28,9 @@ internal sealed class AiConnectionItemViewModel(AiClientDefinition client) : Vie
         {
             if (!SetProperty(ref _isBusy, value)) return;
             OnPropertyChanged(nameof(CanChange));
+            OnPropertyChanged(nameof(StatusLabel));
             OnPropertyChanged(nameof(ActionLabel));
+            OnPropertyChanged(nameof(HasDetailMessage));
         }
     }
 
@@ -37,15 +39,21 @@ internal sealed class AiConnectionItemViewModel(AiClientDefinition client) : Vie
         or AiConnectionState.Broken;
     public bool CanChange => SupportsAutomaticSetup && !IsBusy &&
         State is (AiConnectionState.Connected or AiConnectionState.Disconnected or AiConnectionState.UpdateRequired
-            or AiConnectionState.Broken);
+            or AiConnectionState.Broken or AiConnectionState.Conflict or AiConnectionState.ServerUnavailable);
+    public bool IsReadyStatus => State == AiConnectionState.Connected;
+    public bool IsWarningStatus => State == AiConnectionState.UpdateRequired;
+    public bool IsErrorStatus => State is AiConnectionState.Conflict or AiConnectionState.ServerUnavailable
+        or AiConnectionState.Broken;
+    public bool HasDetailMessage => IsBusy || State != AiConnectionState.Disconnected;
 
     public string StatusLabel => State switch
     {
+        _ when IsBusy => "Checking",
         AiConnectionState.Connected => "Configured",
         AiConnectionState.UpdateRequired => "Update needed",
         AiConnectionState.Conflict => "Conflict",
         AiConnectionState.ServerUnavailable => "Unavailable",
-        AiConnectionState.Broken => "Broken",
+        AiConnectionState.Broken => "Needs attention",
         AiConnectionState.ManualSetup => "Manual setup",
         _ => "Not configured"
     };
@@ -56,6 +64,8 @@ internal sealed class AiConnectionItemViewModel(AiClientDefinition client) : Vie
         AiConnectionState.Connected => "Remove",
         AiConnectionState.Broken => "Remove",
         AiConnectionState.UpdateRequired => "Update",
+        AiConnectionState.Conflict => "Check again",
+        AiConnectionState.ServerUnavailable => "Check again",
         _ => "Configure"
     };
 
@@ -72,5 +82,9 @@ internal sealed class AiConnectionItemViewModel(AiClientDefinition client) : Vie
         OnPropertyChanged(nameof(CanChange));
         OnPropertyChanged(nameof(StatusLabel));
         OnPropertyChanged(nameof(ActionLabel));
+        OnPropertyChanged(nameof(IsReadyStatus));
+        OnPropertyChanged(nameof(IsWarningStatus));
+        OnPropertyChanged(nameof(IsErrorStatus));
+        OnPropertyChanged(nameof(HasDetailMessage));
     }
 }
