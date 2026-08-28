@@ -75,7 +75,7 @@ public sealed class IndexingActivityItemViewModel : ViewModelBase
         return wait.Reason switch
         {
             MemoryAdmissionWaitReason.NestedSerialization =>
-                $"Queued for the document parser · position {wait.QueuePosition} · estimated {estimate}",
+                $"Queued while another file uses OCR · position {wait.QueuePosition} · estimated {estimate}",
             MemoryAdmissionWaitReason.Exclusive =>
                 $"Queued while another file runs exclusively · position {wait.QueuePosition} · estimated {estimate}",
             _ => $"Queued for admission · position {wait.QueuePosition} · estimated {estimate}"

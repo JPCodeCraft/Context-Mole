@@ -35,11 +35,14 @@ public partial class App : Application
             ConfigureTray(window);
             if (Program.LaunchInBackground && _trayIcon is not null)
             {
-                window.Opened += (_, _) =>
+                EventHandler? hideInitialWindow = null;
+                hideInitialWindow = (_, _) =>
                 {
+                    window.Opened -= hideInitialWindow;
                     window.Hide();
                     window.Opacity = 1;
                 };
+                window.Opened += hideInitialWindow;
             }
             else
             {
@@ -102,6 +105,7 @@ public partial class App : Application
     private static void ShowWindow(Window window)
     {
         window.Opacity = 1;
+        window.ShowActivated = true;
         window.ShowInTaskbar = true;
         window.Show();
         window.WindowState = WindowState.Normal;

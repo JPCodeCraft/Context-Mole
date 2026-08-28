@@ -32,17 +32,26 @@ public static class IndexingMemoryEstimator
             return new MemoryWorkEstimate(Clamp(Add(512L * Mebibyte, Scale(sourceBytes, 4)),
                 512L * Mebibyte, 1536L * Mebibyte), "pdf-or-image-document")
             {
-                MayRequestNestedUpgrade = true
+                MaximumReservationBytes = MemoryReservationTargets.OcrInferenceBytes
             };
         if (ContainerExtensions.Contains(extension) || extension.Equals(".tar.gz", StringComparison.OrdinalIgnoreCase))
-            return new MemoryWorkEstimate(Clamp(Add(1L * Gibibyte, Scale(sourceBytes, 4)),
-                1L * Gibibyte, 2560L * Mebibyte), "container-document")
+        {
+            var baseReservation = Clamp(Add(1L * Gibibyte, Scale(sourceBytes, 4)),
+                1L * Gibibyte, 2560L * Mebibyte);
+            return new MemoryWorkEstimate(baseReservation, "container-document")
             {
-                MayRequestNestedUpgrade = true
+                MaximumReservationBytes = Math.Max(baseReservation, MemoryReservationTargets.OcrInferenceBytes)
             };
+        }
 
-        return new MemoryWorkEstimate(Clamp(Add(128L * Mebibyte, Scale(sourceBytes, 5)),
-            128L * Mebibyte, 1280L * Mebibyte), "text-document");
+        var textBaseReservation = Clamp(Add(128L * Mebibyte, Scale(sourceBytes, 5)),
+            128L * Mebibyte, 1280L * Mebibyte);
+        return new MemoryWorkEstimate(textBaseReservation, "text-document")
+        {
+            // The extractor deliberately content-sniffs PDF data regardless of the file extension.
+            // Keep late OCR safe without duplicating that classifier or introducing a TOCTOU gap.
+            MaximumReservationBytes = Math.Max(textBaseReservation, MemoryReservationTargets.OcrInferenceBytes)
+        };
     }
 
     private static string NormalizeExtension(string extension, string path)

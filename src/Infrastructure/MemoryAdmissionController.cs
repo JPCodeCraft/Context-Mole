@@ -19,11 +19,11 @@ public sealed class MemoryAdmissionController : IMemoryAdmissionController, IDis
     private readonly AsyncLocal<MemoryLease?> _ambientLease = new();
     private readonly LinkedList<Waiter> _upgradeWaiters = [];
     private readonly LinkedList<Waiter> _waiters = [];
+    private readonly HashSet<MemoryLease> _activeLeases = [];
     private readonly Timer _timer;
     private readonly Timer _fallbackBatchTimer;
     private long _activeReservations;
     private int _activeLeaseCount;
-    private int _nestedUpgradeOwnerCount;
     private bool _exclusiveLeaseActive;
     private bool _hasLastMemoryObservation;
     private SystemMemorySnapshot _lastMemorySnapshot;
@@ -73,6 +73,9 @@ public sealed class MemoryAdmissionController : IMemoryAdmissionController, IDis
     {
         ArgumentNullException.ThrowIfNull(estimate);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(estimate.EstimatedBytes);
+        if (estimate.MaximumReservationBytes < estimate.EstimatedBytes)
+            throw new ArgumentOutOfRangeException(nameof(estimate),
+                "The maximum reservation cannot be smaller than the initial reservation.");
         cancellationToken.ThrowIfCancellationRequested();
 
         lock (_gate)
@@ -140,18 +143,13 @@ public sealed class MemoryAdmissionController : IMemoryAdmissionController, IDis
                 false);
         }
 
-        if (!parent.OwnsNestedUpgradeSlot)
+        if (requestedTarget > parent.MaximumReservationBytes)
         {
-            if (_nestedUpgradeOwnerCount != 0)
-            {
-                throw new ContextMoleException(
-                    "nested_memory_upgrade_busy",
-                    "This operation cannot safely request a nested memory upgrade while another upgrade-capable operation is active.",
-                    true);
-            }
-
-            parent.OwnsNestedUpgradeSlot = true;
-            _nestedUpgradeOwnerCount++;
+            throw new ContextMoleException(
+                "nested_memory_estimate_exceeded",
+                $"The operation requested a nested memory reservation of {requestedTarget} bytes, " +
+                $"above its declared maximum of {parent.MaximumReservationBytes} bytes.",
+                false);
         }
 
         var waiter = new Waiter(estimate, cancellationToken, parent);
@@ -255,6 +253,14 @@ public sealed class MemoryAdmissionController : IMemoryAdmissionController, IDis
         _lastSystemReserve = systemReserve;
         _lastHardSafetyReserve = hardSafetyReserve;
 
+        if (_upgradeWaiters.Count != 0 &&
+            _activeLeases.Any(lease => lease.State == MemoryLeaseState.Upgraded))
+        {
+            PublishPendingStatusesLocked(snapshot, processLimit, systemReserve, hardSafetyReserve,
+                MemoryAdmissionWaitReason.NestedSerialization);
+            return;
+        }
+
         while (_upgradeWaiters.First is { } upgradeNode)
         {
             var waiter = upgradeNode.Value;
@@ -279,10 +285,9 @@ public sealed class MemoryAdmissionController : IMemoryAdmissionController, IDis
             var processProjection = SaturatingAdd(snapshot.ProcessPrivateBytes, projectedReservations);
             var availableProjection = SaturatingSubtract(snapshot.AvailablePhysicalBytes,
                 projectedReservations);
-            var hardAvailableProjection = SaturatingSubtract(snapshot.AvailablePhysicalBytes, delta);
+            var hardAvailableProjection = availableProjection;
             var normal = processProjection <= processLimit && availableProjection >= systemReserve;
-            var exclusive = !normal && _activeLeaseCount == 1 &&
-                            hardAvailableProjection >= hardSafetyReserve;
+            var exclusive = !normal && hardAvailableProjection >= hardSafetyReserve;
             if (!normal && !exclusive)
             {
                 PublishPendingStatusesLocked(snapshot, processLimit, systemReserve, hardSafetyReserve);
@@ -302,11 +307,9 @@ public sealed class MemoryAdmissionController : IMemoryAdmissionController, IDis
                 parent.IsExclusive, snapshot, processLimit, systemReserve);
             parent.ActiveUpgrade = lease;
             waiter.Completion.TrySetResult(lease);
-            if (_exclusiveLeaseActive)
-            {
+            if (_upgradeWaiters.Count != 0 || _waiters.Count != 0)
                 PublishPendingStatusesLocked(snapshot, processLimit, systemReserve, hardSafetyReserve);
-                return;
-            }
+            return;
         }
 
         if (_exclusiveLeaseActive)
@@ -361,13 +364,9 @@ public sealed class MemoryAdmissionController : IMemoryAdmissionController, IDis
             _activeReservations = projectedReservations;
             _activeLeaseCount++;
             var exclusive = admission == RootAdmission.Exclusive;
-            var lease = new MemoryLease(this, requested, exclusive, snapshot, processLimit,
-                systemReserve, waiter.Estimate.CorrelationId);
-            if (waiter.Estimate.MayRequestNestedUpgrade)
-            {
-                lease.OwnsNestedUpgradeSlot = true;
-                _nestedUpgradeOwnerCount++;
-            }
+            var lease = new MemoryLease(this, requested, waiter.Estimate.MaximumReservationBytes,
+                exclusive, snapshot, processLimit, systemReserve, waiter.Estimate.CorrelationId);
+            _activeLeases.Add(lease);
 
             _exclusiveLeaseActive = exclusive;
             waiter.Completion.TrySetResult(lease);
@@ -456,26 +455,50 @@ public sealed class MemoryAdmissionController : IMemoryAdmissionController, IDis
         long systemReserve,
         long hardSafetyReserve)
     {
-        // At most one outer operation capable of requesting a nested upgrade is admitted.
-        // This prevents two parsing workers from each holding CPU and base-memory leases while
-        // waiting for the other to release enough capacity for OCR.
-        if (waiter.Estimate.MayRequestNestedUpgrade && _nestedUpgradeOwnerCount != 0)
-            return RootAdmission.None;
-
         var projectedReservations = SaturatingAdd(_activeReservations,
             waiter.Estimate.EstimatedBytes);
-        var processProjection = SaturatingAdd(snapshot.ProcessPrivateBytes, projectedReservations);
-        var availableProjection = SaturatingSubtract(snapshot.AvailablePhysicalBytes,
+        // Preserve enough physical headroom for any admitted parser to reach its declared nested
+        // maximum. This is a one-operation claim, not live process memory and not a per-parser
+        // reservation: OCR upgrades are serialized, so one parser can upgrade, finish, and release
+        // the headroom before the next one upgrades. Root work remains governed by its base
+        // reservations and the process soft target.
+        var protectedReservations = SaturatingAdd(projectedReservations,
+            MaximumNestedHeadroom(waiter.Estimate));
+        var protectedAvailableProjection = SaturatingSubtract(snapshot.AvailablePhysicalBytes,
+            protectedReservations);
+        var baseProcessProjection = SaturatingAdd(snapshot.ProcessPrivateBytes, projectedReservations);
+        var baseAvailableProjection = SaturatingSubtract(snapshot.AvailablePhysicalBytes,
             projectedReservations);
-        if (processProjection <= processLimit && availableProjection >= systemReserve)
-            return RootAdmission.Normal;
+        if (baseProcessProjection <= processLimit && baseAvailableProjection >= systemReserve)
+        {
+            var hasActiveNestedClaim = _activeLeases.Any(lease =>
+                lease.State != MemoryLeaseState.Disposed &&
+                lease.MaximumReservationBytes > lease.BaseReservedBytes);
+            var sharedNestedHeadroomRequired = waiter.Estimate.MayRequestNestedUpgrade ||
+                                               hasActiveNestedClaim;
+            if (_activeLeaseCount == 0 || !sharedNestedHeadroomRequired ||
+                protectedAvailableProjection >= hardSafetyReserve)
+                return RootAdmission.Normal;
+        }
 
         // Soft targets should bound concurrency, not halt indexing completely. When no other
         // indexing lease is active, one operation may run exclusively as long as it leaves the
         // hard OS-safety floor intact.
-        return _activeLeaseCount == 0 && availableProjection >= hardSafetyReserve
+        return _activeLeaseCount == 0 && baseAvailableProjection >= hardSafetyReserve
             ? RootAdmission.Exclusive
             : RootAdmission.None;
+    }
+
+    private long MaximumNestedHeadroom(MemoryWorkEstimate candidate)
+    {
+        var headroom = Math.Max(0, candidate.MaximumReservationBytes - candidate.EstimatedBytes);
+        foreach (var lease in _activeLeases)
+        {
+            if (lease.State == MemoryLeaseState.Disposed) continue;
+            headroom = Math.Max(headroom,
+                Math.Max(0, lease.MaximumReservationBytes - lease.CurrentReservedBytes));
+        }
+        return headroom;
     }
 
     private static void MarkEarlierWaitersBypassed(LinkedListNode<Waiter> selectedNode)
@@ -544,19 +567,22 @@ public sealed class MemoryAdmissionController : IMemoryAdmissionController, IDis
             ? Math.Max(0, waiter.Estimate.EstimatedBytes - waiter.Parent!.CurrentReservedBytes)
             : waiter.Estimate.EstimatedBytes;
         var projectedReservations = SaturatingAdd(_activeReservations, requestedReservation);
+        var protectedReservations = waiter.IsUpgrade
+            ? projectedReservations
+            : SaturatingAdd(projectedReservations, MaximumNestedHeadroom(waiter.Estimate));
         var processProjection = SaturatingAdd(snapshot.ProcessPrivateBytes, projectedReservations);
         var availableProjection = SaturatingSubtract(snapshot.AvailablePhysicalBytes,
             projectedReservations);
         var hardAvailableProjection = SaturatingSubtract(snapshot.AvailablePhysicalBytes,
-            requestedReservation);
+            protectedReservations);
         var reason = reasonOverride ?? DetermineWaitReason(waiter, processProjection,
             availableProjection, hardAvailableProjection, processLimit, systemReserve,
             hardSafetyReserve);
         if (queuePosition > 1 && reason != MemoryAdmissionWaitReason.NestedSerialization)
             reason = MemoryAdmissionWaitReason.QueuedBehindWork;
-        var canUseHardFallback = waiter.IsUpgrade ? _activeLeaseCount == 1 : _activeLeaseCount == 0;
+        var canUseHardFallback = waiter.IsUpgrade || _activeLeaseCount == 0;
         var requiredReserve = canUseHardFallback ? hardSafetyReserve : systemReserve;
-        var requiredReservation = canUseHardFallback ? requestedReservation : projectedReservations;
+        var requiredReservation = protectedReservations;
         _statuses.Publish(new MemoryAdmissionWaitSnapshot(
             correlationId,
             reason,
@@ -582,9 +608,6 @@ public sealed class MemoryAdmissionController : IMemoryAdmissionController, IDis
         long systemReserve,
         long hardSafetyReserve)
     {
-        if (!waiter.IsUpgrade && waiter.Estimate.MayRequestNestedUpgrade &&
-            _nestedUpgradeOwnerCount != 0)
-            return MemoryAdmissionWaitReason.NestedSerialization;
         if (_exclusiveLeaseActive && !(waiter.IsUpgrade && waiter.Parent!.BaseIsExclusive))
             return MemoryAdmissionWaitReason.Exclusive;
         if (hardAvailableProjection < hardSafetyReserve)
@@ -650,8 +673,7 @@ public sealed class MemoryAdmissionController : IMemoryAdmissionController, IDis
             if (lease.ActiveUpgrade is { } activeUpgrade) activeUpgrade.IsDisposed = true;
             _activeReservations = Math.Max(0, _activeReservations - lease.CurrentReservedBytes);
             _activeLeaseCount = Math.Max(0, _activeLeaseCount - 1);
-            if (lease.OwnsNestedUpgradeSlot)
-                _nestedUpgradeOwnerCount = Math.Max(0, _nestedUpgradeOwnerCount - 1);
+            _activeLeases.Remove(lease);
             if (lease.IsExclusive) _exclusiveLeaseActive = false;
             lease.PendingUpgrade = null;
             lease.ActiveUpgrade = null;
@@ -709,6 +731,7 @@ public sealed class MemoryAdmissionController : IMemoryAdmissionController, IDis
     private sealed class MemoryLease(
         MemoryAdmissionController owner,
         long reservedBytes,
+        long maximumReservationBytes,
         bool isExclusive,
         SystemMemorySnapshot admissionSnapshot,
         long processSoftLimitBytes,
@@ -719,6 +742,7 @@ public sealed class MemoryAdmissionController : IMemoryAdmissionController, IDis
         public long BaseReservedBytes { get; } = reservedBytes;
         public long CurrentReservedBytes { get; set; } = reservedBytes;
         public long ReservedBytes => CurrentReservedBytes;
+        public long MaximumReservationBytes { get; } = maximumReservationBytes;
         public bool BaseIsExclusive { get; } = isExclusive;
         public bool UpgradeIsExclusive { get; set; }
         public bool IsExclusive => BaseIsExclusive || UpgradeIsExclusive;
@@ -727,7 +751,6 @@ public sealed class MemoryAdmissionController : IMemoryAdmissionController, IDis
         public long SystemReserveBytes { get; } = systemReserveBytes;
         public Guid? CorrelationId { get; } = correlationId;
         public MemoryLeaseState State { get; set; } = MemoryLeaseState.Held;
-        public bool OwnsNestedUpgradeSlot { get; set; }
         public Waiter? PendingUpgrade { get; set; }
         public NestedMemoryLease? ActiveUpgrade { get; set; }
         public IDisposable Activate() => Owner.Activate(this);

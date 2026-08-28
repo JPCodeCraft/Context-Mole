@@ -1,5 +1,6 @@
 using ContextMole.Core;
 using ContextMole.Indexing;
+using ContextMole.Infrastructure;
 
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -76,6 +77,77 @@ public sealed class IndexingMemoryOrderingTests
         finally
         {
             memory.Allow();
+            await coordinator.StopAsync(CancellationToken.None);
+            await embeddings.DisposeAsync();
+        }
+    }
+
+    [Fact]
+    public async Task UpgradeCapableDocumentsEnterExtractionConcurrentlyWhenMemoryAllows()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var database = await StorageTestDatabase.CreateAsync(cancellationToken);
+        await File.WriteAllTextAsync(Path.Combine(database.Paths.SourceDirectory, "first.msg"),
+            "first message", cancellationToken);
+        await File.WriteAllTextAsync(Path.Combine(database.Paths.SourceDirectory, "second.msg"),
+            "second message", cancellationToken);
+        var (projectId, _) = await database.CreateProjectAsync("Concurrent containers", cancellationToken);
+        var extractor = new ConcurrentExtractor();
+        var embeddings = new StorageUnavailableEmbeddings();
+        var activities = new IndexingActivityTracker();
+        using var memory = new MemoryAdmissionController(new FixedSnapshotProvider(
+            new SystemMemorySnapshot(32L << 30, 32L << 30, 256L << 20)));
+        using var cpu = new GlobalCpuBudget(new FixedCpuUsageSettings(logicalProcessorCount: 5));
+        using var coordinator = new IndexingCoordinator(database.Writer, database.Store, database.Paths,
+            extractor, embeddings, activities, new EmbeddingPolicyRefreshTracker(),
+            cpu, NullLogger<IndexingCoordinator>.Instance, memory);
+
+        await coordinator.StartAsync(cancellationToken);
+        try
+        {
+            await extractor.BothEntered.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+            Assert.Equal(2, activities.GetSnapshot(projectId).ProcessingCount);
+
+            extractor.Release();
+            await WaitUntilAsync(async () =>
+                (await database.Store.ListProjectsAsync(cancellationToken)).Single(item => item.Id == projectId)
+                is { IndexedCount: 2, PendingCount: 0 }, cancellationToken);
+        }
+        finally
+        {
+            extractor.Release();
+            await coordinator.StopAsync(CancellationToken.None);
+            await embeddings.DisposeAsync();
+        }
+    }
+
+    [Fact]
+    public async Task PdfContentDisguisedAsTextCanAcquireOcrReservation()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var database = await StorageTestDatabase.CreateAsync(cancellationToken);
+        await File.WriteAllTextAsync(Path.Combine(database.Paths.SourceDirectory, "disguised.txt"),
+            "%PDF- simulated scanned document", cancellationToken);
+        var (projectId, _) = await database.CreateProjectAsync("Disguised PDF", cancellationToken);
+        var embeddings = new StorageUnavailableEmbeddings();
+        using var memory = new MemoryAdmissionController(new FixedSnapshotProvider(
+            new SystemMemorySnapshot(16L << 30, 16L << 30, 256L << 20)));
+        using var cpu = new GlobalCpuBudget(new FixedCpuUsageSettings(logicalProcessorCount: 5));
+        var extractor = new NestedOcrReservationExtractor(memory, cpu);
+        using var coordinator = new IndexingCoordinator(database.Writer, database.Store, database.Paths,
+            extractor, embeddings, new IndexingActivityTracker(), new EmbeddingPolicyRefreshTracker(),
+            cpu, NullLogger<IndexingCoordinator>.Instance, memory);
+
+        await coordinator.StartAsync(cancellationToken);
+        try
+        {
+            await WaitUntilAsync(async () =>
+                (await database.Store.ListProjectsAsync(cancellationToken)).Single(item => item.Id == projectId)
+                is { IndexedCount: 1, PendingCount: 0, ErrorCount: 0 }, cancellationToken);
+            Assert.True(extractor.NestedReservationAcquired);
+        }
+        finally
+        {
             await coordinator.StopAsync(CancellationToken.None);
             await embeddings.DisposeAsync();
         }
@@ -180,6 +252,77 @@ public sealed class IndexingMemoryOrderingTests
         public Task<ExtractionResult> ExtractAsync(ExtractionRequest request, CancellationToken cancellationToken) =>
             Task.FromException<ExtractionResult>(new ContextMoleException(
                 "intentional_extraction_failure", "Intentional extraction failure for lease testing.", false));
+    }
+
+    private sealed class ConcurrentExtractor : IDocumentExtractor
+    {
+        private readonly TaskCompletionSource _bothEntered =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _release =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _entered;
+
+        public IReadOnlyCollection<string> Extensions { get; } = [".msg"];
+        public Task BothEntered => _bothEntered.Task;
+
+        public async Task<ExtractionResult> ExtractAsync(ExtractionRequest request,
+            CancellationToken cancellationToken)
+        {
+            if (Interlocked.Increment(ref _entered) == 2) _bothEntered.TrySetResult();
+            await _release.Task.WaitAsync(cancellationToken);
+            var text = await File.ReadAllTextAsync(request.SourcePath, cancellationToken);
+            return new ExtractionResult(new ExtractedNode(Path.GetFileName(request.SourcePath), "text/plain",
+                "root", [new ExtractedSection(text, new SourceLocation(LocationKind.Document),
+                    ExtractionMethod.NativeText)], []), []);
+        }
+
+        public void Release() => _release.TrySetResult();
+    }
+
+    private sealed class NestedOcrReservationExtractor(
+        IMemoryAdmissionController memory,
+        IGlobalCpuBudget cpu) : IDocumentExtractor
+    {
+        public IReadOnlyCollection<string> Extensions { get; } = [".txt"];
+        public bool NestedReservationAcquired { get; private set; }
+
+        public async Task<ExtractionResult> ExtractAsync(ExtractionRequest request,
+            CancellationToken cancellationToken)
+        {
+            var signature = new byte[5];
+            await using (var stream = File.OpenRead(request.SourcePath))
+                await stream.ReadExactlyAsync(signature, cancellationToken);
+            Assert.True(signature.AsSpan().SequenceEqual("%PDF-"u8));
+
+            using var fullCapacity = await cpu.AcquireFullCapacityAsync(cancellationToken);
+            using var nested = await memory.AcquireAsync(
+                new MemoryWorkEstimate(MemoryReservationTargets.OcrInferenceBytes, "ocr-inference"),
+                cancellationToken);
+            NestedReservationAcquired = true;
+            return new ExtractionResult(new ExtractedNode(Path.GetFileName(request.SourcePath),
+                "application/pdf", "root", [new ExtractedSection("OCR evidence",
+                    new SourceLocation(LocationKind.Page), ExtractionMethod.Ocr)], []), []);
+        }
+    }
+
+    private sealed class FixedSnapshotProvider(SystemMemorySnapshot snapshot) : ISystemMemorySnapshotProvider
+    {
+        public SystemMemorySnapshot Capture() => snapshot;
+    }
+
+    private sealed class FixedCpuUsageSettings(int logicalProcessorCount) : ICpuUsageSettings
+    {
+        public CpuUsageProfile Profile => CpuUsageProfile.Normal;
+        public int LogicalProcessorCount { get; } = logicalProcessorCount;
+        public int ThreadLimit => CpuUsageSettings.CalculateThreadLimit(Profile, LogicalProcessorCount);
+        public int MaximumThreadLimit =>
+            CpuUsageSettings.CalculateThreadLimit(CpuUsageProfile.Heavy, LogicalProcessorCount);
+        public void SetProfile(CpuUsageProfile profile) => throw new NotSupportedException();
+        public event EventHandler? Changed
+        {
+            add { }
+            remove { }
+        }
     }
 
     private sealed class BlockingMemoryAdmissionController : IMemoryAdmissionController

@@ -26,7 +26,7 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
 {
     private const string ArenaShrinkageConfigKey = "memory.enable_memory_arena_shrinkage";
     private const string CpuArenaShrinkageConfigValue = "cpu:0";
-    public const long OcrMemoryTargetBytes = 2304L * 1024 * 1024;
+    public const long OcrMemoryTargetBytes = MemoryReservationTargets.OcrInferenceBytes;
     internal static readonly TimeSpan DefaultSessionIdleTimeout = TimeSpan.FromMinutes(5);
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -250,12 +250,17 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
         try
         {
             await PrepareAssetsAsync(operationToken).ConfigureAwait(false);
+            // Take full CPU capacity first. An indexing worker lease is suspended while this
+            // waits, so every parser that reaches OCR can yield its worker before the selected
+            // parser asks to enlarge its memory reservation. This preserves one global resource
+            // order and prevents several OCR-capable parsers from holding CPU while waiting on
+            // one another's nested memory.
+            using var cpuCapacity = await _cpuBudget.AcquireFullCapacityAsync(operationToken).ConfigureAwait(false);
             using var memory = await _memoryAdmission.AcquireAsync(
                 new MemoryWorkEstimate(OcrMemoryTargetBytes, "ocr-inference"),
                 operationToken).ConfigureAwait(false);
             using var memoryActivation = memory.Activate();
             await EnsureSessionsAvailableAsync(operationToken).ConfigureAwait(false);
-            using var cpuCapacity = await _cpuBudget.AcquireFullCapacityAsync(operationToken).ConfigureAwait(false);
             await _inferenceGate.WaitAsync(operationToken).ConfigureAwait(false);
             inferenceGateHeld = true;
             ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);

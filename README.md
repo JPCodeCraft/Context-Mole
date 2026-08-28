@@ -32,7 +32,9 @@ Before installing the first Context Mole release, uninstall any pre-rename test 
 
 The CPU and embedding-model choices apply globally across projects. **Light**, **Normal**, and **Heavy** use up to 20%, 40%, and 80% of logical CPU threads. Granite 311M favors quality; Granite 97M uses less time and memory. Switching models rebuilds semantic embeddings in the background while keyword search remains available.
 
-On Windows, start-at-sign-in is enabled on first launch and can be disabled in Settings. Installed builds check GitHub Releases for updates and offer to restart when an update is ready and indexing is idle.
+Multiple documents can be parsed concurrently when the selected CPU profile and available memory allow it. Context Mole preserves one shared OCR memory peak and serializes actual OCR work to protect the operating-system reserve; indexing activity explains when additional files are waiting for processor or memory capacity.
+
+On Windows, start-at-sign-in is enabled on first launch and can be disabled in Settings. Sign-in launches start quietly in the system tray; clicking the tray icon or choosing **Show Context Mole** restores the window. Installed builds check GitHub Releases for updates and offer to restart when an update is ready and indexing is idle.
 
 ## AI Connections
 

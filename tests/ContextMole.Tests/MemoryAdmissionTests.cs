@@ -39,9 +39,53 @@ public sealed class MemoryAdmissionTests
         Assert.InRange(ocr.EstimatedBytes, 512L * Mebibyte, 1536L * Mebibyte);
         Assert.Equal("pdf-or-image-document", ocr.Workload);
         Assert.True(ocr.MayRequestNestedUpgrade);
-        Assert.False(text.MayRequestNestedUpgrade);
+        Assert.True(text.MayRequestNestedUpgrade);
+        Assert.Equal(MemoryReservationTargets.OcrInferenceBytes, text.MaximumReservationBytes);
         Assert.True(text.EstimatedBytes < refresh.EstimatedBytes);
         Assert.Equal("embedding-refresh", refresh.Workload);
+        Assert.False(refresh.MayRequestNestedUpgrade);
+    }
+
+    [Fact]
+    public async Task TextDocumentsShareOcrHeadroomWithoutReservingItPerRoot()
+    {
+        using var controller = new MemoryAdmissionController(new MutableSnapshotProvider(
+            new SystemMemorySnapshot(8L * Gibibyte, 8L * Gibibyte, 256L * Mebibyte)));
+        var estimate = IndexingMemoryEstimator.Estimate(Job("notes.txt", ".txt"), 2 * Mebibyte);
+
+        using var first = await controller.AcquireAsync(estimate, TestContext.Current.CancellationToken);
+        using var second = await controller.AcquireAsync(estimate, TestContext.Current.CancellationToken)
+            .AsTask().WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
+
+        Assert.Equal(estimate.EstimatedBytes, first.ReservedBytes);
+        Assert.Equal(estimate.EstimatedBytes, second.ReservedBytes);
+        Assert.True(second.ReservedBytes < estimate.MaximumReservationBytes);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task MixedWorkPreservesSharedOcrHeadroomInEitherAdmissionOrder(bool ocrCapableFirst)
+    {
+        using var controller = new MemoryAdmissionController(new MutableSnapshotProvider(
+            new SystemMemorySnapshot(8L * Gibibyte, 3L * Gibibyte, 256L * Mebibyte)));
+        var ocrCapable = IndexingMemoryEstimator.Estimate(Job("notes.txt", ".txt"), 0);
+        var refresh = IndexingMemoryEstimator.Estimate(
+            Job("notes.txt", ".txt", IndexJobKind.EmbeddingRefresh), 0);
+        var firstEstimate = ocrCapableFirst ? ocrCapable : refresh;
+        var secondEstimate = ocrCapableFirst ? refresh : ocrCapable;
+
+        using var first = await controller.AcquireAsync(firstEstimate,
+            TestContext.Current.CancellationToken);
+        var secondTask = controller.AcquireAsync(secondEstimate,
+            TestContext.Current.CancellationToken).AsTask();
+        await Task.Yield();
+        Assert.False(secondTask.IsCompleted);
+
+        first.Dispose();
+        using var second = await secondTask.WaitAsync(TimeSpan.FromSeconds(2),
+            TestContext.Current.CancellationToken);
+        Assert.Equal(secondEstimate.EstimatedBytes, second.ReservedBytes);
     }
 
     [Fact]

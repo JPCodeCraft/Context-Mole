@@ -117,9 +117,16 @@ public sealed class StagedMemoryRegressionTests
         var baseBytes = 512L * Mebibyte;
         using var parent = await controller.AcquireAsync(
             UpgradeCapableEstimate(baseBytes, "pdf-base"), TestContext.Current.CancellationToken);
-        var blocker = await controller.AcquireAsync(
-            new MemoryWorkEstimate(128L * Mebibyte, "ordinary-work"),
+        using var blockerParent = await controller.AcquireAsync(
+            UpgradeCapableEstimate(baseBytes, "second-pdf-base"),
             TestContext.Current.CancellationToken);
+        IMemoryLease blocker;
+        using (blockerParent.Activate())
+        {
+            blocker = await controller.AcquireAsync(
+                new MemoryWorkEstimate(OcrTargetBytes, "ocr-inference"),
+                TestContext.Current.CancellationToken);
+        }
         using var activation = parent.Activate();
         using var cancellation = new CancellationTokenSource();
 
@@ -147,31 +154,95 @@ public sealed class StagedMemoryRegressionTests
     {
         using var controller = CreateEightGibibyteController();
         var estimate = UpgradeCapableEstimate(512L * Mebibyte, "pdf-base");
-        var parent = await controller.AcquireAsync(estimate, TestContext.Current.CancellationToken);
-        var nextCandidate = controller.AcquireAsync(estimate, TestContext.Current.CancellationToken).AsTask();
-        await Task.Yield();
-        Assert.False(nextCandidate.IsCompleted);
-
+        using var firstParent = await controller.AcquireAsync(estimate, TestContext.Current.CancellationToken);
+        using var secondParent = await controller.AcquireAsync(estimate, TestContext.Current.CancellationToken);
         var settings = new FixedCpuUsageSettings(logicalProcessorCount: 8);
-        using (var cpu = new GlobalCpuBudget(settings))
-        using (var worker = await cpu.AcquireWorkerAsync(TestContext.Current.CancellationToken))
-        using (parent.Activate())
-        using (worker.Activate())
-        using (var upgrade = await controller.AcquireAsync(
-                   new MemoryWorkEstimate(OcrTargetBytes, "ocr-inference"),
-                   TestContext.Current.CancellationToken).AsTask().WaitAsync(TimeSpan.FromSeconds(2),
-                   TestContext.Current.CancellationToken))
-        using (var fullCapacity = await cpu.AcquireFullCapacityAsync(TestContext.Current.CancellationToken)
-                   .AsTask().WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken))
+        using var cpu = new GlobalCpuBudget(settings);
+        var readyCount = 0;
+        var bothWorkersReady = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        async Task RunOcrAsync(IMemoryLease parent)
         {
-            Assert.True(upgrade.IsExclusive);
+            using var worker = await cpu.AcquireWorkerAsync(TestContext.Current.CancellationToken);
+            using var memoryActivation = parent.Activate();
+            using var workerActivation = worker.Activate();
+            if (Interlocked.Increment(ref readyCount) == 2) bothWorkersReady.TrySetResult();
+            await bothWorkersReady.Task.WaitAsync(TestContext.Current.CancellationToken);
+
+            using var fullCapacity = await cpu.AcquireFullCapacityAsync(TestContext.Current.CancellationToken);
+            using var upgrade = await controller.AcquireAsync(
+                new MemoryWorkEstimate(OcrTargetBytes, "ocr-inference"),
+                TestContext.Current.CancellationToken);
             Assert.Equal(settings.ThreadLimit, fullCapacity.ThreadCount);
         }
 
-        Assert.False(nextCandidate.IsCompleted);
-        parent.Dispose();
-        using var admittedCandidate = await nextCandidate.WaitAsync(TimeSpan.FromSeconds(2),
+        await Task.WhenAll(
+                Task.Run(() => RunOcrAsync(firstParent), TestContext.Current.CancellationToken),
+                Task.Run(() => RunOcrAsync(secondParent), TestContext.Current.CancellationToken))
+            .WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
+    public async Task MultipleUpgradeCapableParsersShareOneReservedUpgradeHeadroom()
+    {
+        using var controller = new MemoryAdmissionController(new FixedSnapshotProvider(
+            new SystemMemorySnapshot(16L * Gibibyte, 16L * Gibibyte, 1280L * Mebibyte)));
+        var estimate = UpgradeCapableEstimate(1L * Gibibyte, "container-base");
+
+        using var first = await controller.AcquireAsync(estimate, TestContext.Current.CancellationToken);
+        using var second = await controller.AcquireAsync(estimate, TestContext.Current.CancellationToken);
+        var thirdTask = controller.AcquireAsync(estimate, TestContext.Current.CancellationToken).AsTask();
+        await Task.Yield();
+        Assert.False(thirdTask.IsCompleted);
+
+        IMemoryLease firstUpgrade;
+        using (first.Activate())
+        {
+            firstUpgrade = await controller.AcquireAsync(
+                new MemoryWorkEstimate(OcrTargetBytes, "ocr-inference"),
+                TestContext.Current.CancellationToken);
+        }
+
+        Task<IMemoryLease> secondUpgradeTask;
+        using (second.Activate())
+        {
+            secondUpgradeTask = controller.AcquireAsync(
+                new MemoryWorkEstimate(OcrTargetBytes, "ocr-inference"),
+                TestContext.Current.CancellationToken).AsTask();
+        }
+        await Task.Yield();
+        Assert.False(secondUpgradeTask.IsCompleted);
+
+        firstUpgrade.Dispose();
+        using var secondUpgrade = await secondUpgradeTask.WaitAsync(TimeSpan.FromSeconds(2),
             TestContext.Current.CancellationToken);
+        Assert.Equal(OcrTargetBytes - 1L * Gibibyte, secondUpgrade.ReservedBytes);
+
+        secondUpgrade.Dispose();
+        first.Dispose();
+        using var third = await thirdTask.WaitAsync(TimeSpan.FromSeconds(2),
+            TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
+    public async Task NestedHardFallbackIncludesEveryActiveRootReservation()
+    {
+        using var controller = new MemoryAdmissionController(new FixedSnapshotProvider(
+            new SystemMemorySnapshot(16L * Gibibyte, 5L * Gibibyte, 3L * Gibibyte)));
+        var estimate = UpgradeCapableEstimate(512L * Mebibyte, "pdf-base");
+        using var first = await controller.AcquireAsync(estimate, TestContext.Current.CancellationToken);
+        using var second = await controller.AcquireAsync(estimate, TestContext.Current.CancellationToken);
+
+        using var activation = first.Activate();
+        using var upgrade = await controller.AcquireAsync(
+            new MemoryWorkEstimate(OcrTargetBytes, "ocr-inference"),
+            TestContext.Current.CancellationToken).AsTask().WaitAsync(TimeSpan.FromSeconds(2),
+            TestContext.Current.CancellationToken);
+
+        Assert.True(upgrade.IsExclusive);
+        Assert.True(upgrade.AdmissionSnapshot.AvailablePhysicalBytes -
+                    (second.ReservedBytes + OcrTargetBytes) >=
+                    MemoryAdmissionController.CalculateHardSafetyReserve(16L * Gibibyte));
     }
 
     [Fact]
@@ -248,7 +319,7 @@ public sealed class StagedMemoryRegressionTests
             Assert.Equal(OcrTargetBytes, estimate.EstimatedBytes);
             Assert.Equal("ocr-inference", estimate.Workload);
         });
-        Assert.True(cpuBudget.SawActiveMemoryReservation);
+        Assert.True(cpuBudget.FullCapacityWasAcquiredBeforeMemory);
     }
 
     private static MemoryAdmissionController CreateEightGibibyteController() => new(
@@ -256,7 +327,10 @@ public sealed class StagedMemoryRegressionTests
             8L * Gibibyte, 8L * Gibibyte, 256L * Mebibyte)));
 
     private static MemoryWorkEstimate UpgradeCapableEstimate(long bytes, string workload) =>
-        new(bytes, workload) { MayRequestNestedUpgrade = true };
+        new(bytes, workload)
+        {
+            MaximumReservationBytes = Math.Max(bytes, OcrTargetBytes)
+        };
 
     private static IndexJobLease Job(string sourcePath, string extension) => new(
         Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), sourcePath, extension, 1,
@@ -302,7 +376,7 @@ public sealed class StagedMemoryRegressionTests
         : IGlobalCpuBudget
     {
         public int MaximumWorkerCount => settings.MaximumThreadLimit;
-        public bool SawActiveMemoryReservation { get; private set; }
+        public bool FullCapacityWasAcquiredBeforeMemory { get; private set; }
 
         public ValueTask<ICpuWorkerLease> AcquireWorkerAsync(CancellationToken cancellationToken) =>
             throw new NotSupportedException();
@@ -310,7 +384,7 @@ public sealed class StagedMemoryRegressionTests
         public ValueTask<ICpuFullCapacityLease> AcquireFullCapacityAsync(CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            SawActiveMemoryReservation = memoryIsActive();
+            FullCapacityWasAcquiredBeforeMemory = !memoryIsActive();
             return ValueTask.FromResult<ICpuFullCapacityLease>(new FullCapacityLease(settings.ThreadLimit));
         }
 

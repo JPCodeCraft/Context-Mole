@@ -7,9 +7,15 @@ public readonly record struct SystemMemorySnapshot(
     long AvailablePhysicalBytes,
     long ProcessPrivateBytes);
 
+public static class MemoryReservationTargets
+{
+    public const long OcrInferenceBytes = 2304L * 1024 * 1024;
+}
+
 public sealed record MemoryWorkEstimate(long EstimatedBytes, string Workload)
 {
-    public bool MayRequestNestedUpgrade { get; init; }
+    public long MaximumReservationBytes { get; init; } = EstimatedBytes;
+    public bool MayRequestNestedUpgrade => MaximumReservationBytes > EstimatedBytes;
     public Guid? CorrelationId { get; init; }
 }
 
