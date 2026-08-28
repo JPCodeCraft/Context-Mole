@@ -2,6 +2,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Layout;
 using Avalonia.Media;
+using Avalonia.Platform;
 
 namespace ContextMole.App.UI.Views;
 
@@ -27,7 +28,8 @@ internal sealed class UninstallWindow : Window
         CanResize = false;
         SizeToContent = SizeToContent.Height;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
-        Icon = new WindowIcon("avares://ContextMole.App.UI/Assets/context-mole.ico");
+        Icon = new WindowIcon(AssetLoader.Open(
+            new Uri("avares://ContextMole.App.UI/Assets/context-mole.ico")));
 
         _keepData = new RadioButton
         {
