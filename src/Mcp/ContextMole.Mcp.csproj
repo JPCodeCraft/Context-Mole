@@ -1,19 +1,18 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
+    <ProjectReference Include="..\Broker.Protocol\ContextMole.Broker.Protocol.csproj" />
     <ProjectReference Include="..\Core\ContextMole.Core.csproj" />
-    <ProjectReference Include="..\Documents\ContextMole.Documents.csproj" />
-    <ProjectReference Include="..\Search\ContextMole.Search.csproj" />
-    <ProjectReference Include="..\Storage\ContextMole.Storage.csproj" />
-    <ProjectReference Include="..\Infrastructure\ContextMole.Infrastructure.csproj" />
+    <!-- Build ordering only: keeps local App.UI development launches broker-capable
+         without copying the broker or any of its runtime dependency graph into this adapter. -->
+    <ProjectReference Include="..\Broker\ContextMole.Broker.csproj"
+                      ReferenceOutputAssembly="false"
+                      Private="false" />
   </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.Hosting" />
     <PackageReference Include="ModelContextProtocol" />
-    <PackageReference Include="Serilog" />
-    <PackageReference Include="Serilog.Extensions.Hosting" />
-    <PackageReference Include="Serilog.Sinks.Console" />
   </ItemGroup>
 
   <ItemGroup>
@@ -40,5 +39,14 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
   </PropertyGroup>
+
+  <Target Name="PublishBundledBroker" AfterTargets="Publish"
+          Condition="'$(RuntimeIdentifier)' != '' and '$(ContextMoleSkipBrokerBundle)' != 'true'">
+    <PropertyGroup>
+      <_BrokerBundleDirectory>$(PublishDir)broker\</_BrokerBundleDirectory>
+    </PropertyGroup>
+    <MSBuild Projects="..\Broker\ContextMole.Broker.csproj" Targets="Publish" BuildInParallel="false"
+             Properties="Configuration=$(Configuration);TargetFramework=$(TargetFramework);RuntimeIdentifier=$(RuntimeIdentifier);SelfContained=$(SelfContained);Version=$(Version);SourceRevisionId=$(SourceRevisionId);ContinuousIntegrationBuild=$(ContinuousIntegrationBuild);PublishSingleFile=false;PublishTrimmed=false;PublishAot=false;PublishDir=$(_BrokerBundleDirectory);ContextMoleSkipBrokerBundle=true" />
+  </Target>
 
 </Project>

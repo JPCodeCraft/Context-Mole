@@ -8,7 +8,10 @@ public static class IndexingServices
     {
         services.AddSingleton<IndexingActivityTracker>();
         services.AddSingleton<EmbeddingPolicyRefreshTracker>();
-        services.AddHostedService<IndexingCoordinator>();
+        services.AddSingleton<IndexingCoordinator>();
+        services.AddSingleton<IProjectIndexingControl>(provider =>
+            provider.GetRequiredService<IndexingCoordinator>());
+        services.AddHostedService(provider => provider.GetRequiredService<IndexingCoordinator>());
         return services;
     }
 }

@@ -1,6 +1,7 @@
 using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Unicode;
 using System.Text.RegularExpressions;
 
 using AngleSharp.Dom;
@@ -165,19 +166,6 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
                 continue;
             }
 
-            try
-            {
-                await _ocrEngine.EnsureAvailableAsync(cancellationToken);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                if (!string.IsNullOrWhiteSpace(text))
-                    sections.Add(new ExtractedSection(text, new SourceLocation(LocationKind.Page, Page: page.Number), ExtractionMethod.NativeText));
-                context.Errors.Add(new ExtractionError(ErrorCode(ex),
-                    $"PDF page {page.Number} needs OCR. {SafeMessage(ex)}", IsTemporary(ex), name));
-                continue;
-            }
-
             var renderDpi = SafePdfRenderDpi((double)page.Width, (double)page.Height);
             if (renderDpi is null)
             {
@@ -207,8 +195,21 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
                 PdfRenderGate.Release();
             }
 
-            var ocr = await _ocrEngine.RecognizeAsync(
-                new OcrRequest(renderedPage, ".png", TimeSpan.FromSeconds(120)), cancellationToken);
+            OcrResult ocr;
+            try
+            {
+                ocr = await _ocrEngine.RecognizeAsync(
+                    new OcrRequest(renderedPage, ".png", TimeSpan.FromSeconds(120)), cancellationToken);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                if (!string.IsNullOrWhiteSpace(text))
+                    sections.Add(new ExtractedSection(text,
+                        new SourceLocation(LocationKind.Page, Page: page.Number), ExtractionMethod.NativeText));
+                context.Errors.Add(new ExtractionError(ErrorCode(ex),
+                    $"PDF page {page.Number} needs OCR. {SafeMessage(ex)}", IsTemporary(ex), name));
+                continue;
+            }
             if (!string.IsNullOrWhiteSpace(ocr.Text))
                 sections.Add(new ExtractedSection(ocr.Text,
                     new SourceLocation(LocationKind.Page, Page: page.Number), ExtractionMethod.Ocr, ocr.Confidence));
@@ -258,7 +259,6 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
     {
         if (extension is ".tif" or ".tiff")
         {
-            await _ocrEngine.EnsureAvailableAsync(cancellationToken);
             var tiffSections = new List<ExtractedSection>();
             var frame = 0;
             using var input = new MemoryStream(bytes, writable: false);
@@ -292,7 +292,6 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
         }
 
         ValidateRasterImage(bytes);
-        await _ocrEngine.EnsureAvailableAsync(cancellationToken);
         var ocr = await _ocrEngine.RecognizeAsync(new OcrRequest(bytes, extension, TimeSpan.FromSeconds(120)), cancellationToken);
         var sections = string.IsNullOrWhiteSpace(ocr.Text)
             ? Array.Empty<ExtractedSection>()
@@ -341,8 +340,9 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
         if (bytes.AsSpan().StartsWith(Encoding.UTF32.Preamble))
             return Encoding.UTF32.GetString(bytes, Encoding.UTF32.Preamble.Length, bytes.Length - Encoding.UTF32.Preamble.Length);
 
-        try { return new UTF8Encoding(false, true).GetString(bytes); }
-        catch (DecoderFallbackException) { return Windows1252.GetString(bytes); }
+        // Invalid UTF-8 is a normal encoding-detection outcome, not an exceptional parsing failure.
+        // Validate first so indexing legacy Windows-1252 files does not flood first-chance exception telemetry.
+        return Utf8.IsValid(bytes) ? Encoding.UTF8.GetString(bytes) : Windows1252.GetString(bytes);
     }
 
     private static async Task<byte[]> ReadBoundedAsync(Stream source, long maxBytes, CancellationToken cancellationToken)

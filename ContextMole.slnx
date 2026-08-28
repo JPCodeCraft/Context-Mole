@@ -1,5 +1,11 @@
 <Solution>
   <Folder Name="/src/" />
+  <Folder Name="/src/Broker.Protocol/">
+    <Project Path="src/Broker.Protocol/ContextMole.Broker.Protocol.csproj" />
+  </Folder>
+  <Folder Name="/src/Broker/">
+    <Project Path="src/Broker/ContextMole.Broker.csproj" />
+  </Folder>
   <Folder Name="/src/App.UI/">
     <Project Path="src/App.UI/ContextMole.App.UI.csproj" />
   </Folder>

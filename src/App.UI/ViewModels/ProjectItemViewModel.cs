@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 
 using ContextMole.Core;
+using ContextMole.Indexing;
 
 namespace ContextMole.App.UI.ViewModels;
 
@@ -17,6 +18,8 @@ public sealed class ProjectItemViewModel : ViewModelBase
     private int _errorCount;
     private DateTimeOffset? _lastCompletedUtc;
     private string? _currentFile;
+    private ProjectWorkSummary _work = new(0, 0, 0, 0, null);
+    private IndexingTimingSnapshot? _runtimeWork;
 
     public ProjectItemViewModel(ProjectSummary project)
     {
@@ -38,16 +41,81 @@ public sealed class ProjectItemViewModel : ViewModelBase
     public int ErrorCount { get => _errorCount; private set => SetProperty(ref _errorCount, value); }
     public DateTimeOffset? LastCompletedUtc { get => _lastCompletedUtc; private set => SetProperty(ref _lastCompletedUtc, value); }
     public string? CurrentFile { get => _currentFile; private set => SetProperty(ref _currentFile, value); }
+    public ProjectWorkSummary Work { get => _work; private set => SetProperty(ref _work, value); }
+    // The database owns the durable total while the tracker tells us which claimed jobs are
+    // genuinely executing. Reconciling against both keeps Processing + Queued equal to Pending
+    // even if their independently refreshed snapshots cross during a lease/completion transition.
+    public int ProcessingCount => _runtimeWork is null
+        ? Work.ProcessingCount
+        : Math.Min(Work.ProcessingCount, _runtimeWork.ProcessingCount);
+    public int QueuedCount => Work.QueuedCount + ClaimedButNotProcessingCount;
+    public int RetryScheduledCount => Work.RetryScheduledCount;
+    public int RunningRetryCount => _runtimeWork is null
+        ? Work.RunningRetryCount
+        : Math.Min(ProcessingCount, _runtimeWork.RetryingCount);
+    public DateTimeOffset? NextRetryUtc => Work.NextRetryUtc;
+    public int WaitingForMemoryCount => Math.Min(ClaimedButNotProcessingCount,
+        _runtimeWork?.WaitingForMemoryCount ?? 0);
+    public int WaitingForCpuCount => Math.Min(
+        Math.Max(0, ClaimedButNotProcessingCount - WaitingForMemoryCount),
+        _runtimeWork?.WaitingForCpuCount ?? 0);
+    public int AdmissionQueuedCount => Math.Min(
+        Math.Max(0, ClaimedButNotProcessingCount - WaitingForMemoryCount - WaitingForCpuCount),
+        _runtimeWork?.QueuedCount ?? 0);
+    private int ClaimedButNotProcessingCount => _runtimeWork is null
+        ? 0
+        : Math.Max(0, Work.ProcessingCount - ProcessingCount);
+    private ProjectWorkPhase EffectiveWorkPhase => RunningRetryCount > 0 ? ProjectWorkPhase.Retrying
+        : ProcessingCount > 0 ? ProjectWorkPhase.Indexing
+        : QueuedCount > 0 && QueuedCount == RetryScheduledCount ? ProjectWorkPhase.RetryScheduled
+        : QueuedCount > 0 ? ProjectWorkPhase.Queued
+        : ProjectWorkPhase.Ready;
+    private string? ProcessingSourcePath => _runtimeWork?.ActiveItems
+        .FirstOrDefault(item => item.IsProcessing)?.SourcePath ?? CurrentFile;
+    private string? RetryingSourcePath => _runtimeWork?.ActiveItems
+        .FirstOrDefault(item => item.IsRetrying)?.SourcePath;
 
     public string Phase => State == ProjectState.Paused ? "Paused"
-        : CurrentFile is not null ? "Indexing"
-        : PendingCount > 0 && ErrorCount > 0 ? "Retrying"
-        : PendingCount > 0 ? "Queued"
-        : ErrorCount > 0 ? "Needs attention" : "Ready";
+        : RunningRetryCount > 0 ? "Retrying"
+        : ProcessingCount > 0 ? "Indexing"
+        : WaitingForMemoryCount > 0 ? "Waiting for memory"
+        : WaitingForCpuCount > 0 ? "Waiting for CPU"
+        : EffectiveWorkPhase == ProjectWorkPhase.RetryScheduled ? "Retry scheduled"
+        : EffectiveWorkPhase == ProjectWorkPhase.Queued ? "Queued"
+        : ErrorCount > 0 ? "Needs attention"
+        : "Ready";
+
+    public string PhaseDetails => State == ProjectState.Paused
+        ? "Indexing is paused."
+        : Phase switch
+    {
+        "Retrying" => RetryingSourcePath is null
+            ? "A failed file is being retried now."
+            : $"Retrying {Path.GetFileName(RetryingSourcePath)} now.",
+        "Indexing" => ProcessingSourcePath is null
+            ? "Indexing is active."
+            : $"Indexing {Path.GetFileName(ProcessingSourcePath)} now.",
+        "Waiting for memory" => WaitingForMemoryCount == 1
+            ? "1 file is waiting for safe memory admission."
+            : $"{WaitingForMemoryCount} files are waiting for safe memory admission.",
+        "Waiting for CPU" => WaitingForCpuCount == 1
+            ? "1 file has memory reserved and is waiting for processor capacity."
+            : $"{WaitingForCpuCount} files have memory reserved and are waiting for processor capacity.",
+        "Retry scheduled" when NextRetryUtc is not null =>
+            $"Next retry is scheduled for {NextRetryUtc.Value.ToLocalTime():g}.",
+        "Retry scheduled" => "A retry is scheduled for later.",
+        "Queued" => QueuedCount == 1 ? "1 file is waiting to be processed."
+            : $"{QueuedCount} files are waiting to be processed.",
+        _ when ErrorCount > 0 => "Some files need attention before they can be searched.",
+        _ => "All available files are up to date."
+    };
 
     public bool IsPaused => State == ProjectState.Paused;
     public bool IsReady => Phase == "Ready";
     public bool IsRetrying => Phase == "Retrying";
+    public bool IsRetryScheduled => Phase == "Retry scheduled";
+    public bool IsRetryStatus => IsRetrying || IsRetryScheduled;
+    public bool IsWaitingForResources => Phase is "Waiting for memory" or "Waiting for CPU";
     public bool NeedsAttention => Phase == "Needs attention";
     public bool HasErrors => ErrorCount > 0;
     public bool CanReindex => State == ProjectState.Active;
@@ -63,6 +131,24 @@ public sealed class ProjectItemViewModel : ViewModelBase
             : "Queue only the files that currently have errors.";
     public bool HasFileTypeCounts => FileTypeCounts.Count > 0;
     public bool HasNoFileTypeCounts => !HasFileTypeCounts;
+    public bool HasQueueBreakdown => QueuedBreakdownDisplay.Length > 0;
+    public string QueuedBreakdownDisplay
+    {
+        get
+        {
+            var parts = new List<string>(4);
+            if (RetryScheduledCount > 0)
+                parts.Add(RetryScheduledCount == 1 ? "1 scheduled retry" : $"{RetryScheduledCount} scheduled retries");
+            if (WaitingForMemoryCount > 0)
+                parts.Add($"{WaitingForMemoryCount} memory wait");
+            if (WaitingForCpuCount > 0)
+                parts.Add($"{WaitingForCpuCount} CPU wait");
+            if (AdmissionQueuedCount > 0)
+                parts.Add(AdmissionQueuedCount == 1 ? "1 awaiting admission" :
+                    $"{AdmissionQueuedCount} awaiting admission");
+            return string.Join(" · ", parts);
+        }
+    }
     public bool HasRecentErrors => RecentErrors.Count > 0;
     public string PauseActionLabel => State == ProjectState.Paused ? "Resume indexing" : "Pause indexing";
     public string FolderCountDisplay => Folders.Count == 1 ? "1 folder" : $"{Folders.Count} folders";
@@ -88,6 +174,9 @@ public sealed class ProjectItemViewModel : ViewModelBase
         var previousIsPaused = IsPaused;
         var previousIsReady = IsReady;
         var previousIsRetrying = IsRetrying;
+        var previousIsRetryScheduled = IsRetryScheduled;
+        var previousIsRetryStatus = IsRetryStatus;
+        var previousIsWaitingForResources = IsWaitingForResources;
         var previousNeedsAttention = NeedsAttention;
         var previousHasErrors = HasErrors;
         var previousCanReindex = CanReindex;
@@ -101,6 +190,14 @@ public sealed class ProjectItemViewModel : ViewModelBase
         var previousRecentErrorsSummary = RecentErrorsSummary;
         var previousProjectDetailsDisplay = ProjectDetailsDisplay;
         var previousLastCompletedDisplay = LastCompletedDisplay;
+        var previousPhaseDetails = PhaseDetails;
+        var previousProcessingCount = ProcessingCount;
+        var previousQueuedCount = QueuedCount;
+        var previousRetryScheduledCount = RetryScheduledCount;
+        var previousRunningRetryCount = RunningRetryCount;
+        var previousNextRetryUtc = NextRetryUtc;
+        var previousHasQueueBreakdown = HasQueueBreakdown;
+        var previousQueuedBreakdownDisplay = QueuedBreakdownDisplay;
 
         Name = project.Name;
         State = project.State;
@@ -112,11 +209,17 @@ public sealed class ProjectItemViewModel : ViewModelBase
         ErrorCount = project.ErrorCount;
         LastCompletedUtc = project.LastCompletedUtc;
         CurrentFile = project.CurrentFile;
+        Work = project.Work;
 
         if (!string.Equals(previousPhase, Phase, StringComparison.Ordinal)) OnPropertyChanged(nameof(Phase));
+        if (!string.Equals(previousPhaseDetails, PhaseDetails, StringComparison.Ordinal)) OnPropertyChanged(nameof(PhaseDetails));
         if (previousIsPaused != IsPaused) OnPropertyChanged(nameof(IsPaused));
         if (previousIsReady != IsReady) OnPropertyChanged(nameof(IsReady));
         if (previousIsRetrying != IsRetrying) OnPropertyChanged(nameof(IsRetrying));
+        if (previousIsRetryScheduled != IsRetryScheduled) OnPropertyChanged(nameof(IsRetryScheduled));
+        if (previousIsRetryStatus != IsRetryStatus) OnPropertyChanged(nameof(IsRetryStatus));
+        if (previousIsWaitingForResources != IsWaitingForResources)
+            OnPropertyChanged(nameof(IsWaitingForResources));
         if (previousNeedsAttention != NeedsAttention) OnPropertyChanged(nameof(NeedsAttention));
         if (previousHasErrors != HasErrors) OnPropertyChanged(nameof(HasErrors));
         if (previousCanReindex != CanReindex) OnPropertyChanged(nameof(CanReindex));
@@ -131,6 +234,61 @@ public sealed class ProjectItemViewModel : ViewModelBase
         if (!string.Equals(previousRecentErrorsSummary, RecentErrorsSummary, StringComparison.Ordinal)) OnPropertyChanged(nameof(RecentErrorsSummary));
         if (!string.Equals(previousProjectDetailsDisplay, ProjectDetailsDisplay, StringComparison.Ordinal)) OnPropertyChanged(nameof(ProjectDetailsDisplay));
         if (!string.Equals(previousLastCompletedDisplay, LastCompletedDisplay, StringComparison.Ordinal)) OnPropertyChanged(nameof(LastCompletedDisplay));
+        if (previousProcessingCount != ProcessingCount) OnPropertyChanged(nameof(ProcessingCount));
+        if (previousQueuedCount != QueuedCount) OnPropertyChanged(nameof(QueuedCount));
+        if (previousRetryScheduledCount != RetryScheduledCount) OnPropertyChanged(nameof(RetryScheduledCount));
+        if (previousRunningRetryCount != RunningRetryCount) OnPropertyChanged(nameof(RunningRetryCount));
+        if (previousNextRetryUtc != NextRetryUtc) OnPropertyChanged(nameof(NextRetryUtc));
+        if (previousHasQueueBreakdown != HasQueueBreakdown) OnPropertyChanged(nameof(HasQueueBreakdown));
+        if (!string.Equals(previousQueuedBreakdownDisplay, QueuedBreakdownDisplay, StringComparison.Ordinal))
+            OnPropertyChanged(nameof(QueuedBreakdownDisplay));
+    }
+
+    public void UpdateRuntime(IndexingTimingSnapshot runtime)
+    {
+        ArgumentNullException.ThrowIfNull(runtime);
+        if (runtime.ActiveItems.Any(item => item.ProjectId != Id))
+            throw new ArgumentException("A runtime summary can only contain this project's work.", nameof(runtime));
+
+        var previousPhase = Phase;
+        var previousPhaseDetails = PhaseDetails;
+        var previousIsReady = IsReady;
+        var previousIsRetrying = IsRetrying;
+        var previousIsRetryScheduled = IsRetryScheduled;
+        var previousIsRetryStatus = IsRetryStatus;
+        var previousIsWaitingForResources = IsWaitingForResources;
+        var previousNeedsAttention = NeedsAttention;
+        var previousProcessingCount = ProcessingCount;
+        var previousQueuedCount = QueuedCount;
+        var previousRunningRetryCount = RunningRetryCount;
+        var previousWaitingForMemoryCount = WaitingForMemoryCount;
+        var previousWaitingForCpuCount = WaitingForCpuCount;
+        var previousAdmissionQueuedCount = AdmissionQueuedCount;
+        var previousHasQueueBreakdown = HasQueueBreakdown;
+        var previousQueuedBreakdownDisplay = QueuedBreakdownDisplay;
+
+        _runtimeWork = runtime;
+
+        if (!string.Equals(previousPhase, Phase, StringComparison.Ordinal)) OnPropertyChanged(nameof(Phase));
+        if (!string.Equals(previousPhaseDetails, PhaseDetails, StringComparison.Ordinal))
+            OnPropertyChanged(nameof(PhaseDetails));
+        if (previousIsReady != IsReady) OnPropertyChanged(nameof(IsReady));
+        if (previousIsRetrying != IsRetrying) OnPropertyChanged(nameof(IsRetrying));
+        if (previousIsRetryScheduled != IsRetryScheduled) OnPropertyChanged(nameof(IsRetryScheduled));
+        if (previousIsRetryStatus != IsRetryStatus) OnPropertyChanged(nameof(IsRetryStatus));
+        if (previousIsWaitingForResources != IsWaitingForResources)
+            OnPropertyChanged(nameof(IsWaitingForResources));
+        if (previousNeedsAttention != NeedsAttention) OnPropertyChanged(nameof(NeedsAttention));
+        if (previousProcessingCount != ProcessingCount) OnPropertyChanged(nameof(ProcessingCount));
+        if (previousQueuedCount != QueuedCount) OnPropertyChanged(nameof(QueuedCount));
+        if (previousRunningRetryCount != RunningRetryCount) OnPropertyChanged(nameof(RunningRetryCount));
+        if (previousWaitingForMemoryCount != WaitingForMemoryCount)
+            OnPropertyChanged(nameof(WaitingForMemoryCount));
+        if (previousWaitingForCpuCount != WaitingForCpuCount) OnPropertyChanged(nameof(WaitingForCpuCount));
+        if (previousAdmissionQueuedCount != AdmissionQueuedCount) OnPropertyChanged(nameof(AdmissionQueuedCount));
+        if (previousHasQueueBreakdown != HasQueueBreakdown) OnPropertyChanged(nameof(HasQueueBreakdown));
+        if (!string.Equals(previousQueuedBreakdownDisplay, QueuedBreakdownDisplay, StringComparison.Ordinal))
+            OnPropertyChanged(nameof(QueuedBreakdownDisplay));
     }
 
     public void UpdateErrors(IReadOnlyList<ProjectErrorInfo> errors)
@@ -170,7 +328,7 @@ public sealed class ProjectItemViewModel : ViewModelBase
     }
 
     public ProjectSummary ToSummary() => new(Id, Name, State, Folders, SearchGeneration, DocumentCount,
-        PendingCount, IndexedCount, ErrorCount, LastCompletedUtc, CurrentFile);
+        PendingCount, IndexedCount, ErrorCount, LastCompletedUtc, CurrentFile) { Work = Work };
 
     private int IndexOfError(long id, int startIndex)
     {

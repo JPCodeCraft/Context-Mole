@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\Broker.Protocol\ContextMole.Broker.Protocol.csproj" />
+    <ProjectReference Include="..\Core\ContextMole.Core.csproj" />
+    <ProjectReference Include="..\Documents\ContextMole.Documents.csproj" />
+    <ProjectReference Include="..\Search\ContextMole.Search.csproj" />
+    <ProjectReference Include="..\Storage\ContextMole.Storage.csproj" />
+    <ProjectReference Include="..\Infrastructure\ContextMole.Infrastructure.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Hosting" />
+    <PackageReference Include="Serilog" />
+    <PackageReference Include="Serilog.Extensions.Hosting" />
+    <PackageReference Include="Serilog.Sinks.File" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>ContextMole.Broker</AssemblyName>
+    <RootNamespace>ContextMole.Broker</RootNamespace>
+    <AssemblyTitle>Context Mole Shared Broker</AssemblyTitle>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+</Project>

@@ -30,12 +30,13 @@
                     <TextBlock Text="{Binding Name}" Classes="detailTitle"
                                TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding Name}" />
                     <Border Grid.Column="1" Classes="phaseBadge" Classes.paused="{Binding IsPaused}"
-                            Classes.ready="{Binding IsReady}" Classes.retrying="{Binding IsRetrying}"
+                            Classes.ready="{Binding IsReady}" Classes.retrying="{Binding IsRetryStatus}"
                             Classes.attention="{Binding NeedsAttention}"
-                            CornerRadius="10" Padding="9,3" VerticalAlignment="Center">
+                            CornerRadius="10" Padding="9,3" VerticalAlignment="Center"
+                            ToolTip.Tip="{Binding PhaseDetails}">
                       <TextBlock Text="{Binding Phase}" Classes="phaseText"
                                  Classes.paused="{Binding IsPaused}" Classes.ready="{Binding IsReady}"
-                                 Classes.retrying="{Binding IsRetrying}" Classes.attention="{Binding NeedsAttention}"
+                                 Classes.retrying="{Binding IsRetryStatus}" Classes.attention="{Binding NeedsAttention}"
                                  FontSize="11" FontWeight="SemiBold" />
                     </Border>
                   </Grid>
@@ -51,7 +52,7 @@
                 </WrapPanel>
               </Grid>
 
-              <UniformGrid Columns="4">
+              <UniformGrid Columns="5">
                 <Border Classes="metricCard" Margin="0,0,9,0">
                   <StackPanel Spacing="5">
                     <TextBlock Text="TOTAL FILES" Classes="eyebrow" />
@@ -66,8 +67,16 @@
                 </Border>
                 <Border Classes="metricCard" Margin="0,0,9,0">
                   <StackPanel Spacing="5">
-                    <TextBlock Text="IN PROGRESS" Classes="eyebrow" />
-                    <TextBlock Text="{Binding PendingCount}" Classes="metricValue" />
+                    <TextBlock Text="PROCESSING" Classes="eyebrow" />
+                    <TextBlock Text="{Binding ProcessingCount}" Classes="metricValue" />
+                  </StackPanel>
+                </Border>
+                <Border Classes="metricCard" Margin="0,0,9,0">
+                  <StackPanel Spacing="5">
+                    <TextBlock Text="QUEUED" Classes="eyebrow" />
+                    <TextBlock Text="{Binding QueuedCount}" Classes="metricValue" />
+                    <TextBlock IsVisible="{Binding HasQueueBreakdown}"
+                               Text="{Binding QueuedBreakdownDisplay}" Classes="quiet" FontSize="10" />
                   </StackPanel>
                 </Border>
                 <Border Classes="metricCard" Classes.hasErrors="{Binding HasErrors}">
@@ -86,7 +95,7 @@
                                 IsChecked="{Binding $parent[UserControl].((vm:MainViewModel)DataContext).IsActiveIndexingExpanded, Mode=TwoWay}">
                     <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="12">
                       <StackPanel Spacing="3">
-                        <TextBlock Text="Active indexing" Classes="sectionTitle" />
+                        <TextBlock Text="Indexing activity" Classes="sectionTitle" />
                         <TextBlock Text="{Binding $parent[UserControl].((vm:MainViewModel)DataContext).IndexingTimingSummary}"
                                    Classes="quiet" FontSize="12" />
                       </StackPanel>
@@ -124,6 +133,7 @@
                                        FontWeight="SemiBold" Margin="0,9,0,5" />
                             <ProgressBar Grid.Row="3" Grid.ColumnSpan="2" Minimum="0" Maximum="100"
                                          Value="{Binding PipelinePosition}" Height="5"
+                                         IsIndeterminate="{Binding IsProgressIndeterminate}"
                                          AutomationProperties.Name="File indexing progress" />
                           </Grid>
                         </Border>
@@ -236,7 +246,7 @@
                                         CornerRadius="8" Padding="8,2">
                                   <TextBlock Text="Manual review" Classes="muted" FontSize="10" FontWeight="SemiBold" />
                                 </Border>
-                                <TextBlock IsVisible="{Binding HasRetried}" Text="{Binding AttemptDisplay}" Classes="quiet" FontSize="11"
+                                <TextBlock IsVisible="{Binding HasFailedAttempts}" Text="{Binding AttemptDisplay}" Classes="quiet" FontSize="11"
                                            VerticalAlignment="Center" />
                               </StackPanel>
                             </StackPanel>

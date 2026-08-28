@@ -29,10 +29,12 @@ internal partial class MainViewModel : ViewModelBase
     private readonly GraniteModelInstaller _modelInstaller;
     private readonly AiConnectionsService _aiConnections;
     private readonly IndexingActivityTracker _indexingActivities;
+    private readonly IProjectIndexingControl _projectIndexingControl;
     private readonly EmbeddingPolicyRefreshTracker _embeddingPolicyRefreshes;
     private readonly ApplicationUpdateService _applicationUpdates;
     private readonly WindowsUninstallService _windowsUninstall;
     private readonly Dictionary<string, int> _aiConnectionCatalogOrder = new(StringComparer.Ordinal);
+    private readonly Dictionary<Guid, Task> _projectPauseDrains = [];
     private readonly SemaphoreSlim _refreshGate = new(1, 1);
     private CancellationTokenSource? _polling;
     private Task? _pollingTask;
@@ -57,6 +59,7 @@ internal partial class MainViewModel : ViewModelBase
         GraniteModelInstaller modelInstaller,
         AiConnectionsService aiConnections,
         IndexingActivityTracker indexingActivities,
+        IProjectIndexingControl projectIndexingControl,
         EmbeddingPolicyRefreshTracker embeddingPolicyRefreshes,
         ApplicationUpdateService applicationUpdates,
         WindowsUninstallService windowsUninstall)
@@ -73,6 +76,7 @@ internal partial class MainViewModel : ViewModelBase
         _modelInstaller = modelInstaller;
         _aiConnections = aiConnections;
         _indexingActivities = indexingActivities;
+        _projectIndexingControl = projectIndexingControl;
         _embeddingPolicyRefreshes = embeddingPolicyRefreshes;
         _applicationUpdates = applicationUpdates;
         _windowsUninstall = windowsUninstall;
@@ -171,7 +175,7 @@ internal partial class MainViewModel : ViewModelBase
     [NotifyPropertyChangedFor(nameof(IsApplicationUpdateWarningStatus))]
     public partial ApplicationUpdateSnapshot ApplicationUpdate { get; set; } = ApplicationUpdateSnapshot.Disabled;
 
-    public bool IsOcrUnavailable => !_ocrEngine.IsAvailable;
+    public bool IsOcrUnavailable => !_ocrEngine.AreAssetsReady || _ocrEngine.UnavailableReason is not null;
     public bool IsOcrAvailable => !IsOcrUnavailable;
     public bool IsWindowsStartupSupported => _windowsStartup.IsSupported;
     public bool IsWindowsUninstallVisible => _windowsUninstall.Availability.IsVisible;
@@ -196,7 +200,7 @@ internal partial class MainViewModel : ViewModelBase
     public string OcrStatusLabel => IsPreparingOcr ? "Setting up" : IsOcrAvailable ? "Ready" : "Needs attention";
     public string OcrStatusMessage => IsPreparingOcr
         ? "Preparing OCR for scanned documents and images…"
-        : _ocrEngine.UnavailableReason ?? "OCR is ready for scanned documents and images.";
+        : _ocrEngine.UnavailableReason ?? "OCR is ready and loads only when a scanned document needs it.";
     public bool CanRetryOcrSetup => !IsPreparingOcr && IsOcrUnavailable;
     public bool IsOcrReadyStatus => !IsPreparingOcr && IsOcrAvailable;
     public bool IsOcrWarningStatus => !IsPreparingOcr && IsOcrUnavailable;
@@ -378,11 +382,74 @@ internal partial class MainViewModel : ViewModelBase
     {
         if (SelectedProject is null) return;
         var selected = SelectedProject;
-        await MutateAsync(async () =>
+        if (selected.State != ProjectState.Paused)
         {
-            await _writer.SetProjectPausedAsync(selected.Id, selected.State != ProjectState.Paused);
-            return selected.Id;
-        });
+            StatusMessage = $"Pausing {selected.Name} and stopping its active indexing work…";
+            _projectIndexingControl.BeginPause(selected.Id);
+            try
+            {
+                await _writer.SetProjectPausedAsync(selected.Id, true);
+            }
+            catch
+            {
+                // Storage did not establish the paused boundary. Resolve the provisional gate so
+                // canceled workers and lease claims can safely continue instead of being stranded.
+                _projectIndexingControl.Resume(selected.Id);
+                throw;
+            }
+            var drain = _projectIndexingControl.DrainPausedAsync(selected.Id);
+            _projectPauseDrains[selected.Id] = drain;
+            _ = ObservePauseDrainAsync(selected.Id, selected.Name, drain);
+            await RefreshAsync(selected.Id);
+            StatusMessage = drain.IsCompletedSuccessfully
+                ? $"{selected.Name} is paused. Interrupted files remain queued for resume."
+                : $"{selected.Name} is paused. Active file cleanup is finishing in the background.";
+            return;
+        }
+
+        if (_projectPauseDrains.TryGetValue(selected.Id, out var pendingDrain))
+        {
+            if (!pendingDrain.IsCompleted)
+                StatusMessage = $"Finishing {selected.Name}’s pause cleanup before resuming…";
+            await pendingDrain;
+        }
+
+        StatusMessage = $"Resuming {selected.Name}…";
+        _projectIndexingControl.Resume(selected.Id);
+        try
+        {
+            await _writer.SetProjectPausedAsync(selected.Id, false);
+        }
+        catch
+        {
+            // The database is still paused, so restore the in-process gate before surfacing the failure.
+            _projectIndexingControl.BeginPause(selected.Id);
+            await _projectIndexingControl.DrainPausedAsync(selected.Id);
+            throw;
+        }
+        _projectPauseDrains.Remove(selected.Id);
+        await RefreshAsync(selected.Id);
+        StatusMessage = $"{selected.Name} resumed. Queued indexing work can continue.";
+    }
+
+    private async Task ObservePauseDrainAsync(Guid projectId, string projectName, Task drain)
+    {
+        try
+        {
+            await drain.ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            await Dispatcher.UIThread.InvokeAsync(() =>
+            {
+                if (_projectPauseDrains.TryGetValue(projectId, out var current) &&
+                    ReferenceEquals(current, drain) && SelectedProject is { Id: var selectedId, State: ProjectState.Paused } &&
+                    selectedId == projectId)
+                {
+                    StatusMessage = $"{projectName} is paused, but its background cleanup needs attention: {exception.Message}";
+                }
+            });
+        }
     }
 
     public async Task ReindexAsync()
@@ -415,7 +482,7 @@ internal partial class MainViewModel : ViewModelBase
     }
 
     public Task RetryOcrSetupAsync(CancellationToken cancellationToken = default) =>
-        IsPreparingOcr ? Task.CompletedTask : PrepareOcrAsync(cancellationToken);
+        IsPreparingOcr ? Task.CompletedTask : PrepareOcrAsync(cancellationToken, loadSessions: true);
 
     public async Task SetEmbeddingModelAsync(GraniteEmbeddingModelDefinition model)
     {
@@ -668,12 +735,15 @@ internal partial class MainViewModel : ViewModelBase
         }
     }
 
-    private async Task PrepareOcrAsync(CancellationToken cancellationToken)
+    private async Task PrepareOcrAsync(CancellationToken cancellationToken, bool loadSessions = false)
     {
         await Dispatcher.UIThread.InvokeAsync(() => IsPreparingOcr = true);
         try
         {
-            await _ocrEngine.EnsureAvailableAsync(cancellationToken).ConfigureAwait(false);
+            if (loadSessions)
+                await _ocrEngine.EnsureAvailableAsync(cancellationToken).ConfigureAwait(false);
+            else
+                await _ocrEngine.PrepareAssetsAsync(cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -755,7 +825,7 @@ internal partial class MainViewModel : ViewModelBase
 
     private void RefreshOcrAvailability()
     {
-        var available = _ocrEngine.IsAvailable;
+        var available = !IsOcrUnavailable;
         var message = OcrStatusMessage;
         if (_reportedOcrAvailable == available && string.Equals(_reportedOcrMessage, message, StringComparison.Ordinal))
             return;
@@ -842,10 +912,14 @@ internal partial class MainViewModel : ViewModelBase
         }
 
         while (Projects.Count > projects.Count) Projects.RemoveAt(Projects.Count - 1);
+
+        foreach (var project in Projects)
+            project.UpdateRuntime(_indexingActivities.GetSnapshot(project.Id));
     }
 
     private void ReconcileIndexingActivities(IndexingTimingSnapshot snapshot)
     {
+        SelectedProject?.UpdateRuntime(snapshot);
         var hasAnyActiveIndexingItems = _indexingActivities.HasActiveItems;
         if (_hasAnyActiveIndexingItems != hasAnyActiveIndexingItems)
         {
@@ -878,15 +952,31 @@ internal partial class MainViewModel : ViewModelBase
         while (ActiveIndexingItems.Count > snapshot.ActiveItems.Count)
             ActiveIndexingItems.RemoveAt(ActiveIndexingItems.Count - 1);
 
-        var activeText = snapshot.ActiveItems.Count == 0
-            ? "No files active"
-            : $"{snapshot.ActiveItems.Count} active";
+        var workParts = new List<string>(4);
+        if (snapshot.ProcessingCount > 0)
+        {
+            var retrySuffix = snapshot.RetryingCount > 0
+                ? $" ({snapshot.RetryingCount} {Pluralize(snapshot.RetryingCount, "retry", "retries")})"
+                : string.Empty;
+            workParts.Add($"{snapshot.ProcessingCount} processing{retrySuffix}");
+        }
+        if (snapshot.WaitingForMemoryCount > 0)
+            workParts.Add($"{snapshot.WaitingForMemoryCount} waiting for memory");
+        if (snapshot.WaitingForCpuCount > 0)
+            workParts.Add($"{snapshot.WaitingForCpuCount} waiting for CPU");
+        if (snapshot.QueuedCount > 0)
+            workParts.Add($"{snapshot.QueuedCount} queued");
+
+        var activeText = workParts.Count == 0 ? "No files active" : string.Join(" · ", workParts);
         var completedText = snapshot.AverageCompletedDuration is { } average
             ? $"completed average {IndexingActivityItemViewModel.FormatDuration(average)} ({snapshot.CompletedSampleCount} this session)"
             : "completed average —";
         IndexingTimingSummary = $"{activeText} · {completedText}";
         OnPropertyChanged(nameof(HasActiveIndexingItems));
     }
+
+    private static string Pluralize(int count, string singular, string plural) =>
+        count == 1 ? singular : plural;
 
     private void OnApplicationUpdateSnapshotChanged(object? sender, ApplicationUpdateSnapshot snapshot)
     {

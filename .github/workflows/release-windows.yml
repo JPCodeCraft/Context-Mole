@@ -82,13 +82,14 @@ jobs:
         run: |
           $main = "artifacts/publish/win-x64/ContextMole.App.UI.exe"
           $sidecar = "artifacts/publish/win-x64/mcp-server/ContextMole.Mcp.exe"
+          $broker = "artifacts/publish/win-x64/mcp-server/broker/ContextMole.Broker.exe"
           $uninstallHelper = "artifacts/publish/win-x64/uninstall-helper/ContextMole.UninstallHelper.exe"
           $icon = "src/App.UI/Assets/context-mole.ico"
-          foreach ($required in @($main, $sidecar, $uninstallHelper, $icon)) {
+          foreach ($required in @($main, $sidecar, $broker, $uninstallHelper, $icon)) {
             if (-not (Test-Path -LiteralPath $required -PathType Leaf)) { throw "Missing required publish file: $required" }
           }
           $expectedProductVersion = "$env:VERSION+$env:GITHUB_SHA"
-          foreach ($versionedFile in @($main, $sidecar, $uninstallHelper)) {
+          foreach ($versionedFile in @($main, $sidecar, $broker, $uninstallHelper)) {
             $actualProductVersion = (Get-Item -LiteralPath $versionedFile).VersionInfo.ProductVersion
             if ($actualProductVersion -cne $expectedProductVersion) {
               throw "Expected $versionedFile to have product version '$expectedProductVersion', but found '$actualProductVersion'."
@@ -209,9 +210,13 @@ jobs:
           if ($packagedApplications.Count -ne 1) { throw "The full package must contain exactly one application executable." }
           $packagedRoot = $packagedApplications[0].DirectoryName
           $packagedSidecar = Join-Path $packagedRoot "mcp-server/ContextMole.Mcp.exe"
+          $packagedBroker = Join-Path $packagedRoot "mcp-server/broker/ContextMole.Broker.exe"
           $packagedHelper = Join-Path $packagedRoot "uninstall-helper/ContextMole.UninstallHelper.exe"
           if (-not (Test-Path -LiteralPath $packagedSidecar -PathType Leaf)) {
             throw "The full package does not contain the MCP sidecar at mcp-server/ContextMole.Mcp.exe."
+          }
+          if (-not (Test-Path -LiteralPath $packagedBroker -PathType Leaf)) {
+            throw "The full package does not contain the shared broker at mcp-server/broker/ContextMole.Broker.exe."
           }
           if (-not (Test-Path -LiteralPath $packagedHelper -PathType Leaf)) {
             throw "The full package does not contain the uninstall helper at uninstall-helper/ContextMole.UninstallHelper.exe."

@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using System.Runtime.InteropServices;
 
 using ContextMole.Infrastructure;
 
@@ -7,6 +8,70 @@ namespace ContextMole.Tests;
 [Collection(nameof(ProcessEnvironmentCollection))]
 public sealed class AiConnectionTests
 {
+    [Fact]
+    public async Task DevelopmentDeploymentMatchesUiBuildAndStagesMatchingBroker()
+    {
+        using var paths = new StorageTestPaths();
+        var repository = Path.Combine(paths.RootDirectory, "repository");
+        var currentRid = RuntimeInformation.RuntimeIdentifier;
+        var competingRid = OperatingSystem.IsWindows() ? "linux-x64" : "win-x64";
+        var appOutput = Path.Combine(repository, "src", "App.UI", "bin", "Debug", "net10.0", currentRid);
+        var mcpBin = Path.Combine(repository, "src", "Mcp", "bin", "Debug", "net10.0");
+        var brokerBin = Path.Combine(repository, "src", "Broker", "bin", "Debug", "net10.0");
+        Directory.CreateDirectory(appOutput);
+        Directory.CreateDirectory(Path.Combine(mcpBin, currentRid));
+        Directory.CreateDirectory(Path.Combine(mcpBin, competingRid));
+        Directory.CreateDirectory(Path.Combine(brokerBin, currentRid));
+        Directory.CreateDirectory(Path.Combine(brokerBin, competingRid));
+        File.WriteAllText(Path.Combine(repository, "ContextMole.slnx"), "<Solution />");
+        var executableName = OperatingSystem.IsWindows() ? "ContextMole.Mcp.exe" : "ContextMole.Mcp";
+        var expected = Path.Combine(mcpBin, currentRid, executableName);
+        var incompatible = Path.Combine(mcpBin, competingRid, executableName);
+        var brokerExecutableName = OperatingSystem.IsWindows() ? "ContextMole.Broker.exe" : "ContextMole.Broker";
+        var expectedBroker = Path.Combine(brokerBin, currentRid, brokerExecutableName);
+        var incompatibleBroker = Path.Combine(brokerBin, competingRid, brokerExecutableName);
+        File.WriteAllText(expected, "current RID MCP");
+        File.WriteAllText(incompatible, "competing RID MCP");
+        File.WriteAllText(expectedBroker, "current RID broker");
+        File.WriteAllText(Path.Combine(brokerBin, currentRid, "broker-dependency.dll"), "broker dependency");
+        File.WriteAllText(Path.Combine(brokerBin, currentRid, "external-native-symbols.pdb"), "not staged");
+        var currentNative = Path.Combine(brokerBin, currentRid, "runtimes", currentRid, "native");
+        var incompatibleNative = Path.Combine(brokerBin, currentRid, "runtimes", competingRid, "native");
+        Directory.CreateDirectory(currentNative);
+        Directory.CreateDirectory(incompatibleNative);
+        File.WriteAllText(Path.Combine(currentNative, "current-native.bin"), "current native");
+        File.WriteAllText(Path.Combine(incompatibleNative, "wrong-native.bin"), "wrong native");
+        File.WriteAllText(incompatibleBroker, "competing RID broker");
+        File.SetLastWriteTimeUtc(incompatible, DateTime.UtcNow.AddMinutes(2));
+        File.SetLastWriteTimeUtc(incompatibleBroker, DateTime.UtcNow.AddMinutes(2));
+        var previousOverride = Environment.GetEnvironmentVariable("CONTEXTMOLE_MCP_PATH");
+        try
+        {
+            Environment.SetEnvironmentVariable("CONTEXTMOLE_MCP_PATH", null);
+            var candidate = new McpServerDeploymentService(paths).ResolveCandidateFromDirectory(appOutput);
+
+            Assert.NotNull(candidate);
+            Assert.Equal(Path.GetFullPath(expected), candidate.Path);
+            Assert.True(candidate.RequiresStaging);
+            Assert.Equal(Path.GetFullPath(expectedBroker), candidate.BrokerPath);
+            var stagedExecutable = await new McpServerDeploymentService(paths).PrepareAsync(candidate,
+                TestContext.Current.CancellationToken);
+            Assert.True(File.Exists(stagedExecutable));
+            var stagedDirectory = Path.GetDirectoryName(stagedExecutable)!;
+            Assert.True(File.Exists(Path.Combine(stagedDirectory, "broker", brokerExecutableName)));
+            Assert.True(File.Exists(Path.Combine(stagedDirectory, "broker", "broker-dependency.dll")));
+            Assert.True(File.Exists(Path.Combine(stagedDirectory, "broker", "runtimes", currentRid, "native",
+                "current-native.bin")));
+            Assert.False(File.Exists(Path.Combine(stagedDirectory, "broker", "runtimes", competingRid, "native",
+                "wrong-native.bin")));
+            Assert.False(File.Exists(Path.Combine(stagedDirectory, "broker", "external-native-symbols.pdb")));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("CONTEXTMOLE_MCP_PATH", previousOverride);
+        }
+    }
+
     [Fact]
     public async Task JsonConnectionPreservesUnrelatedSettingsAndRemovesOnlyOwnedEntry()
     {

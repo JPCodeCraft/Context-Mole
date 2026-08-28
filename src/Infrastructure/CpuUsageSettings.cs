@@ -41,6 +41,18 @@ public sealed class CpuUsageSettings : ICpuUsageSettings
         Changed?.Invoke(this, EventArgs.Empty);
     }
 
+    public bool RefreshFromDisk()
+    {
+        var profile = LoadProfile();
+        lock (_gate)
+        {
+            if (_profile == profile) return false;
+            _profile = profile;
+        }
+        Changed?.Invoke(this, EventArgs.Empty);
+        return true;
+    }
+
     public static int CalculateThreadLimit(CpuUsageProfile profile, int logicalProcessorCount)
     {
         if (logicalProcessorCount <= 0)

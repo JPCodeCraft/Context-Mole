@@ -55,12 +55,12 @@
                       <TextBlock Text="{Binding Name}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"
                                  ToolTip.Tip="{Binding Name}" />
                       <Border Grid.Column="1" Classes="phaseBadge" Classes.paused="{Binding IsPaused}"
-                              Classes.ready="{Binding IsReady}" Classes.retrying="{Binding IsRetrying}"
+                              Classes.ready="{Binding IsReady}" Classes.retrying="{Binding IsRetryStatus}"
                               Classes.attention="{Binding NeedsAttention}"
-                              Padding="7,2" CornerRadius="8">
+                              Padding="7,2" CornerRadius="8" ToolTip.Tip="{Binding PhaseDetails}">
                         <TextBlock Text="{Binding Phase}" Classes="phaseText"
                                    Classes.paused="{Binding IsPaused}" Classes.ready="{Binding IsReady}"
-                                   Classes.retrying="{Binding IsRetrying}" Classes.attention="{Binding NeedsAttention}"
+                                   Classes.retrying="{Binding IsRetryStatus}" Classes.attention="{Binding NeedsAttention}"
                                    FontSize="10" FontWeight="SemiBold" />
                       </Border>
                     </Grid>

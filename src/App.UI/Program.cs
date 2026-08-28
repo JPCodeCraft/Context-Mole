@@ -1,5 +1,6 @@
 using Avalonia;
 
+using ContextMole.Broker.Protocol;
 using ContextMole.Core;
 using ContextMole.Documents;
 using ContextMole.Indexing;
@@ -7,6 +8,7 @@ using ContextMole.Infrastructure;
 using ContextMole.Storage;
 
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
@@ -46,6 +48,9 @@ internal static class Program
             builder.Services.AddSerilog(dispose: true);
             builder.Services.AddSingleton<IAppPaths>(paths);
             builder.Services.AddContextMoleInfrastructure(includeOcr: true);
+            builder.Services.AddSingleton(_ => new BrokerRpcClient(paths.DataDirectory,
+                static () => BrokerLaunchCommand.Resolve()));
+            builder.Services.Replace(ServiceDescriptor.Singleton<IEmbeddingGenerator, BrokerEmbeddingGenerator>());
             // The UI initiates and drains its own uninstall. It holds a lease, while only MCP
             // sidecars need the marker monitor that stops a host started by an AI client.
             builder.Services.AddContextMoleProcessLifetime("ui", stopOnShutdownRequest: false);
@@ -98,7 +103,10 @@ internal static class Program
                 {
                     try
                     {
-                        host.Dispose();
+                        if (host is IAsyncDisposable asyncDisposable)
+                            await asyncDisposable.DisposeAsync().ConfigureAwait(false);
+                        else
+                            host.Dispose();
                     }
                     catch (Exception exception)
                     {

@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Channels;
@@ -19,7 +20,8 @@ public sealed class IndexingCoordinator(
     IndexingActivityTracker activities,
     EmbeddingPolicyRefreshTracker policyRefreshes,
     IGlobalCpuBudget cpuBudget,
-    ILogger<IndexingCoordinator> logger) : BackgroundService
+    ILogger<IndexingCoordinator> logger,
+    IMemoryAdmissionController memoryAdmission) : BackgroundService, IProjectIndexingControl
 {
     private static readonly TimeSpan ReconciliationInterval = TimeSpan.FromMinutes(15);
     private static readonly TimeSpan DebounceInterval = TimeSpan.FromSeconds(1);
@@ -35,13 +37,110 @@ public sealed class IndexingCoordinator(
     private readonly IndexingActivityTracker _activities = activities;
     private readonly EmbeddingPolicyRefreshTracker _policyRefreshes = policyRefreshes;
     private readonly IGlobalCpuBudget _cpuBudget = cpuBudget;
+    private readonly IMemoryAdmissionController _memoryAdmission = memoryAdmission;
     private readonly ILogger<IndexingCoordinator> _logger = logger;
     private readonly Channel<WatchChange> _watchChanges = Channel.CreateUnbounded<WatchChange>(
         new UnboundedChannelOptions { SingleReader = true, SingleWriter = false });
     private readonly object _watchersGate = new();
+    private readonly object _projectWorkGate = new();
     private readonly SemaphoreSlim _reconciliationGate = new(1, 1);
     private readonly Dictionary<Guid, FolderWatcher> _watchers = [];
+    private readonly Dictionary<Guid, HashSet<ProjectJobOperation>> _projectOperations = [];
+    private readonly Dictionary<Guid, ProjectPauseGate> _projectPauseGates = [];
+    private readonly HashSet<LeaseClaim> _leaseClaims = [];
     private bool _stopping;
+
+    public IndexingCoordinator(
+        IIndexWriter writer,
+        ISearchStore searchStore,
+        IAppPaths paths,
+        IDocumentExtractor extractor,
+        IEmbeddingGenerator embeddings,
+        IndexingActivityTracker activities,
+        EmbeddingPolicyRefreshTracker policyRefreshes,
+        IGlobalCpuBudget cpuBudget,
+        ILogger<IndexingCoordinator> logger)
+        : this(writer, searchStore, paths, extractor, embeddings, activities, policyRefreshes, cpuBudget, logger,
+            UnboundedMemoryAdmissionController.Instance)
+    {
+    }
+
+    public void BeginPause(Guid projectId)
+    {
+        if (projectId == Guid.Empty)
+            throw new ArgumentException("A project ID is required.", nameof(projectId));
+
+        ProjectPauseGate pauseGate;
+        ProjectJobOperation[] operations;
+        lock (_projectWorkGate)
+        {
+            if (_projectPauseGates.ContainsKey(projectId)) return;
+            pauseGate = new ProjectPauseGate();
+            _projectPauseGates.Add(projectId, pauseGate);
+            operations = _projectOperations.TryGetValue(projectId, out var active)
+                ? active.ToArray()
+                : [];
+        }
+
+        CancelForPause(projectId, pauseGate, operations);
+        _logger.LogInformation("Indexing pause requested for project {ProjectId}", projectId);
+    }
+
+    public async Task DrainPausedAsync(Guid projectId, CancellationToken cancellationToken = default)
+    {
+        if (projectId == Guid.Empty)
+            throw new ArgumentException("A project ID is required.", nameof(projectId));
+
+        ProjectPauseGate pauseGate;
+        ProjectJobOperation[] operations;
+        Task[] claims;
+        lock (_projectWorkGate)
+        {
+            if (!_projectPauseGates.TryGetValue(projectId, out var currentPauseGate))
+                throw new InvalidOperationException("BeginPause must be called before paused indexing work is drained.");
+            pauseGate = currentPauseGate!;
+            pauseGate.Resolve(ProjectPauseResolution.DurablyPaused);
+            operations = _projectOperations.TryGetValue(projectId, out var active)
+                ? active.ToArray()
+                : [];
+            claims = _leaseClaims.Select(claim => claim.Completion).ToArray();
+        }
+
+        CancelForPause(projectId, pauseGate, operations);
+        var cleanup = operations.Select(operation => operation.Completion).Concat(claims).ToArray();
+        await Task.WhenAll(cleanup).WaitAsync(cancellationToken).ConfigureAwait(false);
+        _logger.LogInformation("Indexing paused and drained for project {ProjectId}", projectId);
+    }
+
+    public void Resume(Guid projectId)
+    {
+        if (projectId == Guid.Empty)
+            throw new ArgumentException("A project ID is required.", nameof(projectId));
+
+        lock (_projectWorkGate)
+        {
+            if (_projectPauseGates.Remove(projectId, out var pauseGate))
+                pauseGate.Resolve(ProjectPauseResolution.Resumed);
+        }
+        _logger.LogInformation("Indexing admission resumed for project {ProjectId}", projectId);
+    }
+
+    private void CancelForPause(Guid projectId, ProjectPauseGate pauseGate,
+        IEnumerable<ProjectJobOperation> operations)
+    {
+        foreach (var operation in operations)
+        {
+            try
+            {
+                operation.CancelForPause(pauseGate);
+            }
+            catch (Exception exception)
+            {
+                _logger.LogWarning(exception,
+                    "A cancellation callback failed while pausing indexing for project {ProjectId}", projectId);
+            }
+        }
+    }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -424,74 +523,146 @@ public sealed class IndexingCoordinator(
     {
         while (!cancellationToken.IsCancellationRequested)
         {
-            ICpuWorkerLease? capacity = null;
-            IndexJobLease? job;
-            try
+            IndexJobLease? job = null;
+            ProjectJobOperation? operation = null;
+            Exception? leaseFailure = null;
+            using (BeginLeaseClaim())
             {
-                capacity = await _cpuBudget.AcquireWorkerAsync(cancellationToken).ConfigureAwait(false);
-                job = await _writer.LeaseNextJobAsync(TimeSpan.FromMinutes(20), cancellationToken).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                capacity?.Dispose();
-                return;
-            }
-            catch (Exception exception)
-            {
-                capacity?.Dispose();
-                _logger.LogWarning(exception, "An indexing worker could not lease a job; it will retry");
-                await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken).ConfigureAwait(false);
-                continue;
-            }
-
-            if (job is null)
-            {
-                capacity.Dispose();
-                await Task.Delay(TimeSpan.FromMilliseconds(500), cancellationToken).ConfigureAwait(false);
-                continue;
-            }
-
-            using (capacity)
-            using (capacity.Activate())
-            {
-                using var activity = _activities.Start(job);
                 try
                 {
-                    var indexed = await ProcessJobAsync(job, activity, cancellationToken).ConfigureAwait(false);
-                    activity.Complete(indexed);
+                    job = await _writer.LeaseNextJobAsync(TimeSpan.FromMinutes(20), cancellationToken)
+                        .ConfigureAwait(false);
+                    if (job is not null)
+                        operation = await BeginProjectOperationAsync(job.ProjectId, cancellationToken)
+                            .ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
-                    activity.Complete(false);
                     return;
                 }
                 catch (Exception exception)
                 {
-                    _logger.LogError(exception, "Indexing failed for {Path}", job.SourcePath);
-                    activity.SetStage(IndexingPipelineStage.RecordingError);
+                    leaseFailure = exception;
+                }
+            }
+
+            if (leaseFailure is not null)
+            {
+                _logger.LogWarning(leaseFailure, "An indexing worker could not lease a job; it will retry");
+                await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken).ConfigureAwait(false);
+                continue;
+            }
+            if (job is null)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(500), cancellationToken).ConfigureAwait(false);
+                continue;
+            }
+            if (operation is null)
+            {
+                _logger.LogDebug("Skipped a late indexing lease for paused project {ProjectId}", job.ProjectId);
+                continue;
+            }
+
+            while (operation is not null)
+            {
+                var retryAfterPauseRollback = false;
+                using (operation)
+                using (var activity = _activities.Start(job))
+                {
+                    var jobCancellationToken = operation.CancellationToken;
+                    IMemoryLease? memory = null;
+                    ICpuWorkerLease? capacity = null;
                     try
                     {
-                        var code = job.Kind == IndexJobKind.EmbeddingRefresh
-                            ? "embedding_refresh_failed"
-                            : ErrorCode(exception);
-                        await _writer.FailJobAsync(job, code, exception.Message, IsTemporary(exception), CancellationToken.None)
-                            .ConfigureAwait(false);
+                        PreparedIndexSource? source = null;
+                        if (job.Kind != IndexJobKind.EmbeddingRefresh)
+                        {
+                            source = await PrepareIndexSourceAsync(job, activity, jobCancellationToken)
+                                .ConfigureAwait(false);
+                            if (source is null)
+                            {
+                                activity.Complete(false);
+                                break;
+                            }
+                        }
+
+                        memory = await AcquireMemoryAsync(job, source?.Length ?? TryGetSourceLength(job.SourcePath),
+                            activity, jobCancellationToken).ConfigureAwait(false);
+                        activity.SetStage(IndexingPipelineStage.WaitingForCpu);
+                        capacity = await _cpuBudget.AcquireWorkerAsync(jobCancellationToken).ConfigureAwait(false);
+                        using (memory.Activate())
+                        using (capacity.Activate())
+                        {
+                            var indexed = await ProcessJobAsync(job, source, activity, jobCancellationToken)
+                                .ConfigureAwait(false);
+                            activity.Complete(indexed);
+                        }
                     }
-                    catch (Exception recordingException)
+                    catch (Exception exception) when (operation.IsPauseCancellationRequested)
                     {
-                        _logger.LogError(recordingException, "The indexing failure for {Path} could not be recorded", job.SourcePath);
+                        if (exception is OperationCanceledException)
+                            _logger.LogInformation("Indexing canceled for paused project {ProjectId}: {Path}",
+                                job.ProjectId, job.SourcePath);
+                        else
+                            _logger.LogInformation(exception,
+                                "Indexing stopped during pause cleanup for project {ProjectId}: {Path}",
+                                job.ProjectId, job.SourcePath);
+
+                        capacity?.Dispose();
+                        capacity = null;
+                        memory?.Dispose();
+                        memory = null;
+                        activity.Complete(false);
+                        try
+                        {
+                            retryAfterPauseRollback = await operation.GetPauseResolution()
+                                .WaitAsync(cancellationToken).ConfigureAwait(false) == ProjectPauseResolution.Resumed;
+                        }
+                        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                        {
+                            return;
+                        }
                     }
-                    activity.Complete(false);
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                    {
+                        activity.Complete(false);
+                        return;
+                    }
+                    catch (Exception exception)
+                    {
+                        _logger.LogError(exception, "Indexing failed for {Path}", job.SourcePath);
+                        activity.SetStage(IndexingPipelineStage.RecordingError);
+                        try
+                        {
+                            var code = job.Kind == IndexJobKind.EmbeddingRefresh && exception is not ContextMoleException
+                                ? "embedding_refresh_failed"
+                                : ErrorCode(exception);
+                            await _writer.FailJobAsync(job, code, exception.Message, IsTemporary(exception),
+                                CancellationToken.None).ConfigureAwait(false);
+                        }
+                        catch (Exception recordingException)
+                        {
+                            _logger.LogError(recordingException,
+                                "The indexing failure for {Path} could not be recorded", job.SourcePath);
+                        }
+                        activity.Complete(false);
+                    }
+                    finally
+                    {
+                        capacity?.Dispose();
+                        memory?.Dispose();
+                    }
                 }
+
+                if (!retryAfterPauseRollback) break;
+                operation = await BeginProjectOperationAsync(job.ProjectId, cancellationToken).ConfigureAwait(false);
             }
         }
     }
 
-    private async Task<bool> ProcessJobAsync(IndexJobLease job, IndexingActivityHandle activity, CancellationToken cancellationToken)
+    private async Task<PreparedIndexSource?> PrepareIndexSourceAsync(IndexJobLease job,
+        IndexingActivityHandle activity, CancellationToken cancellationToken)
     {
-        if (job.Kind == IndexJobKind.EmbeddingRefresh)
-            return await ProcessEmbeddingRefreshAsync(job, activity, cancellationToken).ConfigureAwait(false);
-
         activity.SetStage(IndexingPipelineStage.InspectingSource);
         var before = new FileInfo(job.SourcePath);
         if (!before.Exists)
@@ -508,36 +679,47 @@ public sealed class IndexingCoordinator(
                 await _writer.FailJobAsync(job, "folder_unavailable",
                     "The source folder is unavailable; the last successful index revision was retained.", true,
                     cancellationToken).ConfigureAwait(false);
-            return false;
+            return null;
         }
         if (IsAppDataPath(before.FullName))
         {
             await _writer.HandleDeletedAsync(job.ProjectId, job.FolderId, job.SourcePath, cancellationToken)
                 .ConfigureAwait(false);
-            return false;
+            return null;
         }
         if (!await IsFolderAvailableAsync(job.ProjectId, job.FolderId, cancellationToken).ConfigureAwait(false))
         {
             await _writer.FailJobAsync(job, "folder_unavailable",
                 "The source folder is unavailable; the last successful index revision was retained.", true,
                 cancellationToken).ConfigureAwait(false);
-            return false;
+            return null;
         }
         if (!await IsAuthorizedSourceAsync(job, before, cancellationToken).ConfigureAwait(false))
         {
             await _writer.FailJobAsync(job, "source_not_authorized",
                 "The source path became a file-system link or left its authorized project folder.", false,
                 cancellationToken).ConfigureAwait(false);
-            return false;
+            return null;
         }
         if (IsCloudPlaceholder(before.Attributes))
         {
             await _writer.FailJobAsync(job, "cloud_placeholder", "The file is an unavailable cloud-storage placeholder; it was not hydrated.", true, cancellationToken).ConfigureAwait(false);
-            return false;
+            return null;
         }
 
-        var initialLength = before.Length;
-        var initialModified = new DateTimeOffset(before.LastWriteTimeUtc, TimeSpan.Zero);
+        return new PreparedIndexSource(before.Length,
+            new DateTimeOffset(before.LastWriteTimeUtc, TimeSpan.Zero));
+    }
+
+    private async Task<bool> ProcessJobAsync(IndexJobLease job, PreparedIndexSource? source,
+        IndexingActivityHandle activity, CancellationToken cancellationToken)
+    {
+        if (job.Kind == IndexJobKind.EmbeddingRefresh)
+            return await ProcessEmbeddingRefreshAsync(job, activity, cancellationToken).ConfigureAwait(false);
+
+        var prepared = source ?? throw new InvalidOperationException("An index job requires source preflight.");
+        var initialLength = prepared.Length;
+        var initialModified = prepared.ModifiedUtc;
         activity.SetStage(IndexingPipelineStage.Hashing);
         var sha256 = await HashAsync(job.SourcePath, cancellationToken).ConfigureAwait(false);
         var afterHash = new FileInfo(job.SourcePath);
@@ -625,6 +807,38 @@ public sealed class IndexingCoordinator(
         return await _writer.CommitRevisionAsync(new IndexCommitRequest(job.JobId, job.ProjectId, job.DocumentId, begin.RevisionId.Value,
             job.ExpectedObservationEpoch, sha256, initialLength, initialModified, contentNodes, passages,
             vectors.Count == passageSeeds.Count ? embeddingPolicy : null, indexingErrors), cancellationToken).ConfigureAwait(false);
+    }
+
+    private async ValueTask<IMemoryLease> AcquireMemoryAsync(IndexJobLease job, long sourceBytes,
+        IndexingActivityHandle activity, CancellationToken cancellationToken)
+    {
+        var estimate = IndexingMemoryEstimator.Estimate(job, sourceBytes) with { CorrelationId = job.JobId };
+        activity.SetStage(IndexingPipelineStage.QueuedForAdmission);
+        var started = Stopwatch.GetTimestamp();
+        var lease = await _memoryAdmission.AcquireAsync(estimate, cancellationToken).ConfigureAwait(false);
+        var waited = Stopwatch.GetElapsedTime(started);
+        _logger.LogInformation(
+            "Memory admitted for {Workload}: reservation {ReservationBytes}, exclusive {Exclusive}, " +
+            "private {PrivateBytes}, available {AvailableBytes}, process target {ProcessLimitBytes}, " +
+            "system reserve {SystemReserveBytes}, waited {WaitMilliseconds} ms",
+            estimate.Workload, lease.ReservedBytes, lease.IsExclusive,
+            lease.AdmissionSnapshot.ProcessPrivateBytes, lease.AdmissionSnapshot.AvailablePhysicalBytes,
+            lease.ProcessSoftLimitBytes, lease.SystemReserveBytes, waited.TotalMilliseconds);
+        return lease;
+    }
+
+    private static long TryGetSourceLength(string path)
+    {
+        try
+        {
+            var info = new FileInfo(path);
+            return info.Exists ? info.Length : 0;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or
+                                          ArgumentException or NotSupportedException)
+        {
+            return 0;
+        }
     }
 
     private async Task RequeueChangedSourceAsync(IndexJobLease job, CancellationToken cancellationToken)
@@ -1145,10 +1359,172 @@ public sealed class IndexingCoordinator(
     private static StringComparison PathComparison() => OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
         ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
 
+    private LeaseClaim BeginLeaseClaim()
+    {
+        var claim = new LeaseClaim(this);
+        lock (_projectWorkGate) _leaseClaims.Add(claim);
+        return claim;
+    }
+
+    private async ValueTask<ProjectJobOperation?> BeginProjectOperationAsync(Guid projectId,
+        CancellationToken workerCancellationToken)
+    {
+        while (true)
+        {
+            Task<ProjectPauseResolution>? pauseResolution = null;
+            lock (_projectWorkGate)
+            {
+                if (_projectPauseGates.TryGetValue(projectId, out var pauseGate))
+                {
+                    if (pauseGate.Resolution.IsCompletedSuccessfully &&
+                        pauseGate.Resolution.Result == ProjectPauseResolution.DurablyPaused)
+                        return null;
+                    pauseResolution = pauseGate.Resolution;
+                }
+                else
+                {
+                    var operation = new ProjectJobOperation(this, projectId, workerCancellationToken);
+                    if (!_projectOperations.TryGetValue(projectId, out var operations))
+                    {
+                        operations = [];
+                        _projectOperations.Add(projectId, operations);
+                    }
+                    operations.Add(operation);
+                    return operation;
+                }
+            }
+
+            var resolution = await pauseResolution.WaitAsync(workerCancellationToken).ConfigureAwait(false);
+            if (resolution == ProjectPauseResolution.DurablyPaused) return null;
+        }
+    }
+
+    private void CompleteLeaseClaim(LeaseClaim claim)
+    {
+        lock (_projectWorkGate)
+        {
+            if (!_leaseClaims.Remove(claim)) return;
+            claim.Complete();
+        }
+    }
+
+    private void CompleteProjectOperation(ProjectJobOperation operation)
+    {
+        operation.Complete();
+        lock (_projectWorkGate)
+        {
+            if (!_projectOperations.TryGetValue(operation.ProjectId, out var operations) ||
+                !operations.Remove(operation))
+                return;
+            if (operations.Count == 0) _projectOperations.Remove(operation.ProjectId);
+        }
+    }
+
     private sealed record WatchChange(Guid ProjectId, Guid FolderId, string Path, WatchChangeKind Kind, string? OldPath, DateTimeOffset ObservedUtc);
+    private sealed record PreparedIndexSource(long Length, DateTimeOffset ModifiedUtc);
     private enum WatchChangeKind { Upsert, Delete, Rename, Reconcile }
+    private enum ProjectPauseResolution { DurablyPaused, Resumed }
     private sealed record FolderWatcher(string Path, FileSystemWatcher Watcher) : IDisposable
     {
         public void Dispose() => Watcher.Dispose();
+    }
+
+    private sealed class LeaseClaim(IndexingCoordinator owner) : IDisposable
+    {
+        private readonly TaskCompletionSource _completion =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _disposed;
+
+        public Task Completion => _completion.Task;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) == 0) owner.CompleteLeaseClaim(this);
+        }
+
+        public void Complete() => _completion.TrySetResult();
+    }
+
+    private sealed class ProjectPauseGate
+    {
+        private readonly TaskCompletionSource<ProjectPauseResolution> _resolution =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task<ProjectPauseResolution> Resolution => _resolution.Task;
+        public void Resolve(ProjectPauseResolution resolution) => _resolution.TrySetResult(resolution);
+    }
+
+    private sealed class ProjectJobOperation(
+        IndexingCoordinator owner,
+        Guid projectId,
+        CancellationToken workerCancellationToken) : IDisposable
+    {
+        private readonly object _gate = new();
+        private readonly CancellationTokenSource _cancellation =
+            CancellationTokenSource.CreateLinkedTokenSource(workerCancellationToken);
+        private readonly TaskCompletionSource _completion =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private bool _completed;
+        private int _pauseCancellationRequested;
+        private Task<ProjectPauseResolution>? _pauseResolution;
+
+        public Guid ProjectId { get; } = projectId;
+        public CancellationToken CancellationToken => _cancellation.Token;
+        public bool IsPauseCancellationRequested => Volatile.Read(ref _pauseCancellationRequested) != 0;
+        public Task Completion => _completion.Task;
+
+        public void CancelForPause(ProjectPauseGate pauseGate)
+        {
+            Interlocked.Exchange(ref _pauseCancellationRequested, 1);
+            lock (_gate)
+            {
+                _pauseResolution ??= pauseGate.Resolution;
+                if (!_completed) _cancellation.Cancel();
+            }
+        }
+
+        public Task<ProjectPauseResolution> GetPauseResolution()
+        {
+            lock (_gate)
+                return _pauseResolution ?? throw new InvalidOperationException(
+                    "The project operation was not canceled by a pause.");
+        }
+
+        public void Dispose() => owner.CompleteProjectOperation(this);
+
+        public void Complete()
+        {
+            lock (_gate)
+            {
+                if (_completed) return;
+                _completed = true;
+                _cancellation.Dispose();
+            }
+            _completion.TrySetResult();
+        }
+    }
+
+    private sealed class UnboundedMemoryAdmissionController : IMemoryAdmissionController
+    {
+        public static UnboundedMemoryAdmissionController Instance { get; } = new();
+
+        public ValueTask<IMemoryLease> AcquireAsync(MemoryWorkEstimate estimate,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult<IMemoryLease>(new Lease(estimate.EstimatedBytes));
+        }
+
+        private sealed class Lease(long reservedBytes) : IMemoryLease
+        {
+            public long ReservedBytes { get; } = reservedBytes;
+            public bool IsExclusive => false;
+            public SystemMemorySnapshot AdmissionSnapshot => default;
+            public long ProcessSoftLimitBytes => long.MaxValue;
+            public long SystemReserveBytes => 0;
+            public void Dispose()
+            {
+            }
+        }
     }
 }

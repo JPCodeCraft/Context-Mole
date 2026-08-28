@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace ContextMole.Core;
 
 public enum ProjectState
@@ -127,6 +129,33 @@ public sealed record ProjectFolderInfo(Guid Id, string Path);
 
 public sealed record ProjectFileTypeCount(string Extension, int Count);
 
+public enum ProjectWorkPhase
+{
+    Ready,
+    Queued,
+    RetryScheduled,
+    Indexing,
+    Retrying
+}
+
+/// <summary>
+/// UI-facing details for unfinished indexing work. This is kept out of the public MCP payload so the
+/// existing list-projects schema remains stable.
+/// </summary>
+public sealed record ProjectWorkSummary(
+    int QueuedCount,
+    int RetryScheduledCount,
+    int ProcessingCount,
+    int RunningRetryCount,
+    DateTimeOffset? NextRetryUtc)
+{
+    public ProjectWorkPhase Phase => RunningRetryCount > 0 ? ProjectWorkPhase.Retrying
+        : ProcessingCount > 0 ? ProjectWorkPhase.Indexing
+        : QueuedCount > 0 && QueuedCount == RetryScheduledCount ? ProjectWorkPhase.RetryScheduled
+        : QueuedCount > 0 ? ProjectWorkPhase.Queued
+        : ProjectWorkPhase.Ready;
+}
+
 public sealed record ProjectSummary(
     Guid Id,
     string Name,
@@ -138,7 +167,16 @@ public sealed record ProjectSummary(
     int IndexedCount,
     int ErrorCount,
     DateTimeOffset? LastCompletedUtc,
-    string? CurrentFile = null);
+    string? CurrentFile = null)
+{
+    [JsonIgnore]
+    public ProjectWorkSummary Work { get; init; } = new(
+        Math.Max(0, PendingCount - (CurrentFile is null ? 0 : 1)),
+        0,
+        CurrentFile is null ? 0 : 1,
+        0,
+        null);
+}
 
 public sealed record ProjectErrorInfo(
     long Id,

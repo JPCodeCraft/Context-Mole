@@ -2,17 +2,12 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
 
-using ContextMole.Documents;
-using ContextMole.Infrastructure;
-using ContextMole.Search;
-using ContextMole.Storage;
+using ContextMole.Broker.Protocol;
+using ContextMole.Core;
 
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-
-using Serilog;
-using Serilog.Events;
 
 namespace ContextMole.Mcp;
 
@@ -27,16 +22,12 @@ internal static class Program
     {
         var builder = Host.CreateApplicationBuilder(args);
         builder.Logging.ClearProviders();
-        Log.Logger = new LoggerConfiguration()
-            .MinimumLevel.Information()
-            .WriteTo.Console(standardErrorFromLevel: LogEventLevel.Verbose)
-            .CreateLogger();
-        builder.Services.AddSerilog(dispose: true);
-        builder.Services.AddContextMoleInfrastructure(includeOcr: false);
-        builder.Services.AddContextMoleProcessLifetime("mcp");
-        builder.Services.AddContextMoleDocuments();
-        builder.Services.AddReadOnlyContextMoleStorage();
-        builder.Services.AddContextMoleSearch();
+        builder.Logging.AddConsole(options => options.LogToStandardErrorThreshold = LogLevel.Trace);
+        builder.Services.AddSingleton<IAppPaths, McpAppPaths>();
+        builder.Services.AddSingleton<IHostedService, McpProcessLifetimeService>();
+        builder.Services.AddSingleton(provider => new BrokerRpcClient(
+            provider.GetRequiredService<IAppPaths>().DataDirectory,
+            static () => BrokerLaunchCommand.Resolve()));
 
         var serializerOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web)
         {
@@ -50,7 +41,7 @@ internal static class Program
                 options.ServerInstructions = ServerInstructions;
             })
             .WithStdioServerTransport()
-            .WithTools<McpTools>(serializerOptions);
+            .WithTools<BrokerMcpTools>(serializerOptions);
 
         await builder.Build().RunAsync().ConfigureAwait(false);
     }

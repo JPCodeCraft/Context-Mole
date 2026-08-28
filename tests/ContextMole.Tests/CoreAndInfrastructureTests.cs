@@ -226,6 +226,113 @@ public sealed class CoreAndInfrastructureTests
     }
 
     [Fact]
+    public void OcrSessionOptions_AvoidRetainedArenasForTheDynamicDetectorOnly()
+    {
+        using var detector = PpOcrV6Engine.CreateDetectorSessionOptions(threadCount: 4);
+        using var recognizer = PpOcrV6Engine.CreateRecognizerSessionOptions(threadCount: 4);
+
+        Assert.False(detector.EnableCpuMemArena);
+        Assert.False(detector.EnableMemoryPattern);
+        Assert.Equal(4, detector.IntraOpNumThreads);
+
+        Assert.True(recognizer.EnableCpuMemArena);
+        Assert.True(recognizer.EnableMemoryPattern);
+        Assert.Equal(4, recognizer.IntraOpNumThreads);
+        Assert.Equal(TimeSpan.FromMinutes(5), PpOcrV6Engine.DefaultSessionIdleTimeout);
+    }
+
+    [Fact]
+    public async Task OcrAssetPreparation_DefaultsRemainCompatibleWithExistingEngines()
+    {
+        var legacy = new LegacyOcrEngine();
+        IOcrEngine engine = legacy;
+
+        Assert.False(engine.AreAssetsReady);
+        await engine.PrepareAssetsAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(1, legacy.EnsureCalls);
+    }
+
+    [Fact]
+    public void OcrEngine_DoesNotCreateSessionsDuringConstruction()
+    {
+        using var paths = new TemporaryAppPaths();
+        var modelDirectory = Path.Combine(paths.AssetsDirectory, "pp-ocrv6-medium",
+            $"{PpOcrV6Engine.DetectorRevision[..12]}-{PpOcrV6Engine.RecognizerRevision[..12]}");
+        Directory.CreateDirectory(modelDirectory);
+        File.WriteAllText(Path.Combine(modelDirectory, "detector.onnx"), "not an ONNX model");
+        File.WriteAllText(Path.Combine(modelDirectory, "recognizer.onnx"), "not an ONNX model");
+        File.WriteAllText(Path.Combine(modelDirectory, "recognizer.yml"), "not a dictionary");
+
+        var cpuSettings = new TestCpuUsageSettings(CpuUsageProfile.Normal, logicalProcessorCount: 8);
+        using var engine = new PpOcrV6Engine(paths, cpuSettings, new CountingCpuBudget(cpuSettings));
+
+        Assert.False(engine.AreAssetsReady);
+        Assert.False(engine.IsAvailable);
+        Assert.Equal("Preparing the local PP-OCRv6 medium model…", engine.UnavailableReason);
+    }
+
+    [Fact]
+    public async Task OcrEngine_PreservesVerifiedAssetReadinessWhenSessionInitializationFails()
+    {
+        using var paths = new TemporaryAppPaths();
+        var modelDirectory = Path.Combine(paths.AssetsDirectory, "pp-ocrv6-medium",
+            $"{PpOcrV6Engine.DetectorRevision[..12]}-{PpOcrV6Engine.RecognizerRevision[..12]}");
+        Directory.CreateDirectory(modelDirectory);
+        File.WriteAllText(Path.Combine(modelDirectory, "detector.onnx"), "not an ONNX model");
+        File.WriteAllText(Path.Combine(modelDirectory, "recognizer.onnx"), "not an ONNX model");
+        File.WriteAllLines(Path.Combine(modelDirectory, "recognizer.yml"),
+            ["character_dict:", .. Enumerable.Range(0, 100).Select(index => $"  - char{index}")]);
+
+        var cpuSettings = new TestCpuUsageSettings(CpuUsageProfile.Normal, logicalProcessorCount: 8);
+        using var engine = new PpOcrV6Engine(paths, cpuSettings, new CountingCpuBudget(cpuSettings));
+        engine.MarkAssetsPrepared();
+
+        var exception = await Assert.ThrowsAsync<ContextMoleException>(() =>
+            engine.EnsureAvailableAsync(TestContext.Current.CancellationToken));
+
+        Assert.Equal("ocr_initialization_failed", exception.Code);
+        Assert.True(engine.AreAssetsReady);
+        Assert.False(engine.IsAvailable);
+        Assert.Contains("initialization failed", engine.UnavailableReason, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task OcrEngine_UnloadsIdleSessionsAndReloadsPreparedAssets()
+    {
+        using var paths = new TemporaryAppPaths();
+        var modelDirectory = Path.Combine(paths.AssetsDirectory, "pp-ocrv6-medium",
+            $"{PpOcrV6Engine.DetectorRevision[..12]}-{PpOcrV6Engine.RecognizerRevision[..12]}");
+        Directory.CreateDirectory(modelDirectory);
+        var identityModel = Convert.FromBase64String(
+            "CAo6TAoZCgVpbnB1dBIGb3V0cHV0IghJZGVudGl0eRIEdGlueVoTCgVpbnB1dBIKCggIARIECgIIAWIUCgZvdXRwdXQSCgoICAESBAoCCAFCAhAN");
+        File.WriteAllBytes(Path.Combine(modelDirectory, "detector.onnx"), identityModel);
+        File.WriteAllBytes(Path.Combine(modelDirectory, "recognizer.onnx"), identityModel);
+        File.WriteAllLines(Path.Combine(modelDirectory, "recognizer.yml"),
+            ["character_dict:", .. Enumerable.Range(0, 100).Select(index => $"  - char{index}")]);
+
+        var cpuSettings = new TestCpuUsageSettings(CpuUsageProfile.Normal, logicalProcessorCount: 8);
+        using var engine = new PpOcrV6Engine(paths, cpuSettings, new CountingCpuBudget(cpuSettings),
+            sessionIdleTimeout: TimeSpan.FromMilliseconds(100));
+        engine.MarkAssetsPrepared();
+
+        await engine.EnsureAvailableAsync(TestContext.Current.CancellationToken);
+        Assert.True(engine.IsAvailable);
+
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (engine.IsAvailable && DateTime.UtcNow < deadline)
+            await Task.Delay(20, TestContext.Current.CancellationToken);
+
+        Assert.False(engine.IsAvailable);
+        Assert.True(engine.AreAssetsReady);
+        Assert.Null(engine.UnavailableReason);
+
+        await engine.EnsureAvailableAsync(TestContext.Current.CancellationToken);
+        Assert.True(engine.IsAvailable);
+        Assert.True(engine.AreAssetsReady);
+    }
+
+    [Fact]
     public void ModelInstallerDistinguishesMissingAssetsFromAssetsNeedingRepair()
     {
         using var paths = new TemporaryAppPaths();
@@ -348,6 +455,23 @@ public sealed class CoreAndInfrastructureTests
             {
             }
         }
+    }
+
+    private sealed class LegacyOcrEngine : IOcrEngine
+    {
+        public bool IsAvailable => false;
+        public string? UnavailableReason => "Not loaded.";
+        public int EnsureCalls { get; private set; }
+
+        public Task EnsureAvailableAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            EnsureCalls++;
+            return Task.CompletedTask;
+        }
+
+        public Task<OcrResult> RecognizeAsync(OcrRequest request, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
     }
 
     private sealed class TemporaryAppPaths : IAppPaths, IDisposable

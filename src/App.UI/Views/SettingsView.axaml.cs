@@ -55,7 +55,7 @@ public partial class SettingsView : UserControl
     {
         try
         {
-            Process.Start(new ProcessStartInfo(ManualSetupUrl) { UseShellExecute = true });
+            Process.Start(new ProcessStartInfo(ManualSetupUrl) { UseShellExecute = true })?.Dispose();
         }
         catch (Exception exception)
         {

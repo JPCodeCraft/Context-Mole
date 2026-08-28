@@ -53,6 +53,7 @@ public sealed class SqliteSearchStore : ISearchStore
 
         await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         await using var command = connection.CreateCommand();
+        var now = DateTimeOffset.UtcNow.ToString("O");
         command.CommandText = """
             SELECT p.id,p.name,p.state,p.search_generation,
               (SELECT COUNT(*) FROM documents d WHERE d.project_id=p.id AND d.tombstoned=0),
@@ -60,17 +61,28 @@ public sealed class SqliteSearchStore : ISearchStore
               (SELECT COUNT(*) FROM documents d WHERE d.project_id=p.id AND d.tombstoned=0 AND d.active_revision_id IS NOT NULL),
               (SELECT COUNT(*) FROM project_errors e WHERE e.project_id=p.id),
               (SELECT MAX(completed_utc) FROM index_runs r WHERE r.project_id=p.id AND r.state='completed'),
-              (SELECT d.path FROM index_jobs j JOIN documents d ON d.id=j.document_id WHERE j.project_id=p.id AND j.state='running' ORDER BY j.updated_utc LIMIT 1)
+              (SELECT d.path FROM index_jobs j JOIN documents d ON d.id=j.document_id WHERE j.project_id=p.id AND j.state='running' ORDER BY j.updated_utc LIMIT 1),
+              (SELECT COUNT(*) FROM index_jobs j WHERE j.project_id=p.id AND j.state IN ('queued','retry_wait')),
+              (SELECT COUNT(*) FROM index_jobs j WHERE j.project_id=p.id AND j.state='retry_wait' AND j.not_before_utc>$now),
+              (SELECT COUNT(*) FROM index_jobs j WHERE j.project_id=p.id AND j.state='running'),
+              (SELECT COUNT(*) FROM index_jobs j WHERE j.project_id=p.id AND j.state='running' AND j.attempt>0),
+              (SELECT MIN(j.not_before_utc) FROM index_jobs j WHERE j.project_id=p.id AND j.state='retry_wait' AND j.not_before_utc>$now)
             FROM projects p ORDER BY p.name_key;
             """;
-        var rows = new List<(Guid Id, string Name, ProjectState State, long Generation, int Documents, int Pending, int Indexed, int Errors, DateTimeOffset? Last, string? Current)>();
+        command.Parameters.AddWithValue("$now", now);
+        var rows = new List<(Guid Id, string Name, ProjectState State, long Generation, int Documents,
+            int Pending, int Indexed, int Errors, DateTimeOffset? Last, string? Current, int Queued,
+            int RetryScheduled, int Processing, int RunningRetry, DateTimeOffset? NextRetry)>();
         await using (var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
         {
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
                 rows.Add((Guid.Parse(reader.GetString(0)), reader.GetString(1), (ProjectState)reader.GetInt32(2),
                     reader.GetInt64(3), reader.GetInt32(4), reader.GetInt32(5), reader.GetInt32(6), reader.GetInt32(7),
-                    reader.IsDBNull(8) ? null : DateTimeOffset.Parse(reader.GetString(8)), reader.IsDBNull(9) ? null : reader.GetString(9)));
+                    reader.IsDBNull(8) ? null : DateTimeOffset.Parse(reader.GetString(8)),
+                    reader.IsDBNull(9) ? null : reader.GetString(9), reader.GetInt32(10), reader.GetInt32(11),
+                    reader.GetInt32(12), reader.GetInt32(13),
+                    reader.IsDBNull(14) ? null : DateTimeOffset.Parse(reader.GetString(14))));
             }
         }
 
@@ -79,7 +91,11 @@ public sealed class SqliteSearchStore : ISearchStore
         {
             var folders = await LoadFoldersAsync(connection, row.Id, cancellationToken).ConfigureAwait(false);
             projects.Add(new ProjectSummary(row.Id, row.Name, row.State, folders, row.Generation, row.Documents,
-                row.Pending, row.Indexed, row.Errors, row.Last, row.Current));
+                row.Pending, row.Indexed, row.Errors, row.Last, row.Current)
+            {
+                Work = new ProjectWorkSummary(row.Queued, row.RetryScheduled, row.Processing, row.RunningRetry,
+                    row.NextRetry)
+            });
         }
 
         return projects;

@@ -90,6 +90,10 @@ public sealed class RecoveryFlowRegressionTests
             Assert.Equal(1, project.DocumentCount);
             Assert.Equal(1, project.IndexedCount);
             Assert.Equal(1, project.PendingCount);
+            Assert.Equal(0, project.Work.ProcessingCount);
+            Assert.Equal(1, project.Work.QueuedCount);
+            Assert.Equal(1, project.Work.RetryScheduledCount);
+            Assert.Equal(ProjectWorkPhase.RetryScheduled, project.Work.Phase);
 
             var document = await database.Store.GetDocumentInfoAsync(projectId, committed.DocumentId, null,
                 cancellationToken);
@@ -126,6 +130,18 @@ public sealed class RecoveryFlowRegressionTests
         await coordinator.StartAsync(cancellationToken);
         try
         {
+            await WaitUntilAsync(async () =>
+            {
+                var project = (await database.Store.ListProjectsAsync(cancellationToken))
+                    .Single(item => item.Id == projectId);
+                return extractor.CallCount == 1 && project.Work.Phase == ProjectWorkPhase.RetryScheduled;
+            }, TimeSpan.FromSeconds(5), cancellationToken);
+
+            var scheduled = (await database.Store.ListProjectsAsync(cancellationToken))
+                .Single(item => item.Id == projectId);
+            Assert.Equal(0, scheduled.Work.ProcessingCount);
+            Assert.NotNull(scheduled.Work.NextRetryUtc);
+
             await WaitUntilAsync(async () =>
             {
                 var project = (await database.Store.ListProjectsAsync(cancellationToken))

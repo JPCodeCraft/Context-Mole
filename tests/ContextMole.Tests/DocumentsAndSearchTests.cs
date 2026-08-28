@@ -83,6 +83,21 @@ public sealed class DocumentExtractionTests
     }
 
     [Fact]
+    public async Task LegacyWindows1252TextIsDecodedWithoutTreatingEncodingDetectionAsFailure()
+    {
+        using var workspace = new TemporaryDirectory();
+        var path = workspace.File("legacy.txt");
+        await File.WriteAllBytesAsync(path,
+            [0x52, 0xE9, 0x73, 0x75, 0x6D, 0xE9, 0x20, 0x65, 0x76, 0x69, 0x64, 0x65, 0x6E, 0x63, 0x65],
+            TestContext.Current.CancellationToken);
+
+        var result = await ExtractAsync(path, TestContext.Current.CancellationToken);
+
+        Assert.Empty(result.Errors);
+        Assert.Contains("Résumé evidence", SectionText(result.Root));
+    }
+
+    [Fact]
     public async Task ZipKeepsHealthyEntriesSearchableWhenAnotherEntryIsMalformed()
     {
         using var workspace = new TemporaryDirectory();

@@ -20,6 +20,9 @@ public sealed record GraniteValidationResult(
 
 public static class GraniteEmbeddingDiagnostics
 {
+    private const string ArenaShrinkageConfigKey = "memory.enable_memory_arena_shrinkage";
+    private const string CpuArenaShrinkageConfigValue = "cpu:0";
+
     public static GraniteValidationResult ValidateProfiles(
         IAppPaths paths,
         GraniteEmbeddingModelDefinition model,
@@ -93,19 +96,24 @@ public static class GraniteEmbeddingDiagnostics
             File.WriteAllText(marker, $"Disabled after parity validation: cosine={meanCosine:F6}, top10_overlap={meanOverlap:P2}");
         }
 
+        using var currentProcess = Process.GetCurrentProcess();
         return new GraniteValidationResult(enabled, meanCosine, meanOverlap,
             quantWatch.Elapsed.TotalMilliseconds / all.Length, fpWatch.Elapsed.TotalMilliseconds / all.Length,
-            Process.GetCurrentProcess().PeakWorkingSet64,
+            currentProcess.PeakWorkingSet64,
             enabled ? "Quantized profile passed parity thresholds." : "Quantized profile failed parity thresholds; FP32 is required.");
     }
 
-    private static InferenceSession CreateSession(string path, int threadCount) => new(path, new SessionOptions
+    private static InferenceSession CreateSession(string path, int threadCount)
     {
-        ExecutionMode = ExecutionMode.ORT_SEQUENTIAL,
-        InterOpNumThreads = 1,
-        IntraOpNumThreads = threadCount,
-        GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL
-    });
+        using var options = new SessionOptions
+        {
+            ExecutionMode = ExecutionMode.ORT_SEQUENTIAL,
+            InterOpNumThreads = 1,
+            IntraOpNumThreads = threadCount,
+            GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL
+        };
+        return new InferenceSession(path, options);
+    }
 
     private static List<float[]> Embed(
         InferenceSession session,
@@ -167,6 +175,7 @@ public static class GraniteEmbeddingDiagnostics
     {
         cancellationToken.ThrowIfCancellationRequested();
         using var runOptions = new RunOptions();
+        runOptions.AddRunConfigEntry(ArenaShrinkageConfigKey, CpuArenaShrinkageConfigValue);
         using var cancellationRegistration = cancellationToken.Register(
             static state => ((RunOptions)state!).Terminate = true, runOptions);
         try

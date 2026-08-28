@@ -150,15 +150,40 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
     public Task SetProjectPausedAsync(Guid projectId, bool paused, CancellationToken cancellationToken = default) =>
         EnqueueAsync<object?>(async (connection, token) =>
         {
-            var changed = await ExecuteAsync(connection, null,
+            var now = DateTimeOffset.UtcNow.ToString("O");
+            using var transaction = connection.BeginTransaction();
+            var changed = await ExecuteAsync(connection, transaction,
                 "UPDATE projects SET state=$state,updated_utc=$now WHERE id=$id;",
                 [new("$state", (int)(paused ? ProjectState.Paused : ProjectState.Active)),
-                 new("$now", DateTimeOffset.UtcNow.ToString("O")), new("$id", projectId.ToString())], token).ConfigureAwait(false);
+                 new("$now", now), new("$id", projectId.ToString())], token).ConfigureAwait(false);
             if (changed == 0)
             {
                 throw new ContextMoleException("project_not_found", "The project does not exist.");
             }
 
+            if (paused)
+            {
+                // Pausing is also the durable cancellation boundary. Workers that still hold an
+                // in-memory lease may finish unwinding later, but their stale completion/failure
+                // callbacks cannot consume this requeued job.
+                await ExecuteAsync(connection, transaction,
+                    """
+                    UPDATE index_jobs
+                    SET state='queued',not_before_utc=$now,lease_until_utc=NULL,updated_utc=$now
+                    WHERE project_id=$project AND state='running';
+                    """,
+                    [new("$now", now), new("$project", projectId.ToString())], token).ConfigureAwait(false);
+                await ExecuteAsync(connection, transaction,
+                    """
+                    DELETE FROM document_revisions
+                    WHERE status='staging' AND document_id IN (
+                      SELECT id FROM documents WHERE project_id=$project
+                    );
+                    """,
+                    [new("$project", projectId.ToString())], token).ConfigureAwait(false);
+            }
+
+            await transaction.CommitAsync(token).ConfigureAwait(false);
             return null;
         }, cancellationToken);
 
@@ -634,9 +659,20 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
             await using (var select = connection.CreateCommand())
             {
                 select.Transaction = transaction;
-                select.CommandText = "SELECT observation_epoch,sha256,active_revision_id,path,folder_id,path_key,file_name,extension,last_seen_token FROM documents WHERE id=$document AND project_id=$project AND tombstoned=0;";
+                select.CommandText =
+                    """
+                    SELECT d.observation_epoch,d.sha256,d.active_revision_id,d.path,d.folder_id,d.path_key,
+                           d.file_name,d.extension,d.last_seen_token
+                    FROM documents d
+                    JOIN projects p ON p.id=d.project_id
+                    JOIN index_jobs j ON j.id=$job AND j.project_id=d.project_id AND j.document_id=d.id
+                    WHERE d.id=$document AND d.project_id=$project AND d.tombstoned=0
+                      AND p.state=$active AND j.state='running';
+                    """;
+                select.Parameters.AddWithValue("$job", job.JobId.ToString());
                 select.Parameters.AddWithValue("$document", job.DocumentId.ToString());
                 select.Parameters.AddWithValue("$project", job.ProjectId.ToString());
+                select.Parameters.AddWithValue("$active", (int)ProjectState.Active);
                 await using var reader = await select.ExecuteReaderAsync(token).ConfigureAwait(false);
                 if (!await reader.ReadAsync(token).ConfigureAwait(false))
                 {
@@ -785,11 +821,17 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                            EXISTS(SELECT 1 FROM document_revisions r
                                   WHERE r.id=$revision AND r.document_id=d.id AND r.status='staging')
                     FROM documents d
-                    WHERE d.id=$document AND d.project_id=$project AND d.tombstoned=0;
+                    JOIN projects p ON p.id=d.project_id
+                    JOIN index_jobs j ON j.id=$job AND j.project_id=d.project_id AND j.document_id=d.id
+                    WHERE d.id=$document AND d.project_id=$project AND d.tombstoned=0
+                      AND p.state=$active AND j.state='running' AND j.kind<>$embedding_refresh;
                     """;
+                select.Parameters.AddWithValue("$job", request.JobId.ToString());
                 select.Parameters.AddWithValue("$document", request.DocumentId.ToString());
                 select.Parameters.AddWithValue("$project", request.ProjectId.ToString());
                 select.Parameters.AddWithValue("$revision", request.RevisionId.ToString());
+                select.Parameters.AddWithValue("$active", (int)ProjectState.Active);
+                select.Parameters.AddWithValue("$embedding_refresh", (int)IndexJobKind.EmbeddingRefresh);
                 await using var reader = await select.ExecuteReaderAsync(token).ConfigureAwait(false);
                 if (!await reader.ReadAsync(token).ConfigureAwait(false))
                 {
@@ -938,13 +980,15 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                     """
                     SELECT j.state,j.kind,j.expected_epoch,d.observation_epoch,d.active_revision_id
                     FROM index_jobs j
+                    JOIN projects p ON p.id=j.project_id
                     JOIN documents d ON d.id=j.document_id
                     WHERE j.id=$job AND j.project_id=$project AND j.document_id=$document
-                      AND d.tombstoned=0;
+                      AND d.tombstoned=0 AND p.state=$active;
                     """;
                 select.Parameters.AddWithValue("$job", job.JobId.ToString());
                 select.Parameters.AddWithValue("$project", job.ProjectId.ToString());
                 select.Parameters.AddWithValue("$document", job.DocumentId.ToString());
+                select.Parameters.AddWithValue("$active", (int)ProjectState.Active);
                 await using var reader = await select.ExecuteReaderAsync(token).ConfigureAwait(false);
                 if (await reader.ReadAsync(token).ConfigureAwait(false))
                 {
@@ -1000,14 +1044,16 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                     """
                     SELECT j.state,j.kind,j.expected_epoch,d.observation_epoch,d.active_revision_id,r.status
                     FROM index_jobs j
+                    JOIN projects p ON p.id=j.project_id
                     JOIN documents d ON d.id=j.document_id
                     LEFT JOIN document_revisions r ON r.id=d.active_revision_id
                     WHERE j.id=$job AND j.project_id=$project AND j.document_id=$document
-                      AND d.tombstoned=0;
+                      AND d.tombstoned=0 AND p.state=$active;
                     """;
                 select.Parameters.AddWithValue("$job", request.JobId.ToString());
                 select.Parameters.AddWithValue("$project", request.ProjectId.ToString());
                 select.Parameters.AddWithValue("$document", request.DocumentId.ToString());
+                select.Parameters.AddWithValue("$active", (int)ProjectState.Active);
                 await using var reader = await select.ExecuteReaderAsync(token).ConfigureAwait(false);
                 if (await reader.ReadAsync(token).ConfigureAwait(false))
                 {
@@ -1297,7 +1343,7 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                     THEN NULL ELSE last_error
                 END,
                 updated_utc=$now
-            WHERE id=$id;
+            WHERE id=$id AND state='running';
             """,
             [new("$leased_epoch", leasedEpoch), new("$leased_kind", (object?)(int?)leasedKind ?? DBNull.Value),
              new("$now", now), new("$id", jobId.ToString())], cancellationToken);

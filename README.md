@@ -36,7 +36,7 @@ On Windows, start-at-sign-in is enabled on first launch and can be disabled in S
 
 ## AI Connections
 
-Every configured client launches the same local, read-only MCP server and searches the same Context Mole database. Indexes and embeddings are not duplicated. “Configured” means the client knows how to start Context Mole; the MCP process itself runs only while that client or session is running.
+Every configured client launches a small, local stdio adapter and searches the same Context Mole database. The adapters share one on-demand broker process, so Granite model sessions and the vector-index cache are not duplicated when several clients are open. Adapters run only while their client or session is running; the broker unloads idle model state and exits after extended inactivity.
 
 Context Mole can configure these clients automatically:
 
@@ -505,7 +505,7 @@ dotnet run --project src/App.UI/ContextMole.App.UI.csproj -c Release --no-restor
 
 Package versions are centralized in `Directory.Packages.props`, and lock files are committed. See [development checks](docs/DEVELOPMENT.md) and the [native smoke checklist](docs/NATIVE-SMOKE.md) for additional validation.
 
-Publishing the UI also places the self-contained MCP sidecar in its `mcp-server` directory:
+Publishing the UI also places the self-contained MCP adapter in its `mcp-server` directory and the shared broker in `mcp-server/broker`:
 
 ```powershell
 dotnet publish src/App.UI/ContextMole.App.UI.csproj `

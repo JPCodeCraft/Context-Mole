@@ -2,7 +2,6 @@ using ContextMole.Core;
 using ContextMole.Documents;
 using ContextMole.Indexing;
 using ContextMole.Infrastructure;
-using ContextMole.Mcp;
 using ContextMole.Search;
 using ContextMole.Storage;
 
@@ -726,21 +725,8 @@ public sealed class IndexingStateTests
 }
 
 [Collection(nameof(SqliteIntegrationCollection))]
-public sealed class McpBoundaryTests
+public sealed class SearchBoundaryTests
 {
-    [Fact]
-    public async Task UninitializedIndexReturnsStructuredPublicError()
-    {
-        using var paths = new StorageTestPaths();
-        using var budget = new GlobalCpuBudget(new StorageFixedCpuSettings());
-        var tools = CreateTools(new SqliteSearchStore(paths), paths, budget);
-
-        var result = await tools.ListProjects(CancellationToken.None);
-        var envelope = Assert.IsType<ErrorEnvelope>(result);
-        Assert.Equal("not_initialized", envelope.Error.Code);
-        Assert.False(envelope.Error.Retryable);
-    }
-
     [Fact]
     public async Task InvalidSearchInputIsRejectedBeforeSearchExecution()
     {
@@ -748,30 +734,18 @@ public sealed class McpBoundaryTests
         await using var database = await StorageTestDatabase.CreateAsync(cancellationToken);
         var (projectId, _) = await database.CreateProjectAsync("MCP boundary", cancellationToken);
         using var budget = new GlobalCpuBudget(new StorageFixedCpuSettings());
-        var tools = CreateTools(database.Store, database.Paths, budget);
+        var search = new HybridSearchService(database.Store, new StorageUnavailableEmbeddings(),
+            new FlatVectorIndexFactory(), new VectorIndexCache(), budget);
 
-        var empty = Assert.IsType<ErrorEnvelope>(await tools.SearchProject(projectId, SearchMode.Semantic, "   ",
-            cancellationToken: cancellationToken));
-        Assert.Equal("invalid_request", empty.Error.Code);
-        var invalidRange = Assert.IsType<ErrorEnvelope>(await tools.SearchProject(projectId, SearchMode.Keyword,
-            clauses: [new McpSearchClause("query", "query")], filters:
-            new McpSearchFilters(ModifiedFromUtc: DateTimeOffset.UtcNow,
-                ModifiedToUtc: DateTimeOffset.UtcNow.AddDays(-1)), cancellationToken: cancellationToken));
-        Assert.Equal("invalid_filter", invalidRange.Error.Code);
-    }
-
-    private static McpTools CreateTools(ISearchStore store, IAppPaths paths, IGlobalCpuBudget budget)
-    {
-        var embeddings = new StorageUnavailableEmbeddings();
-        var search = new HybridSearchService(store, embeddings, new FlatVectorIndexFactory(),
-            new VectorIndexCache(), budget);
-        return new McpTools(store, search, new UnusedMaterializer(), paths, NullLogger<McpTools>.Instance);
-    }
-
-    private sealed class UnusedMaterializer : IContentMaterializer
-    {
-        public Task<MaterializedContent> MaterializeAsync(Guid projectId, Guid contentId,
-            CancellationToken cancellationToken = default) =>
-            throw new InvalidOperationException("Materialization should not run in an input validation test.");
+        var empty = await Assert.ThrowsAsync<ContextMoleException>(() => search.SearchAsync(
+            new SearchRequest(projectId, SearchMode.Semantic, "   "), cancellationToken));
+        Assert.Equal("invalid_request", empty.Code);
+        var now = DateTimeOffset.UtcNow;
+        var invalidRange = await Assert.ThrowsAsync<ContextMoleException>(() => search.SearchAsync(
+            new SearchRequest(projectId, SearchMode.Keyword,
+                Clauses: [new SearchClause("query", "query")],
+                Filters: new SearchFilters(ModifiedFromUtc: now, ModifiedToUtc: now.AddDays(-1))),
+            cancellationToken));
+        Assert.Equal("invalid_filter", invalidRange.Code);
     }
 }

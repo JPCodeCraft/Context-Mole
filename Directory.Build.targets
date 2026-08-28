@@ -1,0 +1,10 @@
+<Project>
+  <Target Name="RemoveExternalSymbolsFromReleasePublish"
+          AfterTargets="Publish"
+          Condition="'$(Configuration)' == 'Release' and '$(PublishDir)' != ''">
+    <ItemGroup>
+      <_ExternalPublishSymbols Include="$(PublishDir)**\*.pdb" />
+    </ItemGroup>
+    <Delete Files="@(_ExternalPublishSymbols)" />
+  </Target>
+</Project>

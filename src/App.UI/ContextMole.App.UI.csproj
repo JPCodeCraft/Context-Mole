@@ -33,6 +33,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\Broker.Protocol\ContextMole.Broker.Protocol.csproj" />
     <ProjectReference Include="..\Core\ContextMole.Core.csproj" />
     <ProjectReference Include="..\Indexing\ContextMole.Indexing.csproj" />
     <ProjectReference Include="..\Documents\ContextMole.Documents.csproj" />

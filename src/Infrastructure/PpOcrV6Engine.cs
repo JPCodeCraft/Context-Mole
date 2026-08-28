@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Runtime.InteropServices;
@@ -23,6 +24,11 @@ namespace ContextMole.Infrastructure;
 /// </summary>
 public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
 {
+    private const string ArenaShrinkageConfigKey = "memory.enable_memory_arena_shrinkage";
+    private const string CpuArenaShrinkageConfigValue = "cpu:0";
+    public const long OcrMemoryTargetBytes = 2304L * 1024 * 1024;
+    internal static readonly TimeSpan DefaultSessionIdleTimeout = TimeSpan.FromMinutes(5);
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         TypeInfoResolver = new DefaultJsonTypeInfoResolver(),
@@ -48,19 +54,24 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
     private readonly IAppPaths _paths;
     private readonly ICpuUsageSettings _cpuUsageSettings;
     private readonly IGlobalCpuBudget _cpuBudget;
+    private readonly IMemoryAdmissionController _memoryAdmission;
     private readonly IDisposable? _ownedCpuBudget;
     private readonly HttpClient _client;
     private readonly SemaphoreSlim _installGate = new(1, 1);
     private readonly SemaphoreSlim _inferenceGate = new(1, 1);
     private readonly CancellationTokenSource _lifetime = new();
     private readonly object _stateGate = new();
+    private readonly TimeSpan _sessionIdleTimeout;
+    private readonly Timer _sessionIdleTimer;
     private InferenceSession? _detector;
     private InferenceSession? _recognizer;
     private IReadOnlyList<string>? _characters;
     private string? _detectorInputName;
     private string? _recognizerInputName;
+    private volatile bool _areAssetsReady;
     private volatile bool _isAvailable;
     private int _disposed;
+    private long _lastOcrActivityTimestamp;
     private string? _unavailableReason;
     private int _configuredThreadCount;
 
@@ -77,17 +88,54 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
     public PpOcrV6Engine(
         IAppPaths paths,
         ICpuUsageSettings cpuUsageSettings,
-        IGlobalCpuBudget cpuBudget)
+        IGlobalCpuBudget cpuBudget) : this(paths, cpuUsageSettings, cpuBudget,
+        UnboundedMemoryAdmissionController.Instance, DefaultSessionIdleTimeout)
     {
+    }
+
+    public PpOcrV6Engine(
+        IAppPaths paths,
+        ICpuUsageSettings cpuUsageSettings,
+        IGlobalCpuBudget cpuBudget,
+        IMemoryAdmissionController memoryAdmission) : this(paths, cpuUsageSettings, cpuBudget,
+        memoryAdmission, DefaultSessionIdleTimeout)
+    {
+    }
+
+    internal PpOcrV6Engine(
+        IAppPaths paths,
+        ICpuUsageSettings cpuUsageSettings,
+        IGlobalCpuBudget cpuBudget,
+        TimeSpan sessionIdleTimeout) : this(paths, cpuUsageSettings, cpuBudget,
+        UnboundedMemoryAdmissionController.Instance, sessionIdleTimeout)
+    {
+    }
+
+    internal PpOcrV6Engine(
+        IAppPaths paths,
+        ICpuUsageSettings cpuUsageSettings,
+        IGlobalCpuBudget cpuBudget,
+        IMemoryAdmissionController memoryAdmission,
+        TimeSpan sessionIdleTimeout)
+    {
+        if (sessionIdleTimeout <= TimeSpan.Zero || sessionIdleTimeout == Timeout.InfiniteTimeSpan)
+            throw new ArgumentOutOfRangeException(nameof(sessionIdleTimeout));
         _paths = paths;
         _cpuUsageSettings = cpuUsageSettings;
         _cpuBudget = cpuBudget;
+        _memoryAdmission = memoryAdmission ?? throw new ArgumentNullException(nameof(memoryAdmission));
+        _sessionIdleTimeout = sessionIdleTimeout;
         _client = new HttpClient { Timeout = TimeSpan.FromHours(2) };
         _client.DefaultRequestHeaders.UserAgent.ParseAdd("ContextMole/1.0");
-        LoadCore(_cpuUsageSettings.ThreadLimit);
+        _sessionIdleTimer = new Timer(static state => ((PpOcrV6Engine)state!).StartIdleUnload(), this,
+            Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
+        _unavailableReason = IsPlatformSupported()
+            ? "Preparing the local PP-OCRv6 medium model…"
+            : "PP-OCRv6 is unavailable because ONNX Runtime 1.29 does not provide an Intel macOS native library.";
     }
 
     public bool IsAvailable => _isAvailable;
+    public bool AreAssetsReady => _areAssetsReady;
 
     public string? UnavailableReason
     {
@@ -97,10 +145,10 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
         }
     }
 
-    public async Task EnsureAvailableAsync(CancellationToken cancellationToken = default)
+    public async Task PrepareAssetsAsync(CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
-        if (IsAvailable) return;
+        if (AreAssetsReady) return;
         if (!IsPlatformSupported())
         {
             throw new ContextMoleException("ocr_platform_unsupported",
@@ -113,49 +161,80 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
         try
         {
             ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
-            if (IsAvailable) return;
+            if (AreAssetsReady) return;
 
             var directory = ModelDirectory;
             Directory.CreateDirectory(directory);
-            var assets = new[]
-            {
-                new DownloadAsset("PP-OCRv6 detector", BuildUrl(DetectorModelId, DetectorRevision, "inference.onnx"),
-                    Path.Combine(directory, "detector.onnx"), DetectorSha256),
-                new DownloadAsset("PP-OCRv6 recognizer", BuildUrl(RecognizerModelId, RecognizerRevision, "inference.onnx"),
-                    Path.Combine(directory, "recognizer.onnx"), RecognizerSha256),
-                new DownloadAsset("PP-OCRv6 character dictionary", BuildUrl(RecognizerModelId, RecognizerRevision, "inference.yml"),
-                    Path.Combine(directory, "recognizer.yml"), RecognizerConfigSha256)
-            };
-
-            foreach (var asset in assets)
+            foreach (var asset in GetDownloadAssets(directory))
             {
                 await DownloadVerifiedAsync(asset, operationToken).ConfigureAwait(false);
             }
 
             await WritePolicyAsync(directory, operationToken).ConfigureAwait(false);
-            LoadCore(_cpuUsageSettings.ThreadLimit);
-            if (!IsAvailable)
-            {
-                throw new ContextMoleException("ocr_initialization_failed",
-                    UnavailableReason ?? "PP-OCRv6 could not be initialized.", true);
-            }
+            MarkAssetsPrepared();
         }
         catch (OperationCanceledException)
         {
             throw;
         }
-        catch (ContextMoleException)
+        catch (ContextMoleException exception)
         {
+            MarkAssetsUnavailable(exception.Message);
             throw;
         }
         catch (Exception exception)
         {
-            SetUnavailable($"PP-OCRv6 setup failed: {exception.Message}");
+            MarkAssetsUnavailable($"PP-OCRv6 setup failed: {exception.Message}");
             throw new ContextMoleException("ocr_setup_failed", UnavailableReason!, true);
         }
         finally
         {
             _installGate.Release();
+        }
+    }
+
+    public async Task EnsureAvailableAsync(CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+        if (IsAvailable)
+        {
+            ScheduleSessionIdleUnload();
+            return;
+        }
+
+        using var operation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _lifetime.Token);
+        var operationToken = operation.Token;
+        await PrepareAssetsAsync(operationToken).ConfigureAwait(false);
+        using var memory = await _memoryAdmission.AcquireAsync(
+            new MemoryWorkEstimate(OcrMemoryTargetBytes, "ocr-inference"),
+            operationToken).ConfigureAwait(false);
+        using var memoryActivation = memory.Activate();
+        await EnsureSessionsAvailableAsync(operationToken).ConfigureAwait(false);
+    }
+
+    private async Task EnsureSessionsAvailableAsync(CancellationToken cancellationToken)
+    {
+        if (IsAvailable)
+        {
+            ScheduleSessionIdleUnload();
+            return;
+        }
+
+        await _inferenceGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+            if (!IsAvailable) LoadCore(_cpuUsageSettings.ThreadLimit);
+            if (!IsAvailable)
+            {
+                throw new ContextMoleException("ocr_initialization_failed",
+                    UnavailableReason ?? "PP-OCRv6 could not be initialized.", true);
+            }
+            ScheduleSessionIdleUnload();
+        }
+        finally
+        {
+            _inferenceGate.Release();
         }
     }
 
@@ -170,12 +249,17 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
         var inferenceGateHeld = false;
         try
         {
-            await EnsureAvailableAsync(operationToken).ConfigureAwait(false);
+            await PrepareAssetsAsync(operationToken).ConfigureAwait(false);
+            using var memory = await _memoryAdmission.AcquireAsync(
+                new MemoryWorkEstimate(OcrMemoryTargetBytes, "ocr-inference"),
+                operationToken).ConfigureAwait(false);
+            using var memoryActivation = memory.Activate();
+            await EnsureSessionsAvailableAsync(operationToken).ConfigureAwait(false);
             using var cpuCapacity = await _cpuBudget.AcquireFullCapacityAsync(operationToken).ConfigureAwait(false);
             await _inferenceGate.WaitAsync(operationToken).ConfigureAwait(false);
             inferenceGateHeld = true;
             ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
-            if (_configuredThreadCount != cpuCapacity.ThreadCount)
+            if (!IsAvailable || _configuredThreadCount != cpuCapacity.ThreadCount)
                 LoadCore(cpuCapacity.ThreadCount);
 
             return RecognizeCore(request.ImageBytes.Span, operationToken);
@@ -192,7 +276,11 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
         }
         finally
         {
-            if (inferenceGateHeld) _inferenceGate.Release();
+            if (inferenceGateHeld)
+            {
+                ScheduleSessionIdleUnload();
+                _inferenceGate.Release();
+            }
         }
     }
 
@@ -279,7 +367,7 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
         cancellationToken.ThrowIfCancellationRequested();
 
         using var output = RunWithCancellation(session,
-            [NamedOnnxValue.CreateFromTensor(inputName, input)], cancellationToken);
+            [NamedOnnxValue.CreateFromTensor(inputName, input)], shrinkCpuArena: false, cancellationToken);
         var map = output.First().AsTensor<float>();
         var dimensions = map.Dimensions.ToArray();
         int mapHeight;
@@ -402,7 +490,7 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
         FillRecognitionTensor(crop, input);
         cancellationToken.ThrowIfCancellationRequested();
         using var output = RunWithCancellation(session,
-            [NamedOnnxValue.CreateFromTensor(inputName, input)], cancellationToken);
+            [NamedOnnxValue.CreateFromTensor(inputName, input)], shrinkCpuArena: true, cancellationToken);
         var probabilities = output.First().AsTensor<float>();
         var dimensions = probabilities.Dimensions.ToArray();
         if (dimensions.Length != 3 || dimensions[0] != 1)
@@ -452,10 +540,13 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
     private static IDisposableReadOnlyCollection<DisposableNamedOnnxValue> RunWithCancellation(
         InferenceSession session,
         IReadOnlyCollection<NamedOnnxValue> inputs,
+        bool shrinkCpuArena,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         using var runOptions = new RunOptions();
+        if (shrinkCpuArena)
+            runOptions.AddRunConfigEntry(ArenaShrinkageConfigKey, CpuArenaShrinkageConfigValue);
         using var cancellationRegistration = cancellationToken.Register(
             static state => ((RunOptions)state!).Terminate = true, runOptions);
         try
@@ -561,7 +652,8 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
         if (!IsPlatformSupported())
         {
             ReplaceResources(null, null, null, null, null,
-                "PP-OCRv6 is unavailable because ONNX Runtime 1.29 does not provide an Intel macOS native library.");
+                "PP-OCRv6 is unavailable because ONNX Runtime 1.29 does not provide an Intel macOS native library.",
+                areAssetsReady: false);
             return;
         }
 
@@ -571,7 +663,7 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
         if (!File.Exists(detectorPath) || !File.Exists(recognizerPath) || !File.Exists(dictionaryPath))
         {
             ReplaceResources(null, null, null, null, null,
-                "Preparing the local PP-OCRv6 medium model…");
+                "Preparing the local PP-OCRv6 medium model…", areAssetsReady: false);
             return;
         }
 
@@ -579,16 +671,13 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
         InferenceSession? recognizer = null;
         try
         {
-            var options = new SessionOptions
-            {
-                ExecutionMode = ExecutionMode.ORT_SEQUENTIAL,
-                InterOpNumThreads = 1,
-                IntraOpNumThreads = threadCount,
-                GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL
-            };
-            detector = new InferenceSession(detectorPath, options);
-            recognizer = new InferenceSession(recognizerPath, options);
             var characters = LoadCharacters(dictionaryPath);
+            ReplaceResources(null, null, null, null, null, "PP-OCRv6 is loading.");
+            _configuredThreadCount = 0;
+            using (var detectorOptions = CreateDetectorSessionOptions(threadCount))
+                detector = new InferenceSession(detectorPath, detectorOptions);
+            using (var recognizerOptions = CreateRecognizerSessionOptions(threadCount))
+                recognizer = new InferenceSession(recognizerPath, recognizerOptions);
             ReplaceResources(detector, recognizer, characters,
                 detector.InputMetadata.Keys.Single(), recognizer.InputMetadata.Keys.Single(), null);
             _configuredThreadCount = threadCount;
@@ -603,13 +692,32 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
         }
     }
 
+    internal static SessionOptions CreateDetectorSessionOptions(int threadCount) => new()
+    {
+        ExecutionMode = ExecutionMode.ORT_SEQUENTIAL,
+        InterOpNumThreads = 1,
+        IntraOpNumThreads = threadCount,
+        GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL,
+        EnableCpuMemArena = false,
+        EnableMemoryPattern = false
+    };
+
+    internal static SessionOptions CreateRecognizerSessionOptions(int threadCount) => new()
+    {
+        ExecutionMode = ExecutionMode.ORT_SEQUENTIAL,
+        InterOpNumThreads = 1,
+        IntraOpNumThreads = threadCount,
+        GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL
+    };
+
     private void ReplaceResources(
         InferenceSession? detector,
         InferenceSession? recognizer,
         IReadOnlyList<string>? characters,
         string? detectorInputName,
         string? recognizerInputName,
-        string? unavailableReason)
+        string? unavailableReason,
+        bool? areAssetsReady = null)
     {
         InferenceSession? previousDetector;
         InferenceSession? previousRecognizer;
@@ -623,6 +731,7 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
             _detectorInputName = detectorInputName;
             _recognizerInputName = recognizerInputName;
             _unavailableReason = unavailableReason;
+            if (areAssetsReady.HasValue) _areAssetsReady = areAssetsReady.Value;
             _isAvailable = detector is not null && recognizer is not null && characters is not null;
         }
         previousDetector?.Dispose();
@@ -717,6 +826,17 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
         File.Move(partial, asset.Target, true);
     }
 
+    private static IReadOnlyList<DownloadAsset> GetDownloadAssets(string directory) =>
+    [
+        new DownloadAsset("PP-OCRv6 detector", BuildUrl(DetectorModelId, DetectorRevision, "inference.onnx"),
+            Path.Combine(directory, "detector.onnx"), DetectorSha256),
+        new DownloadAsset("PP-OCRv6 recognizer", BuildUrl(RecognizerModelId, RecognizerRevision, "inference.onnx"),
+            Path.Combine(directory, "recognizer.onnx"), RecognizerSha256),
+        new DownloadAsset("PP-OCRv6 character dictionary",
+            BuildUrl(RecognizerModelId, RecognizerRevision, "inference.yml"),
+            Path.Combine(directory, "recognizer.yml"), RecognizerConfigSha256)
+    ];
+
     private async Task WritePolicyAsync(string directory, CancellationToken cancellationToken)
     {
         var policy = new
@@ -743,6 +863,96 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
         }
     }
 
+    private void MarkAssetsUnavailable(string message)
+    {
+        lock (_stateGate)
+        {
+            _areAssetsReady = false;
+            if (!_isAvailable) _unavailableReason = message;
+        }
+    }
+
+    internal void MarkAssetsPrepared()
+    {
+        lock (_stateGate)
+        {
+            _areAssetsReady = true;
+            if (!_isAvailable) _unavailableReason = null;
+        }
+    }
+
+    private void ScheduleSessionIdleUnload()
+    {
+        lock (_stateGate)
+        {
+            if (_disposed != 0 || !_isAvailable) return;
+            _lastOcrActivityTimestamp = Stopwatch.GetTimestamp();
+            _sessionIdleTimer.Change(_sessionIdleTimeout, Timeout.InfiniteTimeSpan);
+        }
+    }
+
+    private void StartIdleUnload()
+    {
+        _ = UnloadIdleSessionsAsync();
+    }
+
+    private async Task UnloadIdleSessionsAsync()
+    {
+        if (Volatile.Read(ref _disposed) != 0) return;
+        try
+        {
+            await _inferenceGate.WaitAsync(_lifetime.Token).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is OperationCanceledException or ObjectDisposedException)
+        {
+            return;
+        }
+
+        TimeSpan? remaining = null;
+        InferenceSession? detector = null;
+        InferenceSession? recognizer = null;
+        try
+        {
+            lock (_stateGate)
+            {
+                if (_disposed != 0 || !_isAvailable) return;
+                var elapsed = Stopwatch.GetElapsedTime(_lastOcrActivityTimestamp);
+                if (elapsed < _sessionIdleTimeout)
+                {
+                    remaining = _sessionIdleTimeout - elapsed;
+                }
+                else
+                {
+                    detector = _detector;
+                    recognizer = _recognizer;
+                    _detector = null;
+                    _recognizer = null;
+                    _characters = null;
+                    _detectorInputName = null;
+                    _recognizerInputName = null;
+                    _configuredThreadCount = 0;
+                    _isAvailable = false;
+                    _unavailableReason = null;
+                }
+            }
+            detector?.Dispose();
+            recognizer?.Dispose();
+        }
+        finally
+        {
+            _inferenceGate.Release();
+        }
+
+        if (remaining is { } delay)
+        {
+            lock (_stateGate)
+            {
+                if (_disposed == 0 && _isAvailable)
+                    _sessionIdleTimer.Change(delay, Timeout.InfiniteTimeSpan);
+            }
+        }
+    }
+
     private static string BuildUrl(string modelId, string revision, string fileName) =>
         $"https://huggingface.co/{modelId}/resolve/{revision}/{fileName}?download=true";
 
@@ -766,6 +976,11 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
         _lifetime.Cancel();
+        lock (_stateGate)
+        {
+            _sessionIdleTimer.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
+            _sessionIdleTimer.Dispose();
+        }
 
         _installGate.Wait();
         try
@@ -794,6 +1009,30 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
     {
         var settings = new CpuUsageSettings(paths);
         return new StandaloneCpuDependencies(settings, new GlobalCpuBudget(settings));
+    }
+
+    private sealed class UnboundedMemoryAdmissionController : IMemoryAdmissionController
+    {
+        public static UnboundedMemoryAdmissionController Instance { get; } = new();
+
+        public ValueTask<IMemoryLease> AcquireAsync(MemoryWorkEstimate estimate,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult<IMemoryLease>(new UnboundedMemoryLease(estimate.EstimatedBytes));
+        }
+    }
+
+    private sealed class UnboundedMemoryLease(long reservedBytes) : IMemoryLease
+    {
+        public long ReservedBytes { get; } = reservedBytes;
+        public bool IsExclusive => false;
+        public SystemMemorySnapshot AdmissionSnapshot => default;
+        public long ProcessSoftLimitBytes => long.MaxValue;
+        public long SystemReserveBytes => 0;
+        public void Dispose()
+        {
+        }
     }
 
     private sealed record DownloadAsset(string Name, string Url, string Target, string Sha256);

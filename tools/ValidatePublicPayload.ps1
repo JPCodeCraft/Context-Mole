@@ -19,12 +19,14 @@ if ($applicationExecutables.Count -ne 1) {
 
 $applicationRoot = $applicationExecutables[0].DirectoryName
 $mcpRoot = Join-Path $applicationRoot "mcp-server"
+$brokerRoot = Join-Path $mcpRoot "broker"
 $uninstallHelperRoot = Join-Path $applicationRoot "uninstall-helper"
 $requiredFiles = @(
     (Join-Path $applicationRoot "LICENSE"),
     (Join-Path $applicationRoot "THIRD-PARTY-NOTICES.md"),
     (Join-Path $applicationRoot "THIRD-PARTY-LICENSES\SharpCompress.txt"),
     (Join-Path $mcpRoot "ContextMole.Mcp.exe"),
+    (Join-Path $brokerRoot "ContextMole.Broker.exe"),
     (Join-Path $mcpRoot "LICENSE"),
     (Join-Path $mcpRoot "THIRD-PARTY-NOTICES.md"),
     (Join-Path $mcpRoot "THIRD-PARTY-LICENSES\SharpCompress.txt"),
@@ -50,6 +52,13 @@ if ($allUninstallHelpers.Count -ne 1 -or
     throw "Expected exactly one Windows uninstall helper at uninstall-helper\ContextMole.UninstallHelper.exe."
 }
 
+$allBrokers = @(Get-ChildItem -LiteralPath $payloadRoot -Recurse -File -Filter "ContextMole.Broker.exe")
+$expectedBroker = [System.IO.Path]::GetFullPath((Join-Path $brokerRoot "ContextMole.Broker.exe"))
+if ($allBrokers.Count -ne 1 -or
+    [System.IO.Path]::GetFullPath($allBrokers[0].FullName) -cne $expectedBroker) {
+    throw "Expected exactly one shared broker at mcp-server\broker\ContextMole.Broker.exe."
+}
+
 $issues = [System.Collections.Generic.List[string]]::new()
 $payloadFiles = @(Get-ChildItem -LiteralPath $payloadRoot -Recurse -File)
 
@@ -64,6 +73,11 @@ foreach ($file in $payloadFiles) {
     if ($isSensitive) {
         $relativePath = [System.IO.Path]::GetRelativePath($payloadRoot, $file.FullName)
         $issues.Add("Sensitive file included in the payload: $relativePath")
+    }
+
+    if ($file.Extension -ieq '.pdb') {
+        $relativePath = [System.IO.Path]::GetRelativePath($payloadRoot, $file.FullName)
+        $issues.Add("External symbol file included in the payload: $relativePath")
     }
 }
 

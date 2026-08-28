@@ -12,6 +12,9 @@ namespace ContextMole.Infrastructure;
 
 public sealed class GraniteEmbeddingGenerator : IEmbeddingGenerator
 {
+    private const string ArenaShrinkageConfigKey = "memory.enable_memory_arena_shrinkage";
+    private const string CpuArenaShrinkageConfigValue = "cpu:0";
+
     private readonly IAppPaths _paths;
     private readonly ICpuUsageSettings _cpuUsageSettings;
     private readonly IEmbeddingModelSettings _modelSettings;
@@ -129,7 +132,8 @@ public sealed class GraniteEmbeddingGenerator : IEmbeddingGenerator
         try
         {
             tokenizer = Tokenizer.FromFile(tokenizerPath);
-            var options = new SessionOptions
+            ReplaceResources(null, null, $"{model.DisplayName} is loading.", policy, null, 0, null);
+            using var options = new SessionOptions
             {
                 ExecutionMode = ExecutionMode.ORT_SEQUENTIAL,
                 InterOpNumThreads = 1,
@@ -261,14 +265,16 @@ public sealed class GraniteEmbeddingGenerator : IEmbeddingGenerator
 
                     try
                     {
-                        all.AddRange(RunBatch(session, encoded, selectedModel.SourceDimensions, selectedModel.Dimensions));
+                        all.AddRange(RunBatch(session, encoded, selectedModel.SourceDimensions, selectedModel.Dimensions,
+                            cancellationToken));
                     }
                     catch (Exception exception) when (count > 1 && IsMemoryPressure(exception))
                     {
                         foreach (var item in encoded)
                         {
                             cancellationToken.ThrowIfCancellationRequested();
-                            all.Add(RunBatch(session, [item], selectedModel.SourceDimensions, selectedModel.Dimensions)[0]);
+                            all.Add(RunBatch(session, [item], selectedModel.SourceDimensions, selectedModel.Dimensions,
+                                cancellationToken)[0]);
                         }
                     }
                 }
@@ -300,7 +306,8 @@ public sealed class GraniteEmbeddingGenerator : IEmbeddingGenerator
         InferenceSession session,
         IReadOnlyList<long[]> encoded,
         int sourceDimensions,
-        int outputDimensions)
+        int outputDimensions,
+        CancellationToken cancellationToken)
     {
         var sequenceLength = encoded.Max(item => item.Length);
         var inputIds = new DenseTensor<long>([encoded.Count, sequenceLength]);
@@ -312,11 +319,11 @@ public sealed class GraniteEmbeddingGenerator : IEmbeddingGenerator
                 attentionMask[batch, token] = 1;
             }
 
-        using var results = session.Run(
-        [
-            NamedOnnxValue.CreateFromTensor("input_ids", inputIds),
-            NamedOnnxValue.CreateFromTensor("attention_mask", attentionMask)
-        ]);
+        using var results = RunWithCancellation(session,
+            [
+                NamedOnnxValue.CreateFromTensor("input_ids", inputIds),
+                NamedOnnxValue.CreateFromTensor("attention_mask", attentionMask)
+            ], cancellationToken);
         var output = results.First().AsTensor<float>();
         var dimensions = output.Dimensions.ToArray();
         if (dimensions.Length != 3 || dimensions[0] != encoded.Count || dimensions[2] != sourceDimensions ||
@@ -341,6 +348,26 @@ public sealed class GraniteEmbeddingGenerator : IEmbeddingGenerator
             vectors.Add(vector);
         }
         return vectors;
+    }
+
+    private static IDisposableReadOnlyCollection<DisposableNamedOnnxValue> RunWithCancellation(
+        InferenceSession session,
+        IReadOnlyCollection<NamedOnnxValue> inputs,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        using var runOptions = new RunOptions();
+        runOptions.AddRunConfigEntry(ArenaShrinkageConfigKey, CpuArenaShrinkageConfigValue);
+        using var cancellationRegistration = cancellationToken.Register(
+            static state => ((RunOptions)state!).Terminate = true, runOptions);
+        try
+        {
+            return session.Run(inputs, session.OutputMetadata.Keys.ToArray(), runOptions);
+        }
+        catch (OnnxRuntimeException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw new OperationCanceledException(cancellationToken);
+        }
     }
 
     private static bool IsMemoryPressure(Exception exception) => exception is OutOfMemoryException ||

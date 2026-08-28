@@ -68,7 +68,8 @@ public partial class ModelSetupWindow : Window
     {
         try
         {
-            Process.Start(new ProcessStartInfo(GraniteModelInstaller.GemmaTermsUrl) { UseShellExecute = true });
+            Process.Start(new ProcessStartInfo(GraniteModelInstaller.GemmaTermsUrl) { UseShellExecute = true })?
+                .Dispose();
         }
         catch (Exception exception)
         {

@@ -661,10 +661,44 @@ public sealed class HybridSearchService(
 
 public sealed class VectorIndexCache
 {
-    private const long Budget = 512L * 1024 * 1024;
+    public const long DefaultByteBudget = 512L * 1024 * 1024;
     private readonly object _gate = new();
     private readonly Dictionary<(Guid ProjectId, long Generation, string Policy), Entry> _entries = [];
+    private readonly long _byteBudget;
     private long _bytes;
+
+    public VectorIndexCache(long byteBudget = DefaultByteBudget)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(byteBudget);
+        _byteBudget = byteBudget;
+    }
+
+    public long ByteBudget => _byteBudget;
+
+    public long CurrentBytes
+    {
+        get { lock (_gate) return _bytes; }
+    }
+
+    public int Count
+    {
+        get { lock (_gate) return _entries.Count; }
+    }
+
+    public static long CalculateAdaptiveBudget(long totalPhysicalBytes)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(totalPhysicalBytes);
+        return Math.Min(DefaultByteBudget, Math.Max(1, totalPhysicalBytes / 20));
+    }
+
+    public void Clear()
+    {
+        lock (_gate)
+        {
+            _entries.Clear();
+            _bytes = 0;
+        }
+    }
 
     public bool TryGet(Guid projectId, long generation, string policy, out IVectorIndex index)
     {
@@ -686,8 +720,8 @@ public sealed class VectorIndexCache
     {
         var policy = snapshot.Policy?.Key ?? string.Empty;
         var key = (projectId, snapshot.SearchGeneration, policy);
-        var bytes = EstimateBytes(snapshot);
-        if (bytes > Budget)
+        var bytes = EstimateBytes(snapshot, _byteBudget);
+        if (bytes > _byteBudget)
             return factory.Create(snapshot);
 
         lock (_gate)
@@ -706,7 +740,7 @@ public sealed class VectorIndexCache
                 _entries.Remove(staleKey);
             }
 
-            while (_bytes + bytes > Budget && _entries.Count > 0)
+            while (_bytes > _byteBudget - bytes && _entries.Count > 0)
             {
                 var oldest = _entries.MinBy(pair => pair.Value.LastAccessUtc);
                 _entries.Remove(oldest.Key);
@@ -719,14 +753,14 @@ public sealed class VectorIndexCache
         }
     }
 
-    private static long EstimateBytes(VectorSnapshot snapshot)
+    private static long EstimateBytes(VectorSnapshot snapshot, long budget)
     {
         long bytes = 0;
         foreach (var entry in snapshot.Entries)
         {
             var entryBytes = 512L + entry.Vector.LongLength * sizeof(float) +
                              2L * (entry.SourcePath.Length + entry.Extension.Length);
-            if (entryBytes > Budget - bytes) return Budget + 1;
+            if (entryBytes > budget - bytes) return budget == long.MaxValue ? long.MaxValue : budget + 1;
             bytes += entryBytes;
         }
 

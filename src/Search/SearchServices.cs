@@ -6,8 +6,13 @@ namespace ContextMole.Search;
 
 public static class SearchServices
 {
-    public static IServiceCollection AddContextMoleSearch(this IServiceCollection services) => services
-        .AddSingleton<IVectorIndexFactory, FlatVectorIndexFactory>()
-        .AddSingleton<VectorIndexCache>()
-        .AddSingleton<HybridSearchService>();
+    public static IServiceCollection AddContextMoleSearch(this IServiceCollection services,
+        long vectorCacheByteBudget = VectorIndexCache.DefaultByteBudget)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(vectorCacheByteBudget);
+        return services
+            .AddSingleton<IVectorIndexFactory, FlatVectorIndexFactory>()
+            .AddSingleton(_ => new VectorIndexCache(vectorCacheByteBudget))
+            .AddSingleton<HybridSearchService>();
+    }
 }

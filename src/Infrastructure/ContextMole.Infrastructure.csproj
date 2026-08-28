@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
+    <ProjectReference Include="..\Broker.Protocol\ContextMole.Broker.Protocol.csproj" />
     <ProjectReference Include="..\Core\ContextMole.Core.csproj" />
   </ItemGroup>
 

@@ -17,6 +17,7 @@ public interface ICpuUsageSettings
     int MaximumThreadLimit { get; }
     event EventHandler? Changed;
     void SetProfile(CpuUsageProfile profile);
+    bool RefreshFromDisk() => false;
 }
 
 public interface IEmbeddingModelSettings
@@ -60,6 +61,9 @@ public interface IOcrEngine
 {
     bool IsAvailable { get; }
     string? UnavailableReason { get; }
+    bool AreAssetsReady => IsAvailable;
+    Task PrepareAssetsAsync(CancellationToken cancellationToken = default) =>
+        EnsureAvailableAsync(cancellationToken);
     Task EnsureAvailableAsync(CancellationToken cancellationToken = default);
     Task<OcrResult> RecognizeAsync(OcrRequest request, CancellationToken cancellationToken);
 }
@@ -91,6 +95,10 @@ public interface IIndexWriter
     Task Ready { get; }
     Task<Guid> CreateProjectAsync(CreateProjectRequest request, CancellationToken cancellationToken = default);
     Task UpdateProjectAsync(UpdateProjectRequest request, CancellationToken cancellationToken = default);
+    /// <summary>
+    /// Atomically changes the project's pause state. Pausing also releases and requeues the project's
+    /// running jobs and discards their partial staging revisions; queued retry schedules are preserved.
+    /// </summary>
     Task SetProjectPausedAsync(Guid projectId, bool paused, CancellationToken cancellationToken = default);
     Task RequestReindexAsync(Guid projectId, CancellationToken cancellationToken = default);
     Task RequestEmbeddingRefreshAsync(Guid projectId, EmbeddingPolicy targetPolicy, bool retryFailed,
