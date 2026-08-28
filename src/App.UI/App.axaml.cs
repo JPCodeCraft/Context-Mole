@@ -25,8 +25,28 @@ public partial class App : Application
         {
             var viewModel = Program.Services.GetRequiredService<MainViewModel>();
             var window = new MainWindow { DataContext = viewModel };
+            if (Program.LaunchInBackground)
+            {
+                window.ShowActivated = false;
+                window.ShowInTaskbar = false;
+                window.Opacity = 0;
+            }
             desktop.MainWindow = window;
             ConfigureTray(window);
+            if (Program.LaunchInBackground && _trayIcon is not null)
+            {
+                window.Opened += (_, _) =>
+                {
+                    window.Hide();
+                    window.Opacity = 1;
+                };
+            }
+            else
+            {
+                window.ShowActivated = true;
+                window.ShowInTaskbar = true;
+                window.Opacity = 1;
+            }
             viewModel.StartPolling();
         }
         base.OnFrameworkInitializationCompleted();
@@ -81,6 +101,8 @@ public partial class App : Application
 
     private static void ShowWindow(Window window)
     {
+        window.Opacity = 1;
+        window.ShowInTaskbar = true;
         window.Show();
         window.WindowState = WindowState.Normal;
         window.Activate();

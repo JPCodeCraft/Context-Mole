@@ -6,6 +6,23 @@ namespace ContextMole.Tests;
 public sealed class CoreAndInfrastructureTests
 {
     [Fact]
+    public void WindowsStartupRegistration_BuildsAQuotedBackgroundCommand()
+    {
+        var executable = Path.Combine(Path.GetTempPath(), "Context Mole", "ContextMole.App.UI.exe");
+
+        Assert.Equal(
+            $"\"{Path.GetFullPath(executable)}\" {WindowsStartupRegistration.BackgroundArgument}",
+            WindowsStartupRegistration.BuildCommand(executable));
+    }
+
+    [Fact]
+    public void WindowsStartupRegistration_RejectsUnsafeExecutablePaths()
+    {
+        Assert.Throws<ArgumentException>(() => WindowsStartupRegistration.BuildCommand("   "));
+        Assert.Throws<ArgumentException>(() => WindowsStartupRegistration.BuildCommand("bad\"path.exe"));
+    }
+
+    [Fact]
     public void TextNormalization_CleansAndNormalizesSearchText()
     {
         Assert.Equal("Hello\nWorld", TextNormalization.ForDisplay("\u00ADHello\u200B \t\r\nWorld\0"));

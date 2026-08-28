@@ -25,6 +25,7 @@ internal partial class MainViewModel : ViewModelBase
     private readonly IEmbeddingModelSettings _embeddingModelSettings;
     private readonly ICpuUsageSettings _cpuUsageSettings;
     private readonly WindowsStartupService _windowsStartup;
+    private readonly ProjectOrderService _projectOrder;
     private readonly GraniteModelInstaller _modelInstaller;
     private readonly AiConnectionsService _aiConnections;
     private readonly IndexingActivityTracker _indexingActivities;
@@ -42,6 +43,7 @@ internal partial class MainViewModel : ViewModelBase
     private Guid? _fileTypeCountsProjectId;
     private long _fileTypeCountsGeneration = -1;
     private int _fileTypeCountsDocumentCount = -1;
+    private bool _isProjectReordering;
 
     public MainViewModel(
         IIndexWriter writer,
@@ -51,6 +53,7 @@ internal partial class MainViewModel : ViewModelBase
         IEmbeddingModelSettings embeddingModelSettings,
         ICpuUsageSettings cpuUsageSettings,
         WindowsStartupService windowsStartup,
+        ProjectOrderService projectOrder,
         GraniteModelInstaller modelInstaller,
         AiConnectionsService aiConnections,
         IndexingActivityTracker indexingActivities,
@@ -66,6 +69,7 @@ internal partial class MainViewModel : ViewModelBase
         _cpuUsageSettings = cpuUsageSettings;
         _windowsStartup = windowsStartup;
         _windowsStartup.Initialize();
+        _projectOrder = projectOrder;
         _modelInstaller = modelInstaller;
         _aiConnections = aiConnections;
         _indexingActivities = indexingActivities;
@@ -294,6 +298,37 @@ internal partial class MainViewModel : ViewModelBase
     public void ShowProjects() => CurrentSection = MainSection.Projects;
 
     public void ShowSettings() => CurrentSection = MainSection.Settings;
+
+    public void BeginProjectReorder() => _isProjectReordering = true;
+
+    public bool MoveProject(Guid projectId, int targetIndex)
+    {
+        if (!_isProjectReordering || Projects.Count < 2) return false;
+        var sourceIndex = IndexOfProject(projectId, 0);
+        if (sourceIndex < 0) return false;
+
+        targetIndex = Math.Clamp(targetIndex, 0, Projects.Count - 1);
+        if (sourceIndex == targetIndex) return false;
+
+        Projects.Move(sourceIndex, targetIndex);
+        return true;
+    }
+
+    public void EndProjectReorder(bool persist)
+    {
+        if (!_isProjectReordering) return;
+        _isProjectReordering = false;
+        if (!persist) return;
+
+        try
+        {
+            _projectOrder.Save(Projects.Select(project => project.Id).ToArray());
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            StatusMessage = $"The project order could not be saved: {exception.Message}";
+        }
+    }
 
     partial void OnSelectedProjectChanged(ProjectItemViewModel? value)
     {
@@ -525,12 +560,16 @@ internal partial class MainViewModel : ViewModelBase
         await _refreshGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            var projects = await _store.ListProjectsAsync(cancellationToken).ConfigureAwait(false);
+            var projects = _projectOrder.Apply(
+                await _store.ListProjectsAsync(cancellationToken).ConfigureAwait(false));
             (Guid Id, long Generation, int DocumentCount)? fileTypeRefresh = null;
             await Dispatcher.UIThread.InvokeAsync(() =>
             {
                 var selectedId = preferredProjectId ?? SelectedProject?.Id;
-                ReconcileProjects(projects);
+                var orderedProjects = _isProjectReordering
+                    ? ProjectOrderService.Apply(projects, Projects.Select(project => project.Id).ToArray())
+                    : projects;
+                ReconcileProjects(orderedProjects);
                 SelectedProject = selectedId is null
                     ? Projects.FirstOrDefault()
                     : Projects.FirstOrDefault(project => project.Id == selectedId) ?? Projects.FirstOrDefault();

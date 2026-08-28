@@ -8,10 +8,12 @@
     <StackPanel Classes="pageContent">
       <Border IsVisible="{Binding HasNoSelection}" Classes="card" MinHeight="260">
         <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="9" MaxWidth="420">
-          <Border Width="48" Height="48" CornerRadius="14" Background="{DynamicResource AccentSubtleBrush}">
+          <Button Width="48" Height="48" Classes="addProjectButton" Click="AddProject"
+                  HorizontalAlignment="Center"
+                  ToolTip.Tip="Add project" AutomationProperties.Name="Add project">
             <TextBlock Text="+" Foreground="{DynamicResource AccentBrush}" FontSize="27"
                        HorizontalAlignment="Center" VerticalAlignment="Center" />
-          </Border>
+          </Button>
           <TextBlock Text="Create your first project" Classes="sectionTitle" HorizontalAlignment="Center" />
           <TextBlock Text="Choose one or more folders and Context Mole will build a private, local search index."
                      Classes="muted" TextWrapping="Wrap" TextAlignment="Center" />
@@ -93,7 +95,8 @@
                         <TextBlock Text="LIVE" Foreground="{DynamicResource SuccessBrush}"
                                    FontSize="10" FontWeight="SemiBold" LetterSpacing="0.6" />
                       </Border>
-                      <TextBlock Grid.Column="2" Text="⌄"
+                      <TextBlock Grid.Column="2" Text="⌃" RenderTransform="rotate(180deg)"
+                                 RenderTransformOrigin="50%,50%"
                                  IsVisible="{Binding $parent[UserControl].((vm:MainViewModel)DataContext).IsActiveIndexingCollapsed}"
                                  Classes="muted" FontSize="18" VerticalAlignment="Center" />
                       <TextBlock Grid.Column="2" Text="⌃"
@@ -252,6 +255,21 @@
   </ScrollViewer>
 
   <UserControl.Styles>
+    <Style Selector="Button.addProjectButton">
+      <Setter Property="MinHeight" Value="48" />
+      <Setter Property="Padding" Value="0" />
+      <Setter Property="CornerRadius" Value="14" />
+      <Setter Property="Background" Value="{DynamicResource AccentSubtleBrush}" />
+      <Setter Property="BorderBrush" Value="Transparent" />
+    </Style>
+    <Style Selector="Button.addProjectButton:pointerover">
+      <Setter Property="Background" Value="#20395F" />
+      <Setter Property="BorderBrush" Value="#31568C" />
+    </Style>
+    <Style Selector="Button.addProjectButton:pressed">
+      <Setter Property="Background" Value="#294775" />
+      <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
+    </Style>
     <Style Selector="Border.metricCard">
       <Setter Property="Background" Value="{DynamicResource SurfaceBrush}" />
       <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}" />

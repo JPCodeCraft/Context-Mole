@@ -4,6 +4,9 @@ using System.Security;
 using ContextMole.Core;
 
 using Microsoft.Extensions.Logging;
+
+using Velopack.Locators;
+
 namespace ContextMole.App.UI;
 
 internal sealed class WindowsStartupService
@@ -83,7 +86,40 @@ internal sealed class WindowsStartupService
     private static bool ReadRegistryEnabled() => WindowsStartupRegistration.IsEnabled();
 
     [SupportedOSPlatform("windows")]
-    private static void SetRegistryEnabled(bool enabled) => WindowsStartupRegistration.SetEnabled(enabled);
+    private void SetRegistryEnabled(bool enabled)
+    {
+        WindowsStartupRegistration.SetEnabled(enabled, enabled ? ResolveStartupExecutable() : null);
+        if (ReadRegistryEnabled() != enabled)
+            throw new IOException("Windows did not retain the requested startup registration.");
+    }
+
+    [SupportedOSPlatform("windows")]
+    private string ResolveStartupExecutable()
+    {
+        var processPath = Environment.ProcessPath;
+        if (string.IsNullOrWhiteSpace(processPath))
+            throw new InvalidOperationException("The application executable path is unavailable.");
+
+        try
+        {
+            var locator = VelopackLocator.Current;
+            if (locator.CurrentlyInstalledVersion is not null && !locator.IsPortable &&
+                !string.IsNullOrWhiteSpace(locator.RootAppDir))
+            {
+                // Velopack installs a stable root-level execution stub with the same name as the
+                // versioned executable in `current`. The stub survives application updates.
+                var launcherPath = Path.Combine(locator.RootAppDir, Path.GetFileName(processPath));
+                if (File.Exists(launcherPath)) return launcherPath;
+                _logger.LogWarning("The stable Windows launcher was not found at {LauncherPath}", launcherPath);
+            }
+        }
+        catch (Exception exception) when (exception is IOException or InvalidOperationException or NotSupportedException or ArgumentException)
+        {
+            _logger.LogDebug(exception, "Could not resolve the stable installed launcher for Windows startup");
+        }
+
+        return processPath;
+    }
 
     private bool? ReadPreference()
     {

@@ -8,6 +8,7 @@ public static class WindowsStartupRegistration
 {
     public const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
     public const string ValueName = "Context Mole";
+    public const string BackgroundArgument = "--background";
 
     [SupportedOSPlatform("windows")]
     public static bool IsEnabled()
@@ -30,7 +31,18 @@ public static class WindowsStartupRegistration
         var executable = executablePath ?? Environment.ProcessPath;
         if (string.IsNullOrWhiteSpace(executable))
             throw new InvalidOperationException("The application executable path is unavailable.");
-        key.SetValue(ValueName, $"\"{executable}\"", RegistryValueKind.String);
+        key.SetValue(ValueName, BuildCommand(executable), RegistryValueKind.String);
+        key.Flush();
+    }
+
+    internal static string BuildCommand(string executablePath)
+    {
+        if (string.IsNullOrWhiteSpace(executablePath))
+            throw new ArgumentException("An executable path is required.", nameof(executablePath));
+        if (executablePath.Contains('"', StringComparison.Ordinal))
+            throw new ArgumentException("The executable path cannot contain a quotation mark.", nameof(executablePath));
+
+        return $"\"{Path.GetFullPath(executablePath)}\" {BackgroundArgument}";
     }
 
     [SupportedOSPlatform("windows")]

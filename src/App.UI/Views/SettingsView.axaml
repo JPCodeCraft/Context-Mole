@@ -42,7 +42,8 @@
                            Classes.ready="{Binding AreAiConnectionsReady}"
                            Classes.warning="{Binding DoAiConnectionsNeedAttention}" />
               </Border>
-              <TextBlock Grid.Column="2" Text="⌄" IsVisible="{Binding IsAiConnectionsCollapsed}"
+              <TextBlock Grid.Column="2" Text="⌃" RenderTransform="rotate(180deg)"
+                         RenderTransformOrigin="50%,50%" IsVisible="{Binding IsAiConnectionsCollapsed}"
                          Classes="muted" FontSize="18" VerticalAlignment="Center" />
               <TextBlock Grid.Column="2" Text="⌃" IsVisible="{Binding IsAiConnectionsExpanded}"
                          Classes="muted" FontSize="18" VerticalAlignment="Center" />

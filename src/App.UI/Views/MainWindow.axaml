@@ -35,7 +35,7 @@
         <TextBlock Grid.Row="2" Text="YOUR PROJECTS" Classes="eyebrow"
                    Margin="7,25,5,11" VerticalAlignment="Center" />
 
-        <ListBox Grid.Row="3" Classes="projectList" ItemsSource="{Binding Projects}"
+        <ListBox x:Name="ProjectList" Grid.Row="3" Classes="projectList" ItemsSource="{Binding Projects}"
                  SelectedItem="{Binding SelectedProject}" SelectionChanged="ProjectSelectionChanged"
                  AutomationProperties.Name="Projects">
           <ListBox.ItemTemplate>
@@ -43,32 +43,40 @@
               <Border Classes="projectCard" Classes.paused="{Binding IsPaused}"
                       Margin="0,0,0,7" Padding="12" CornerRadius="9" BorderThickness="1"
                       PointerPressed="ProjectCardPressed">
-                <StackPanel Spacing="7">
-                  <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
-                    <TextBlock Text="{Binding Name}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"
-                               ToolTip.Tip="{Binding Name}" />
-                    <Border Grid.Column="1" Classes="phaseBadge" Classes.paused="{Binding IsPaused}"
-                            Classes.ready="{Binding IsReady}" Classes.retrying="{Binding IsRetrying}"
-                            Classes.attention="{Binding NeedsAttention}"
-                            Padding="7,2" CornerRadius="8">
-                      <TextBlock Text="{Binding Phase}" Classes="phaseText"
-                                 Classes.paused="{Binding IsPaused}" Classes.ready="{Binding IsReady}"
-                                 Classes.retrying="{Binding IsRetrying}" Classes.attention="{Binding NeedsAttention}"
-                                 FontSize="10" FontWeight="SemiBold" />
-                    </Border>
-                  </Grid>
-                  <StackPanel Orientation="Horizontal" Spacing="5">
-                    <TextBlock Text="{Binding DocumentCountDisplay}" Classes="muted" FontSize="11" />
-                    <StackPanel IsVisible="{Binding HasErrors}" Orientation="Horizontal" Spacing="5">
-                      <TextBlock Text="·" Classes="quiet" FontSize="11" />
-                      <TextBlock Text="{Binding SidebarErrorCountDisplay}" Foreground="{DynamicResource DangerBrush}"
-                                 FontSize="11" />
+                <Grid ColumnDefinitions="Auto,*" ColumnSpacing="8">
+                  <TextBlock Text="⠿" Classes="projectDragHandle" Cursor="SizeAll"
+                             VerticalAlignment="Center" ToolTip.Tip="Drag to reorder"
+                             PointerPressed="ProjectDragHandlePressed"
+                             PointerMoved="ProjectDragHandleMoved"
+                             PointerReleased="ProjectDragHandleReleased"
+                             PointerCaptureLost="ProjectDragHandleCaptureLost" />
+                  <StackPanel Grid.Column="1" Spacing="7">
+                    <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                      <TextBlock Text="{Binding Name}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"
+                                 ToolTip.Tip="{Binding Name}" />
+                      <Border Grid.Column="1" Classes="phaseBadge" Classes.paused="{Binding IsPaused}"
+                              Classes.ready="{Binding IsReady}" Classes.retrying="{Binding IsRetrying}"
+                              Classes.attention="{Binding NeedsAttention}"
+                              Padding="7,2" CornerRadius="8">
+                        <TextBlock Text="{Binding Phase}" Classes="phaseText"
+                                   Classes.paused="{Binding IsPaused}" Classes.ready="{Binding IsReady}"
+                                   Classes.retrying="{Binding IsRetrying}" Classes.attention="{Binding NeedsAttention}"
+                                   FontSize="10" FontWeight="SemiBold" />
+                      </Border>
+                    </Grid>
+                    <StackPanel Orientation="Horizontal" Spacing="5">
+                      <TextBlock Text="{Binding DocumentCountDisplay}" Classes="muted" FontSize="11" />
+                      <StackPanel IsVisible="{Binding HasErrors}" Orientation="Horizontal" Spacing="5">
+                        <TextBlock Text="·" Classes="quiet" FontSize="11" />
+                        <TextBlock Text="{Binding SidebarErrorCountDisplay}" Foreground="{DynamicResource DangerBrush}"
+                                   FontSize="11" />
+                      </StackPanel>
                     </StackPanel>
+                    <ProgressBar Minimum="0" Maximum="{Binding DocumentCount}" Value="{Binding IndexedCount}"
+                                 Classes.paused="{Binding IsPaused}" Height="4"
+                                 AutomationProperties.Name="Project indexing progress" />
                   </StackPanel>
-                  <ProgressBar Minimum="0" Maximum="{Binding DocumentCount}" Value="{Binding IndexedCount}"
-                               Classes.paused="{Binding IsPaused}" Height="4"
-                               AutomationProperties.Name="Project indexing progress" />
-                </StackPanel>
+                </Grid>
               </Border>
             </DataTemplate>
           </ListBox.ItemTemplate>
@@ -86,6 +94,16 @@
           <Button Classes="ghost compact" Content="Quit Context Mole" HorizontalContentAlignment="Left"
                   Click="QuitApplication" />
         </StackPanel>
+
+        <Canvas x:Name="ProjectDragOverlay" Grid.RowSpan="5" ZIndex="100"
+                IsHitTestVisible="False" ClipToBounds="False">
+          <Border x:Name="ProjectDropSlot" Classes="projectDropSlot" IsVisible="False"
+                  CornerRadius="9" BorderThickness="1" />
+          <Border x:Name="ProjectDragGhost" Classes="projectDragGhost" IsVisible="False"
+                  CornerRadius="9" BorderThickness="1">
+            <Image x:Name="ProjectDragGhostImage" Stretch="Fill" />
+          </Border>
+        </Canvas>
       </Grid>
     </Border>
 
@@ -159,6 +177,28 @@
     <Style Selector="Border.projectCard">
       <Setter Property="Background" Value="Transparent" />
       <Setter Property="BorderBrush" Value="Transparent" />
+    </Style>
+    <Style Selector="TextBlock.projectDragHandle">
+      <Setter Property="Foreground" Value="{DynamicResource TextMutedBrush}" />
+      <Setter Property="FontSize" Value="15" />
+      <Setter Property="Opacity" Value="0.7" />
+    </Style>
+    <Style Selector="TextBlock.projectDragHandle:pointerover">
+      <Setter Property="Foreground" Value="{DynamicResource AccentBrush}" />
+      <Setter Property="Opacity" Value="1" />
+    </Style>
+    <Style Selector="Border.projectDropSlot">
+      <Setter Property="Background" Value="{DynamicResource AccentSubtleBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
+      <Setter Property="Opacity" Value="0.48" />
+    </Style>
+    <Style Selector="Border.projectDragGhost">
+      <Setter Property="Background" Value="{DynamicResource SurfaceRaisedBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
+      <Setter Property="BoxShadow" Value="0 12 30 0 #99000000" />
+      <Setter Property="Opacity" Value="0.96" />
+      <Setter Property="RenderTransform" Value="scale(1.02)" />
+      <Setter Property="RenderTransformOrigin" Value="50%,50%" />
     </Style>
     <Style Selector="ListBox.projectList ListBoxItem:pointerover Border.projectCard">
       <Setter Property="Background" Value="{DynamicResource SurfaceBrush}" />

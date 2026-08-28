@@ -22,11 +22,14 @@ internal static class Program
     private static SingleInstanceLock? _instanceLock;
 
     public static IServiceProvider Services => _host?.Services ?? throw new InvalidOperationException("The application host has not started.");
+    public static bool LaunchInBackground { get; private set; }
 
     [STAThread]
     public static void Main(string[] args)
     {
         VelopackApp.Build().Run();
+        LaunchInBackground = args.Any(argument =>
+            string.Equals(argument, WindowsStartupRegistration.BackgroundArgument, StringComparison.OrdinalIgnoreCase));
 
         try
         {
@@ -54,6 +57,7 @@ internal static class Program
             builder.Services.AddSingleton<ApplicationUpdateService>();
             builder.Services.AddSingleton<WindowsStartupService>();
             builder.Services.AddSingleton<WindowsUninstallService>();
+            builder.Services.AddSingleton<ProjectOrderService>();
             builder.Services.AddSingleton<ViewModels.MainViewModel>();
             _host = builder.Build();
             _host.StartAsync().GetAwaiter().GetResult();

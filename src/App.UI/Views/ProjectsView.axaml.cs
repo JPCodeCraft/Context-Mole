@@ -17,6 +17,12 @@ public partial class ProjectsView : UserControl
     private MainViewModel ViewModel => (MainViewModel)DataContext!;
     private Window Owner => (Window)TopLevel.GetTopLevel(this)!;
 
+    private async void AddProject(object? sender, RoutedEventArgs args)
+    {
+        if (Owner is MainWindow mainWindow)
+            await mainWindow.AddProjectAsync(sender as Control);
+    }
+
     private async void EditProject(object? sender, RoutedEventArgs args)
     {
         if (_projectActionBusy || ViewModel.SelectedProject is not { } project) return;
