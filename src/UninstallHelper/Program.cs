@@ -8,6 +8,8 @@ namespace ContextMole.UninstallHelper;
 
 internal static class Program
 {
+    private const string AutomatedErrorUiSuppressionVariable =
+        "CONTEXTMOLE_UNINSTALL_TEST_SUPPRESS_ERROR_UI";
     private const uint MessageBoxOk = 0x00000000;
     private const uint MessageBoxIconError = 0x00000010;
     private const uint MessageBoxSetForeground = 0x00010000;
@@ -270,7 +272,17 @@ internal static class Program
 
     private static void ShowError(string message)
     {
-        if (!OperatingSystem.IsWindows()) return;
+        Console.Error.WriteLine(message);
+        if (!OperatingSystem.IsWindows() ||
+            string.Equals(
+                Environment.GetEnvironmentVariable("GITHUB_ACTIONS"),
+                "true",
+                StringComparison.Ordinal) &&
+            string.Equals(
+                Environment.GetEnvironmentVariable(AutomatedErrorUiSuppressionVariable),
+                "true",
+                StringComparison.Ordinal))
+            return;
         _ = MessageBoxW(
             IntPtr.Zero,
             message,

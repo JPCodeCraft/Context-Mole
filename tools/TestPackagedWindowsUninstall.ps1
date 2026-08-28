@@ -200,16 +200,31 @@ finally {
     $parentProbe.Dispose()
 }
 
-Invoke-SmokeProcess -FileName $helperExecutable -Arguments @(
-    "--parent-pid", $parentProcessId.ToString([Globalization.CultureInfo]::InvariantCulture),
-    "--parent-start-ticks", $parentStartTicks.ToString([Globalization.CultureInfo]::InvariantCulture),
-    "--update-exe", $updateExecutable,
-    "--data-dir", $dataDirectory,
-    "--request-id", $requestId.ToString("D"),
-    "--delete-data", "true",
-    "--timeout-seconds", "120",
-    "--temporary-dir", $helperDirectory
-) -TimeoutSeconds 240 -WorkingDirectory $helperDirectory
+$previousErrorUiSuppression = $env:CONTEXTMOLE_UNINSTALL_TEST_SUPPRESS_ERROR_UI
+try {
+    # A native error dialog is required in production, but a headless runner cannot dismiss one.
+    # The helper honors this switch only when GITHUB_ACTIONS is exactly "true" and still emits the
+    # complete error to stderr so the failed smoke remains actionable.
+    $env:CONTEXTMOLE_UNINSTALL_TEST_SUPPRESS_ERROR_UI = "true"
+    $helperCleanupTimeoutSeconds = 120
+    # Velopack 1.2 keeps its required non-silent completion dialog open for up to 300 seconds.
+    # The outer budget must cover that wait, the helper's cleanup budget, and process teardown.
+    $helperProcessTimeoutSeconds = 300 + $helperCleanupTimeoutSeconds + 60
+    Invoke-SmokeProcess -FileName $helperExecutable -Arguments @(
+        "--parent-pid", $parentProcessId.ToString([Globalization.CultureInfo]::InvariantCulture),
+        "--parent-start-ticks", $parentStartTicks.ToString([Globalization.CultureInfo]::InvariantCulture),
+        "--update-exe", $updateExecutable,
+        "--data-dir", $dataDirectory,
+        "--request-id", $requestId.ToString("D"),
+        "--delete-data", "true",
+        "--timeout-seconds", $helperCleanupTimeoutSeconds.ToString(
+            [Globalization.CultureInfo]::InvariantCulture),
+        "--temporary-dir", $helperDirectory
+    ) -TimeoutSeconds $helperProcessTimeoutSeconds -WorkingDirectory $helperDirectory
+}
+finally {
+    $env:CONTEXTMOLE_UNINSTALL_TEST_SUPPRESS_ERROR_UI = $previousErrorUiSuppression
+}
 
 Wait-ForMissingPath -Path $installPath -TimeoutSeconds 30
 Wait-ForMissingPath -Path $dataDirectory -TimeoutSeconds 30
