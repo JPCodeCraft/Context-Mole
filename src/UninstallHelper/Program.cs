@@ -221,12 +221,11 @@ internal static class Program
         if (!File.Exists(Path.Combine(updateRoot, "current", "sq.version")))
             throw new InvalidOperationException("The selected Update.exe is not part of a Velopack installation.");
 
-        var actualTemporaryDirectory = Path.TrimEndingDirectorySeparator(Path.GetFullPath(
-            Path.GetDirectoryName(Environment.ProcessPath)
-            ?? throw new InvalidOperationException("The uninstall helper path is unavailable.")));
-        var expectedTemporaryDirectory = Path.TrimEndingDirectorySeparator(Path.GetFullPath(options.TemporaryDirectory));
-        if (!string.Equals(actualTemporaryDirectory, expectedTemporaryDirectory, StringComparison.OrdinalIgnoreCase) ||
-            !Path.GetFileName(actualTemporaryDirectory).StartsWith("ContextMole-uninstall-", StringComparison.Ordinal))
+        if (!TryValidateTemporaryCleanupTarget(
+                options.TemporaryDirectory,
+                Environment.ProcessPath,
+                Path.GetTempPath(),
+                out _))
             throw new InvalidOperationException("The uninstall helper is not running from its expected temporary directory.");
     }
 
@@ -235,8 +234,16 @@ internal static class Program
         if (string.IsNullOrWhiteSpace(temporaryDirectory) || !OperatingSystem.IsWindows()) return;
         try
         {
+            var temporaryRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(Path.GetTempPath()));
+            if (!TryValidateTemporaryCleanupTarget(
+                    temporaryDirectory,
+                    Environment.ProcessPath,
+                    temporaryRoot,
+                    out var approvedDirectory))
+                return;
+
             var cleanupScript = Path.Combine(
-                Path.GetTempPath(),
+                temporaryRoot,
                 $"ContextMole-helper-cleanup-{Guid.NewGuid():N}.cmd");
             File.WriteAllLines(cleanupScript,
             [
@@ -253,6 +260,9 @@ internal static class Program
             var startInfo = new ProcessStartInfo
             {
                 FileName = Environment.GetEnvironmentVariable("COMSPEC") ?? "cmd.exe",
+                // The helper is launched with its own directory as the working directory. A cleanup
+                // process that inherits it keeps that directory busy even after the helper exits.
+                WorkingDirectory = temporaryRoot,
                 UseShellExecute = false,
                 CreateNoWindow = true,
             };
@@ -260,13 +270,59 @@ internal static class Program
             startInfo.ArgumentList.Add("/Q");
             startInfo.ArgumentList.Add("/C");
             startInfo.ArgumentList.Add(cleanupScript);
-            startInfo.ArgumentList.Add(temporaryDirectory);
+            startInfo.ArgumentList.Add(approvedDirectory);
             Process.Start(startInfo)?.Dispose();
         }
         catch
         {
             // The helper is already outside the install and data directories. A failed best-effort
             // self-cleanup leaves only the uniquely named temporary helper copy.
+        }
+    }
+
+    internal static bool TryValidateTemporaryCleanupTarget(
+        string? requestedDirectory,
+        string? processPath,
+        string? temporaryRoot,
+        out string approvedDirectory)
+    {
+        approvedDirectory = string.Empty;
+        if (string.IsNullOrWhiteSpace(requestedDirectory) ||
+            string.IsNullOrWhiteSpace(processPath) ||
+            string.IsNullOrWhiteSpace(temporaryRoot))
+            return false;
+
+        try
+        {
+            var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(temporaryRoot));
+            var target = Path.TrimEndingDirectorySeparator(Path.GetFullPath(requestedDirectory));
+            var processDirectory = Path.TrimEndingDirectorySeparator(Path.GetFullPath(
+                Path.GetDirectoryName(processPath) ?? string.Empty));
+            var directoryName = Path.GetFileName(target);
+            const string prefix = "ContextMole-uninstall-";
+            var suffix = directoryName.StartsWith(prefix, StringComparison.Ordinal)
+                ? directoryName[prefix.Length..]
+                : string.Empty;
+
+            if (!string.Equals(target, processDirectory, StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(Path.GetDirectoryName(target), root, StringComparison.OrdinalIgnoreCase) ||
+                suffix.Length != 32 ||
+                !suffix.All(char.IsAsciiHexDigit) ||
+                !Directory.Exists(target))
+                return false;
+
+            var attributes = File.GetAttributes(target);
+            if ((attributes & FileAttributes.Directory) == 0 ||
+                (attributes & FileAttributes.ReparsePoint) != 0)
+                return false;
+
+            approvedDirectory = target;
+            return true;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or
+                                           ArgumentException or NotSupportedException)
+        {
+            return false;
         }
     }
 

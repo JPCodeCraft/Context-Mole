@@ -13,6 +13,53 @@ public sealed class UninstallHelperWorkflowTests
     private const string GateProbeExpectedBlocked = "CONTEXTMOLE_TEST_GATE_PROBE_EXPECTED_BLOCKED";
 
     [Fact]
+    public void TemporaryHelperCleanup_AllowsOnlyTheExactGuidNamedProcessDirectory()
+    {
+        var temporaryRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(Path.GetTempPath()));
+        var testId = Guid.NewGuid().ToString("N");
+        var allowed = Path.Combine(temporaryRoot, $"ContextMole-uninstall-{testId}");
+        var nestedRoot = Path.Combine(temporaryRoot, $"ContextMole-cleanup-validation-{testId}");
+        var badName = Path.Combine(temporaryRoot, $"ContextMole-uninstall-not-a-guid-{testId}");
+        Directory.CreateDirectory(allowed);
+        try
+        {
+            var helperPath = Path.Combine(allowed, "ContextMole.UninstallHelper.exe");
+            Assert.True(Program.TryValidateTemporaryCleanupTarget(
+                allowed,
+                helperPath,
+                temporaryRoot,
+                out var approved));
+            Assert.Equal(Path.GetFullPath(allowed), approved);
+
+            var outside = Path.Combine(nestedRoot, Path.GetFileName(allowed));
+            Directory.CreateDirectory(outside);
+            Assert.False(Program.TryValidateTemporaryCleanupTarget(
+                outside,
+                Path.Combine(outside, "ContextMole.UninstallHelper.exe"),
+                temporaryRoot,
+                out _));
+            Assert.False(Program.TryValidateTemporaryCleanupTarget(
+                allowed,
+                Path.Combine(temporaryRoot, "different", "ContextMole.UninstallHelper.exe"),
+                temporaryRoot,
+                out _));
+
+            Directory.CreateDirectory(badName);
+            Assert.False(Program.TryValidateTemporaryCleanupTarget(
+                badName,
+                Path.Combine(badName, "ContextMole.UninstallHelper.exe"),
+                temporaryRoot,
+                out _));
+        }
+        finally
+        {
+            if (Directory.Exists(allowed)) Directory.Delete(allowed, recursive: true);
+            if (Directory.Exists(nestedRoot)) Directory.Delete(nestedRoot, recursive: true);
+            if (Directory.Exists(badName)) Directory.Delete(badName, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task KeepFlowWaitsForParentAndUninstallerThenRemovesOnlyTheMarker()
     {
         using var layout = new TemporaryUninstallLayout();
