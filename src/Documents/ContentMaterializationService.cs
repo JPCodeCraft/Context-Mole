@@ -161,17 +161,17 @@ public sealed partial class ContentMaterializationService(
     {
         if (ordinal < 0)
             return null;
-        var extension = ExtensionFor(containerName, containerMimeType);
-        return extension switch
+        var format = SupportedContent.Resolve(containerName, containerMimeType);
+        return format?.Kind switch
         {
-            ".pdf" => ExtractPdfChild(containerBytes, ordinal),
-            ".docx" => await ExtractWordChildAsync(containerBytes, ordinal, cancellationToken).ConfigureAwait(false),
-            ".xlsx" => await ExtractSpreadsheetChildAsync(containerBytes, ordinal, cancellationToken).ConfigureAwait(false),
-            ".pptx" => await ExtractPresentationChildAsync(containerBytes, ordinal, cancellationToken).ConfigureAwait(false),
-            ".eml" => await ExtractEmlChildAsync(containerBytes, ordinal, cancellationToken).ConfigureAwait(false),
-            ".mht" or ".mhtml" => await ExtractEmlChildAsync(containerBytes, ordinal, cancellationToken).ConfigureAwait(false),
-            ".msg" => ExtractMsgChild(containerBytes, ordinal),
-            ".zip" or ".rar" => await ExtractArchiveChildAsync(containerBytes, extension, ordinal, cancellationToken).ConfigureAwait(false),
+            ContentFormatKind.Pdf => ExtractPdfChild(containerBytes, ordinal),
+            ContentFormatKind.WordOpenXml => await ExtractWordChildAsync(containerBytes, ordinal, cancellationToken).ConfigureAwait(false),
+            ContentFormatKind.SpreadsheetOpenXml => await ExtractSpreadsheetChildAsync(containerBytes, ordinal, cancellationToken).ConfigureAwait(false),
+            ContentFormatKind.PresentationOpenXml => await ExtractPresentationChildAsync(containerBytes, ordinal, cancellationToken).ConfigureAwait(false),
+            ContentFormatKind.Eml or ContentFormatKind.Mhtml => await ExtractEmlChildAsync(containerBytes, ordinal, cancellationToken).ConfigureAwait(false),
+            ContentFormatKind.Msg => ExtractMsgChild(containerBytes, ordinal),
+            ContentFormatKind.Archive => await ExtractArchiveChildAsync(containerBytes, containerName, format.Extension,
+                ordinal, cancellationToken).ConfigureAwait(false),
             _ => throw new ContextMoleException("unsupported_container", "The indexed parent content is not a supported attachment container.")
         };
     }
@@ -499,62 +499,12 @@ public sealed partial class ContentMaterializationService(
         return (string.IsNullOrWhiteSpace(stem) ? "attachment" : stem) + extension;
     }
 
-    private static string? ExtensionFor(string name, string? mimeType)
-    {
-        var extension = Path.GetExtension(name).ToLowerInvariant();
-        if (SupportedContent.Extensions.Contains(extension, StringComparer.OrdinalIgnoreCase))
-            return extension;
-        var fromMime = ExtensionFromMimeType(mimeType);
-        return string.IsNullOrWhiteSpace(fromMime) ? (string.IsNullOrWhiteSpace(extension) ? null : extension) : fromMime;
-    }
-
-    private static string ExtensionFromMimeType(string? mimeType) => mimeType?.ToLowerInvariant() switch
-    {
-        "application/pdf" => ".pdf",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => ".docx",
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" => ".xlsx",
-        "application/vnd.openxmlformats-officedocument.presentationml.presentation" => ".pptx",
-        "application/zip" or "application/x-zip" or "application/x-zip-compressed" => ".zip",
-        "application/vnd.rar" or "application/x-rar" or "application/x-rar-compressed" => ".rar",
-        "application/vnd.ms-outlook" => ".msg",
-        "message/rfc822" => ".eml",
-        "multipart/related" or "application/x-mimearchive" => ".mhtml",
-        "text/plain" => ".txt",
-        "text/html" => ".html",
-        "text/markdown" => ".md",
-        "image/png" => ".png",
-        "image/jpeg" => ".jpg",
-        "image/gif" => ".gif",
-        "image/bmp" => ".bmp",
-        "image/tiff" => ".tiff",
-        "image/webp" => ".webp",
-        _ => string.Empty
-    };
+    private static string ExtensionFromMimeType(string? mimeType) =>
+        SupportedContent.ExtensionForMimeType(mimeType) ?? string.Empty;
 
     private static string ExtensionFromContentType(string contentType) => ExtensionFromMimeType(contentType);
 
-    private static string? MimeFor(string name) => Path.GetExtension(name).ToLowerInvariant() switch
-    {
-        ".pdf" => "application/pdf",
-        ".docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        ".xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        ".pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-        ".eml" => "message/rfc822",
-        ".mht" or ".mhtml" => "multipart/related",
-        ".msg" => "application/vnd.ms-outlook",
-        ".zip" => "application/zip",
-        ".rar" => "application/vnd.rar",
-        ".html" or ".htm" => "text/html",
-        ".md" or ".markdown" => "text/markdown",
-        ".txt" => "text/plain",
-        ".png" => "image/png",
-        ".jpg" or ".jpeg" => "image/jpeg",
-        ".gif" => "image/gif",
-        ".bmp" => "image/bmp",
-        ".tif" or ".tiff" => "image/tiff",
-        ".webp" => "image/webp",
-        _ => null
-    };
+    private static string? MimeFor(string name) => SupportedContent.MimeTypeForPath(name);
 
     private static bool IsPathWithin(string parentPath, string candidatePath)
     {

@@ -223,7 +223,16 @@ After any manual setup, reload the client, approve or trust the local server if 
 
 ## Supported content
 
-Context Mole supports PDF, DOCX, XLSX, PPTX, TXT, Markdown, HTML/HTM, MHT/MHTML, PNG, JPEG, BMP, GIF, WebP, TIFF, EML, MSG, ZIP, and RAR, including supported nested attachments and archive entries.
+Context Mole supports:
+
+- Documents and ebooks: PDF, DOCX/DOCM/DOTX/DOTM, XLSX/XLSM/XLTX/XLTM, PPTX/PPTM/PPSX/PPSM/POTX/POTM, ODT, ODS, ODP, RTF, and EPUB.
+- Tables and structured data: CSV, TSV, JSON, JSONL, XML, YAML/YML, and TOML.
+- Text and web content: TXT, LOG, Markdown, RST, AsciiDoc, TeX, HTML/HTM, and MHT/MHTML.
+- Images: PNG, JPEG, BMP, GIF, WebP, and TIFF.
+- Email: EML and MSG.
+- Archives: ZIP, RAR, 7Z, TAR, TAR.GZ/TGZ, and GZ.
+
+Supported content is also extracted when it appears inside email attachments, Office packages, PDFs, or archives. Macro-enabled Office files are read as document packages; embedded macros are never executed.
 
 Keyword search uses SQLite FTS5. Optional semantic search uses IBM Granite Embedding Multilingual R2. PP-OCRv6 handles scanned PDFs and images. Malformed, encrypted, unavailable, oversized, or unsupported items are isolated as document errors instead of stopping a project.
 

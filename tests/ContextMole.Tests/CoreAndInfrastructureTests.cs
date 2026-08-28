@@ -28,9 +28,17 @@ public sealed class CoreAndInfrastructureTests
     {
         string[] expected =
         [
-            ".pdf", ".docx", ".xlsx", ".pptx", ".txt", ".md", ".markdown", ".html", ".htm", ".mht",
-            ".mhtml", ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", ".tiff", ".eml",
-            ".msg", ".zip", ".rar"
+            ".pdf",
+            ".docx", ".docm", ".dotx", ".dotm",
+            ".xlsx", ".xlsm", ".xltx", ".xltm",
+            ".pptx", ".pptm", ".ppsx", ".ppsm", ".potx", ".potm",
+            ".odt", ".ods", ".odp", ".rtf",
+            ".txt", ".log", ".rst", ".adoc", ".tex", ".md", ".markdown",
+            ".csv", ".tsv", ".json", ".jsonl", ".xml", ".yaml", ".yml", ".toml",
+            ".html", ".htm", ".mht", ".mhtml", ".epub",
+            ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", ".tiff",
+            ".eml", ".msg",
+            ".zip", ".rar", ".7z", ".tar", ".gz", ".tgz", ".tar.gz"
         ];
 
         Assert.Equal(expected, SupportedContent.Extensions);

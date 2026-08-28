@@ -1,5 +1,3 @@
-using System.Collections.ObjectModel;
-
 namespace ContextMole.Core;
 
 public enum ProjectState
@@ -501,18 +499,4 @@ public sealed class ContextMoleException(string code, string message, bool retry
 {
     public string Code { get; } = code;
     public bool Retryable { get; } = retryable;
-}
-
-public static class SupportedContent
-{
-    public static readonly ReadOnlyCollection<string> Extensions = Array.AsReadOnly(new[]
-    {
-        ".pdf", ".docx", ".xlsx", ".pptx", ".txt", ".md", ".markdown", ".html", ".htm", ".mht", ".mhtml",
-        ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", ".tiff", ".eml", ".msg",
-        ".zip", ".rar"
-    });
-
-    private static readonly HashSet<string> ExtensionSet = new(Extensions, StringComparer.OrdinalIgnoreCase);
-
-    public static bool IsSupported(string path) => ExtensionSet.Contains(Path.GetExtension(path));
 }

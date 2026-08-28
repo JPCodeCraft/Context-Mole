@@ -54,7 +54,8 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
         {
             await using var stream = new FileStream(request.SourcePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete,
                 128 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
-            var node = await ExtractStreamAsync(stream, Path.GetFileName(request.SourcePath), MimeFor(request.SourcePath), "root", 0, context, cancellationToken);
+            var node = await ExtractStreamAsync(stream, Path.GetFileName(request.SourcePath),
+                SupportedContent.MimeTypeForPath(request.SourcePath), "root", 0, context, cancellationToken);
             return new ExtractionResult(node, context.Errors);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -99,25 +100,34 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
         if (!context.Hashes.Add(digest))
             return Rejected(name, mimeType, relationship, context, "attachment_cycle", "Duplicate attachment content was skipped to prevent a cycle.");
 
-        var extension = ContentExtensionFor(bytes, name, mimeType);
+        var format = ContentFormatFor(bytes, name, mimeType);
         try
         {
-            return extension switch
+            return format?.Kind switch
             {
-                ".txt" => TextNode(name, mimeType, relationship, DecodeText(bytes), ExtractionMethod.NativeText),
-                ".md" or ".markdown" => MarkdownNode(name, mimeType, relationship, DecodeText(bytes)),
-                ".html" or ".htm" => HtmlNode(name, mimeType, relationship, DecodeText(bytes)),
-                ".pdf" => await PdfNodeAsync(bytes, name, mimeType, relationship, depth, context, cancellationToken),
-                ".docx" => await WordNodeAsync(bytes, name, mimeType, relationship, depth, context, cancellationToken),
-                ".xlsx" => await SpreadsheetNodeAsync(bytes, name, mimeType, relationship, depth, context, cancellationToken),
-                ".pptx" => await PresentationNodeAsync(bytes, name, mimeType, relationship, depth, context, cancellationToken),
-                ".eml" => await EmlNodeAsync(bytes, name, mimeType, relationship, depth, context, cancellationToken),
-                ".mht" or ".mhtml" => await MhtmlNodeAsync(bytes, name, mimeType, relationship, depth, context, cancellationToken),
-                ".msg" => await MsgNodeAsync(bytes, name, mimeType, relationship, depth, context, cancellationToken),
-                ".zip" or ".rar" => await ArchiveNodeAsync(bytes, name, mimeType, relationship, extension, depth, context, cancellationToken),
-                ".png" or ".jpg" or ".jpeg" or ".bmp" or ".gif" or ".webp" or ".tif" or ".tiff" =>
-                    await ImageNodeAsync(bytes, name, mimeType, relationship, cancellationToken),
-                _ => UnsupportedNode(name, mimeType, relationship, context, extension)
+                ContentFormatKind.PlainText => TextNode(name, mimeType, relationship, DecodeText(bytes), ExtractionMethod.NativeText),
+                ContentFormatKind.Markdown => MarkdownNode(name, mimeType, relationship, DecodeText(bytes)),
+                ContentFormatKind.Html => HtmlNode(name, mimeType, relationship, DecodeText(bytes)),
+                ContentFormatKind.Pdf => await PdfNodeAsync(bytes, name, mimeType, relationship, depth, context, cancellationToken),
+                ContentFormatKind.WordOpenXml => await WordNodeAsync(bytes, name, mimeType, relationship, depth, context, cancellationToken),
+                ContentFormatKind.SpreadsheetOpenXml => await SpreadsheetNodeAsync(bytes, name, mimeType, relationship, depth, context, cancellationToken),
+                ContentFormatKind.PresentationOpenXml => await PresentationNodeAsync(bytes, name, mimeType, relationship, depth, context, cancellationToken),
+                ContentFormatKind.DelimitedText => DelimitedTextNode(bytes, name, mimeType, relationship, format.Extension),
+                ContentFormatKind.Json => JsonNode(bytes, name, mimeType, relationship),
+                ContentFormatKind.JsonLines => JsonLinesNode(bytes, name, mimeType, relationship),
+                ContentFormatKind.Xml => XmlNode(bytes, name, mimeType, relationship),
+                ContentFormatKind.RichText => RichTextNode(bytes, name, mimeType, relationship),
+                ContentFormatKind.OpenDocumentText => await OpenDocumentTextNodeAsync(bytes, name, mimeType, relationship, context, cancellationToken),
+                ContentFormatKind.OpenDocumentSpreadsheet => await OpenDocumentSpreadsheetNodeAsync(bytes, name, mimeType, relationship, context, cancellationToken),
+                ContentFormatKind.OpenDocumentPresentation => await OpenDocumentPresentationNodeAsync(bytes, name, mimeType, relationship, context, cancellationToken),
+                ContentFormatKind.Epub => await EpubNodeAsync(bytes, name, mimeType, relationship, context, cancellationToken),
+                ContentFormatKind.Eml => await EmlNodeAsync(bytes, name, mimeType, relationship, depth, context, cancellationToken),
+                ContentFormatKind.Mhtml => await MhtmlNodeAsync(bytes, name, mimeType, relationship, depth, context, cancellationToken),
+                ContentFormatKind.Msg => await MsgNodeAsync(bytes, name, mimeType, relationship, depth, context, cancellationToken),
+                ContentFormatKind.Archive => await ArchiveNodeAsync(bytes, name, mimeType, relationship, format.Extension, depth, context, cancellationToken),
+                ContentFormatKind.Image => await ImageNodeAsync(bytes, name, mimeType, relationship, format.Extension, cancellationToken),
+                _ => UnsupportedNode(name, mimeType, relationship, context,
+                    SupportedContent.ExtensionForPath(name) ?? Path.GetExtension(name))
             };
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -214,7 +224,8 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
                     break;
                 var embeddedName = string.IsNullOrWhiteSpace(embedded.Name) ? $"embedded-{++ordinal}" : embedded.Name;
                 await using var embeddedStream = new MemoryStream(embedded.Bytes.ToArray(), writable: false);
-                attachments.Add(await ExtractStreamAsync(embeddedStream, embeddedName, MimeFor(embeddedName), "pdf-embedded-file",
+                attachments.Add(await ExtractStreamAsync(embeddedStream, embeddedName,
+                    SupportedContent.MimeTypeForPath(embeddedName), "pdf-embedded-file",
                     depth + 1, context, cancellationToken));
             }
         }
@@ -242,10 +253,9 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
     }
 
     private async Task<ExtractedNode> ImageNodeAsync(byte[] bytes, string name, string? mimeType, string relationship,
-        CancellationToken cancellationToken)
+        string extension, CancellationToken cancellationToken)
     {
-        if (Path.GetExtension(name).Equals(".tif", StringComparison.OrdinalIgnoreCase) ||
-            Path.GetExtension(name).Equals(".tiff", StringComparison.OrdinalIgnoreCase))
+        if (extension is ".tif" or ".tiff")
         {
             await _ocrEngine.EnsureAvailableAsync(cancellationToken);
             var tiffSections = new List<ExtractedSection>();
@@ -282,7 +292,7 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
 
         ValidateRasterImage(bytes);
         await _ocrEngine.EnsureAvailableAsync(cancellationToken);
-        var ocr = await _ocrEngine.RecognizeAsync(new OcrRequest(bytes, Path.GetExtension(name), TimeSpan.FromSeconds(120)), cancellationToken);
+        var ocr = await _ocrEngine.RecognizeAsync(new OcrRequest(bytes, extension, TimeSpan.FromSeconds(120)), cancellationToken);
         var sections = string.IsNullOrWhiteSpace(ocr.Text)
             ? Array.Empty<ExtractedSection>()
             : [new ExtractedSection(ocr.Text, new SourceLocation(LocationKind.ImageFrame, Page: 1, ImageFrame: 1), ExtractionMethod.Ocr, ocr.Confidence)];
@@ -349,38 +359,13 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
         return output.ToArray();
     }
 
-    private static string? ExtensionFor(string name, string? mimeType)
+    private static ContentFormatDescriptor? ContentFormatFor(byte[] bytes, string name, string? mimeType)
     {
-        var extension = Path.GetExtension(name).ToLowerInvariant();
-        if (SupportedContent.Extensions.Contains(extension, StringComparer.OrdinalIgnoreCase))
-            return extension;
-        return mimeType?.ToLowerInvariant() switch
-        {
-            "application/pdf" => ".pdf",
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => ".docx",
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" => ".xlsx",
-            "application/vnd.openxmlformats-officedocument.presentationml.presentation" => ".pptx",
-            "application/zip" or "application/x-zip" or "application/x-zip-compressed" => ".zip",
-            "application/vnd.rar" or "application/x-rar" or "application/x-rar-compressed" => ".rar",
-            "message/rfc822" => ".eml",
-            "multipart/related" or "application/x-mimearchive" => ".mhtml",
-            "text/plain" => ".txt",
-            "text/html" => ".html",
-            "image/png" => ".png",
-            "image/jpeg" => ".jpg",
-            "image/tiff" => ".tiff",
-            _ => string.IsNullOrWhiteSpace(extension) ? null : extension
-        };
-    }
-
-    private static string? ContentExtensionFor(byte[] bytes, string name, string? mimeType)
-    {
-        var declared = ExtensionFor(name, mimeType);
         if (LooksLikeHtml(bytes))
-            return ".html";
+            return SupportedContent.FindByExtension(".html");
         if (bytes.AsSpan().StartsWith("%PDF-"u8))
-            return ".pdf";
-        return declared;
+            return SupportedContent.FindByExtension(".pdf");
+        return SupportedContent.Resolve(name, mimeType);
     }
 
     private static bool LooksLikeHtml(byte[] bytes)
@@ -414,27 +399,6 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
             throw new InvalidDataException("The image data is malformed or does not match a supported raster format.", exception);
         }
     }
-
-    private static string? MimeFor(string name) => Path.GetExtension(name).ToLowerInvariant() switch
-    {
-        ".pdf" => "application/pdf",
-        ".docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        ".xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        ".pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-        ".eml" => "message/rfc822",
-        ".mht" or ".mhtml" => "multipart/related",
-        ".msg" => "application/vnd.ms-outlook",
-        ".zip" => "application/zip",
-        ".rar" => "application/vnd.rar",
-        ".html" or ".htm" => "text/html",
-        ".md" or ".markdown" => "text/markdown",
-        ".txt" => "text/plain",
-        ".png" => "image/png",
-        ".jpg" or ".jpeg" => "image/jpeg",
-        ".tif" or ".tiff" => "image/tiff",
-        ".webp" => "image/webp",
-        _ => null
-    };
 
     private static ExtractedNode Rejected(string name, string? mimeType, string relationship, ExpansionContext context, string code, string message)
     {

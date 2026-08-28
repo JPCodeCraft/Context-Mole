@@ -875,7 +875,7 @@ public sealed class SqliteSearchStore : ISearchStore
                 throw new ContextMoleException("invalid_filter", "extensions cannot contain empty values.");
             if (!extension.StartsWith('.'))
                 extension = "." + extension;
-            if (extension.Length is < 2 or > 17 || extension.Skip(1).Any(character => !char.IsLetterOrDigit(character)))
+            if (!SupportedContent.IsValidExtensionFilter(extension))
                 throw new ContextMoleException("invalid_filter", $"Invalid file extension filter: {value}");
             extensions.Add(extension);
         }

@@ -409,7 +409,7 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                     """,
                     [new("$id", documentId.ToString()), new("$project", observation.ProjectId.ToString()),
                      new("$folder", observation.FolderId.ToString()), new("$path", path), new("$path_key", pathKey),
-                     new("$name", Path.GetFileName(path)), new("$extension", Path.GetExtension(path).ToLowerInvariant()),
+                     new("$name", Path.GetFileName(path)), new("$extension", StoredExtension(path)),
                      new("$size", observation.Size), new("$modified", observation.ModifiedUtc.ToString("O")),
                      new("$epoch", epoch), new("$seen", (object?)observation.ReconciliationToken ?? DBNull.Value), new("$now", now)], token).ConfigureAwait(false);
             }
@@ -427,7 +427,7 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                         last_seen_token=COALESCE($seen,last_seen_token),updated_utc=$now WHERE id=$id;
                     """,
                     [new("$folder", observation.FolderId.ToString()), new("$path", path), new("$path_key", pathKey),
-                     new("$name", Path.GetFileName(path)), new("$extension", Path.GetExtension(path).ToLowerInvariant()),
+                     new("$name", Path.GetFileName(path)), new("$extension", StoredExtension(path)),
                      new("$size", observation.Size), new("$modified", observation.ModifiedUtc.ToString("O")),
                      new("$epoch", epoch), new("$seen", (object?)observation.ReconciliationToken ?? DBNull.Value),
                      new("$now", now), new("$id", documentId.ToString())], token).ConfigureAwait(false);
@@ -458,7 +458,7 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                 WHERE project_id=$project AND path_key=$old_key AND tombstoned=0;
                 """,
                 [new("$new", canonicalNew), new("$new_key", newKey), new("$name", Path.GetFileName(canonicalNew)),
-                 new("$extension", Path.GetExtension(canonicalNew).ToLowerInvariant()), new("$folder", folderId.ToString()),
+                 new("$extension", StoredExtension(canonicalNew)), new("$folder", folderId.ToString()),
                  new("$now", now), new("$project", projectId.ToString()), new("$old_key", oldKey)], token).ConfigureAwait(false);
             if (changed > 0)
             {
@@ -1407,6 +1407,8 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
     }
 
     internal static string CanonicalPath(string path) => Path.TrimEndingDirectorySeparator(Path.GetFullPath(path.Trim()));
+
+    private static string StoredExtension(string path) => SupportedContent.ExtensionForPath(path) ?? string.Empty;
 
     internal static string PathKey(string path)
     {

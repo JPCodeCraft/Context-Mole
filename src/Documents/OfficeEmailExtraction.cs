@@ -453,24 +453,8 @@ public sealed partial class DocumentExtractionRegistry
             sections.Add(new ExtractedSection(text, new SourceLocation(LocationKind.Structure, StructurePath: path), ExtractionMethod.NativeText));
     }
 
-    private static string ExtensionFromContentType(string contentType) => contentType.ToLowerInvariant() switch
-    {
-        "application/pdf" => ".pdf",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => ".docx",
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" => ".xlsx",
-        "application/vnd.openxmlformats-officedocument.presentationml.presentation" => ".pptx",
-        "application/zip" or "application/x-zip" or "application/x-zip-compressed" => ".zip",
-        "application/vnd.rar" or "application/x-rar" or "application/x-rar-compressed" => ".rar",
-        "message/rfc822" => ".eml",
-        "multipart/related" or "application/x-mimearchive" => ".mhtml",
-        "image/png" => ".png",
-        "image/jpeg" => ".jpg",
-        "image/gif" => ".gif",
-        "image/bmp" => ".bmp",
-        "image/tiff" => ".tiff",
-        "image/webp" => ".webp",
-        _ => string.Empty
-    };
+    private static string ExtensionFromContentType(string contentType) =>
+        SupportedContent.ExtensionForMimeType(contentType) ?? string.Empty;
 
     private sealed class AttachmentBuffer(long maxBytes) : MemoryStream
     {
