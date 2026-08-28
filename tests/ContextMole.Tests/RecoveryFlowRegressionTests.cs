@@ -47,7 +47,7 @@ public sealed class RecoveryFlowRegressionTests
             TextNormalization.QuoteFtsTerms("lighthouse evidence"), 10, null, cancellationToken);
         Assert.Equal(committed.DocumentId, Assert.Single(retained.Candidates).DocumentId);
         var uncommitted = await database.Store.KeywordSearchAsync(projectId,
-            TextNormalization.QuoteFtsTerms("replacement revision"), 10, null, cancellationToken);
+            "body_text:\"fails\" AND body_text:\"activation\"", 10, null, cancellationToken);
         Assert.Empty(uncommitted.Candidates);
     }
 
@@ -72,7 +72,7 @@ public sealed class RecoveryFlowRegressionTests
 
         var embeddings = new StorageUnavailableEmbeddings();
         using var budget = new GlobalCpuBudget(new StorageFixedCpuSettings());
-        using var coordinator = new IndexingCoordinator(database.Writer, database.Store,
+        using var coordinator = new IndexingCoordinator(database.Writer, database.Store, database.Paths,
             new NeverCalledExtractor(), embeddings, new IndexingActivityTracker(),
             new EmbeddingPolicyRefreshTracker(), budget, NullLogger<IndexingCoordinator>.Instance);
 
@@ -119,7 +119,7 @@ public sealed class RecoveryFlowRegressionTests
         var extractor = new EventuallySuccessfulExtractor();
         var embeddings = new StorageUnavailableEmbeddings();
         using var budget = new GlobalCpuBudget(new StorageFixedCpuSettings());
-        using var coordinator = new IndexingCoordinator(database.Writer, database.Store, extractor, embeddings,
+        using var coordinator = new IndexingCoordinator(database.Writer, database.Store, database.Paths, extractor, embeddings,
             new IndexingActivityTracker(), new EmbeddingPolicyRefreshTracker(), budget,
             NullLogger<IndexingCoordinator>.Instance);
 

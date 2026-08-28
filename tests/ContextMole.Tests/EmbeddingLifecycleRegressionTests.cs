@@ -24,7 +24,7 @@ public sealed class EmbeddingLifecycleRegressionTests
         var extractor = new CountingExtractor(new DocumentExtractionRegistry(new StorageNoOcr()));
         var tracker = new EmbeddingPolicyRefreshTracker();
         using var budget = new GlobalCpuBudget(new StorageFixedCpuSettings());
-        using var coordinator = new IndexingCoordinator(database.Writer, database.Store, extractor, embeddings,
+        using var coordinator = new IndexingCoordinator(database.Writer, database.Store, database.Paths, extractor, embeddings,
             new IndexingActivityTracker(), tracker, budget, NullLogger<IndexingCoordinator>.Instance);
 
         await coordinator.StartAsync(cancellationToken);
@@ -91,7 +91,7 @@ public sealed class EmbeddingLifecycleRegressionTests
         Assert.True(tracker.TryBeginRefresh(projectId, targetPolicy.Key));
         var extractor = new RejectingExtractor();
         using var budget = new GlobalCpuBudget(new StorageFixedCpuSettings());
-        using var coordinator = new IndexingCoordinator(database.Writer, database.Store, extractor, embeddings,
+        using var coordinator = new IndexingCoordinator(database.Writer, database.Store, database.Paths, extractor, embeddings,
             new IndexingActivityTracker(), tracker, budget, NullLogger<IndexingCoordinator>.Instance);
 
         await coordinator.StartAsync(cancellationToken);
@@ -129,7 +129,7 @@ public sealed class EmbeddingLifecycleRegressionTests
         await using var embeddings = MutableEmbeddingGenerator.Available(policy, failPassageEmbeddings: true);
         var extractor = new CountingExtractor(new DocumentExtractionRegistry(new StorageNoOcr()));
         using var budget = new GlobalCpuBudget(new StorageFixedCpuSettings());
-        using var coordinator = new IndexingCoordinator(database.Writer, database.Store, extractor, embeddings,
+        using var coordinator = new IndexingCoordinator(database.Writer, database.Store, database.Paths, extractor, embeddings,
             new IndexingActivityTracker(), new EmbeddingPolicyRefreshTracker(), budget,
             NullLogger<IndexingCoordinator>.Instance);
 

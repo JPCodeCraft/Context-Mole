@@ -30,7 +30,7 @@ public sealed class SourceMutationRegressionTests
         var embeddings = new StorageUnavailableEmbeddings();
         var recordingWriter = new RecordingIndexWriter(database.Writer);
         using var budget = new GlobalCpuBudget(new StorageFixedCpuSettings());
-        using var coordinator = new IndexingCoordinator(recordingWriter, database.Store, extractor, embeddings,
+        using var coordinator = new IndexingCoordinator(recordingWriter, database.Store, database.Paths, extractor, embeddings,
             new IndexingActivityTracker(), new EmbeddingPolicyRefreshTracker(), budget,
             NullLogger<IndexingCoordinator>.Instance);
 
@@ -96,7 +96,7 @@ public sealed class SourceMutationRegressionTests
         var extractor = new SnapshotBlockingExtractor();
         var embeddings = new StorageUnavailableEmbeddings();
         using var budget = new GlobalCpuBudget(new StorageFixedCpuSettings());
-        using var coordinator = new IndexingCoordinator(database.Writer, database.Store, extractor, embeddings,
+        using var coordinator = new IndexingCoordinator(database.Writer, database.Store, database.Paths, extractor, embeddings,
             new IndexingActivityTracker(), new EmbeddingPolicyRefreshTracker(), budget,
             NullLogger<IndexingCoordinator>.Instance);
 
@@ -148,7 +148,7 @@ public sealed class SourceMutationRegressionTests
 
         var embeddings = new StorageUnavailableEmbeddings();
         using var budget = new GlobalCpuBudget(new StorageFixedCpuSettings());
-        using var coordinator = new IndexingCoordinator(database.Writer, database.Store,
+        using var coordinator = new IndexingCoordinator(database.Writer, database.Store, database.Paths,
             new ImmediateTextExtractor(), embeddings, new IndexingActivityTracker(),
             new EmbeddingPolicyRefreshTracker(), budget, NullLogger<IndexingCoordinator>.Instance);
 

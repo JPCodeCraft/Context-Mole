@@ -91,7 +91,8 @@ public sealed partial class DocumentExtractionRegistry
         }
 
         var attachments = await ExtractPackageAttachmentsAsync(main, name, depth, context, cancellationToken);
-        return new ExtractedNode(name, mimeType, relationship, sections, attachments);
+        return new ExtractedNode(name, mimeType, relationship, sections, attachments,
+            Title: MetadataTitle(document.PackageProperties.Title));
     }
 
     private async Task<ExtractedNode> SpreadsheetNodeAsync(byte[] bytes, string name, string? mimeType, string relationship,
@@ -158,7 +159,8 @@ public sealed partial class DocumentExtractionRegistry
         }
 
         var attachments = await ExtractPackageAttachmentsAsync(workbookPart, name, depth, context, cancellationToken);
-        return new ExtractedNode(name, mimeType, relationship, sections, attachments);
+        return new ExtractedNode(name, mimeType, relationship, sections, attachments,
+            Title: MetadataTitle(document.PackageProperties.Title));
     }
 
     private async Task<ExtractedNode> PresentationNodeAsync(byte[] bytes, string name, string? mimeType, string relationship,
@@ -211,7 +213,8 @@ public sealed partial class DocumentExtractionRegistry
         }
 
         var attachments = await ExtractPackageAttachmentsAsync(presentationPart, name, depth, context, cancellationToken);
-        return new ExtractedNode(name, mimeType, relationship, sections, attachments);
+        return new ExtractedNode(name, mimeType, relationship, sections, attachments,
+            Title: MetadataTitle(document.PackageProperties.Title));
     }
 
     private async Task<List<ExtractedNode>> ExtractPackageAttachmentsAsync(OpenXmlPartContainer root, string parentName, int depth,

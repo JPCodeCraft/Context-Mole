@@ -451,6 +451,25 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
             var newKey = PathKey(canonicalNew);
             var now = DateTimeOffset.UtcNow.ToString("O");
             using var transaction = connection.BeginTransaction();
+            Guid? documentId = null;
+            Guid? activeRevision = null;
+            long nextEpoch = 0;
+            await using (var active = connection.CreateCommand())
+            {
+                active.Transaction = transaction;
+                active.CommandText = "SELECT id,active_revision_id,observation_epoch FROM documents WHERE project_id=$project AND path_key=$old_key AND tombstoned=0;";
+                active.Parameters.AddWithValue("$project", projectId.ToString());
+                active.Parameters.AddWithValue("$old_key", oldKey);
+                await using var reader = await active.ExecuteReaderAsync(token).ConfigureAwait(false);
+                if (await reader.ReadAsync(token).ConfigureAwait(false))
+                {
+                    documentId = Guid.Parse(reader.GetString(0));
+                    if (!reader.IsDBNull(1)) activeRevision = Guid.Parse(reader.GetString(1));
+                    nextEpoch = reader.GetInt64(2) + 1;
+                }
+            }
+            if (activeRevision is { } oldRevision)
+                await DeleteFtsRevisionAsync(connection, transaction, oldRevision, token).ConfigureAwait(false);
             var changed = await ExecuteAsync(connection, transaction,
                 """
                 UPDATE documents SET path=$new,path_key=$new_key,file_name=$name,extension=$extension,
@@ -462,9 +481,32 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                  new("$now", now), new("$project", projectId.ToString()), new("$old_key", oldKey)], token).ConfigureAwait(false);
             if (changed > 0)
             {
+                if (activeRevision is { } revision)
+                {
+                    var newName = Path.GetFileName(canonicalNew);
+                    await ExecuteAsync(connection, transaction,
+                        "UPDATE content_nodes SET name=$name WHERE revision_id=$revision AND parent_id IS NULL;",
+                        [new("$name", newName), new("$revision", revision.ToString())], token).ConfigureAwait(false);
+                    await ExecuteAsync(connection, transaction,
+                        """
+                        UPDATE passages SET path=$path,filename=$filename,
+                          content_name=CASE WHEN content_id IN (
+                            SELECT id FROM content_nodes WHERE revision_id=$revision AND parent_id IS NULL
+                          ) THEN $filename ELSE content_name END
+                        WHERE revision_id=$revision;
+                        """,
+                        [new("$path", canonicalNew), new("$filename", newName),
+                         new("$revision", revision.ToString())], token).ConfigureAwait(false);
+                    await ExecuteAsync(connection, transaction,
+                        "INSERT INTO passages_fts(rowid,body_text,title,heading,filename,path,content_name,sheet,email_subject) SELECT rowid,body_text,title,heading,filename,path,content_name,COALESCE(sheet,''),email_subject FROM passages WHERE revision_id=$revision;",
+                        [new("$revision", revision.ToString())], token).ConfigureAwait(false);
+                }
                 await ExecuteAsync(connection, transaction,
                     "UPDATE projects SET search_generation=search_generation+1,updated_utc=$now WHERE id=$project;",
                     [new("$now", now), new("$project", projectId.ToString())], token).ConfigureAwait(false);
+                if (documentId is { } renamedDocument)
+                    await UpsertOpenJobAsync(connection, transaction, projectId, renamedDocument, nextEpoch,
+                        IndexJobKind.Reindex, now, token).ConfigureAwait(false);
             }
 
             await transaction.CommitAsync(token).ConfigureAwait(false);
@@ -651,6 +693,9 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                 if (renameCandidates.Count == 1)
                 {
                     var preservedId = renameCandidates[0].Id;
+                    var preservedRevision = renameCandidates[0].RevisionId;
+                    if (!renameCandidates[0].Tombstoned)
+                        await DeleteFtsRevisionAsync(connection, transaction, preservedRevision, token).ConfigureAwait(false);
                     await ExecuteAsync(connection, transaction, "DELETE FROM documents WHERE id=$document;",
                         [new("$document", job.DocumentId.ToString())], token).ConfigureAwait(false);
                     await ExecuteAsync(connection, transaction,
@@ -664,19 +709,41 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                          new("$modified", modifiedUtc.ToString("O")), new("$revision", renameCandidates[0].RevisionId.ToString()),
                          new("$seen", (object?)currentSeenToken ?? DBNull.Value),
                          new("$now", now), new("$id", preservedId.ToString())], token).ConfigureAwait(false);
+                    await ExecuteAsync(connection, transaction,
+                        "UPDATE content_nodes SET name=$name WHERE revision_id=$revision AND parent_id IS NULL;",
+                        [new("$name", currentFileName), new("$revision", preservedRevision.ToString())], token).ConfigureAwait(false);
+                    await ExecuteAsync(connection, transaction,
+                        """
+                        UPDATE passages SET path=$path,filename=$filename,
+                          content_name=CASE WHEN content_id IN (
+                            SELECT id FROM content_nodes WHERE revision_id=$revision AND parent_id IS NULL
+                          ) THEN $filename ELSE content_name END
+                        WHERE revision_id=$revision;
+                        """,
+                        [new("$path", currentPath), new("$filename", currentFileName),
+                         new("$revision", preservedRevision.ToString())], token).ConfigureAwait(false);
                     if (renameCandidates[0].Tombstoned)
-                    {
                         await ExecuteAsync(connection, transaction, "UPDATE document_revisions SET status='active' WHERE id=$revision;",
-                            [new("$revision", renameCandidates[0].RevisionId.ToString())], token).ConfigureAwait(false);
-                        await ExecuteAsync(connection, transaction,
-                            "INSERT INTO passages_fts(rowid,search_text) SELECT rowid,search_text FROM passages WHERE revision_id=$revision;",
-                            [new("$revision", renameCandidates[0].RevisionId.ToString())], token).ConfigureAwait(false);
-                    }
+                            [new("$revision", preservedRevision.ToString())], token).ConfigureAwait(false);
+                    await ExecuteAsync(connection, transaction,
+                        "INSERT INTO passages_fts(rowid,body_text,title,heading,filename,path,content_name,sheet,email_subject) SELECT rowid,body_text,title,heading,filename,path,content_name,COALESCE(sheet,''),email_subject FROM passages WHERE revision_id=$revision;",
+                        [new("$revision", preservedRevision.ToString())], token).ConfigureAwait(false);
                     await ExecuteAsync(connection, transaction,
                         "UPDATE projects SET search_generation=search_generation+1,updated_utc=$now WHERE id=$project;",
                         [new("$now", now), new("$project", job.ProjectId.ToString())], token).ConfigureAwait(false);
+                    long preservedEpoch;
+                    await using (var preserved = connection.CreateCommand())
+                    {
+                        preserved.Transaction = transaction;
+                        preserved.CommandText = "SELECT observation_epoch FROM documents WHERE id=$document;";
+                        preserved.Parameters.AddWithValue("$document", preservedId.ToString());
+                        preservedEpoch = Convert.ToInt64(await preserved.ExecuteScalarAsync(token).ConfigureAwait(false));
+                    }
+                    await UpsertOpenJobAsync(connection, transaction, job.ProjectId, preservedId, preservedEpoch,
+                        IndexJobKind.Reindex, now, token).ConfigureAwait(false);
                     await transaction.CommitAsync(token).ConfigureAwait(false);
-                    return new BeginRevisionResult(false, false, null, "Document identity was preserved across an unambiguous hash-correlated rename.");
+                    return new BeginRevisionResult(false, false, null,
+                        "Document identity was preserved across an unambiguous hash-correlated rename and a full metadata reindex was queued.");
                 }
             }
 
@@ -746,6 +813,20 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                 return false;
             }
 
+            // Public content and passage IDs are deterministic. Removing the prior active revision inside
+            // this transaction makes those IDs reusable while readers continue seeing the old revision until
+            // the atomic commit. A rollback restores the complete prior revision.
+            if (oldActive is not null && oldActive != request.RevisionId)
+            {
+                await DeleteFtsRevisionAsync(connection, transaction, oldActive.Value, token).ConfigureAwait(false);
+                await ExecuteAsync(connection, transaction,
+                    "UPDATE documents SET active_revision_id=NULL WHERE id=$document AND active_revision_id=$revision;",
+                    [new("$document", request.DocumentId.ToString()), new("$revision", oldActive.Value.ToString())], token)
+                    .ConfigureAwait(false);
+                await ExecuteAsync(connection, transaction, "DELETE FROM document_revisions WHERE id=$revision;",
+                    [new("$revision", oldActive.Value.ToString())], token).ConfigureAwait(false);
+            }
+
             foreach (var node in request.ContentNodes.OrderBy(item => item.Depth).ThenBy(item => item.Ordinal))
             {
                 await ExecuteAsync(connection, transaction,
@@ -763,8 +844,8 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                 {
                     insert.Transaction = transaction;
                     insert.CommandText = """
-                        INSERT INTO passages(id,revision_id,content_id,ordinal,display_text,search_text,location_kind,page,sheet,cell_range,slide,structure_path,email_part,image_frame,extraction_method,ocr_confidence)
-                        VALUES($id,$revision,$content,$ordinal,$display,$search,$kind,$page,$sheet,$range,$slide,$structure,$email,$frame,$method,$confidence)
+                        INSERT INTO passages(id,revision_id,content_id,ordinal,display_text,search_text,body_text,title,heading,filename,path,content_name,email_subject,location_kind,page,sheet,cell_range,slide,structure_path,email_part,image_frame,extraction_method,ocr_confidence)
+                        VALUES($id,$revision,$content,$ordinal,$display,$search,$body,$title,$heading,$filename,$path,$content_name,$email_subject,$kind,$page,$sheet,$range,$slide,$structure,$email,$frame,$method,$confidence)
                         RETURNING rowid;
                         """;
                     insert.Parameters.AddWithValue("$id", passage.Id.ToString());
@@ -773,6 +854,13 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                     insert.Parameters.AddWithValue("$ordinal", passage.Ordinal);
                     insert.Parameters.AddWithValue("$display", passage.DisplayText);
                     insert.Parameters.AddWithValue("$search", passage.SearchText);
+                    insert.Parameters.AddWithValue("$body", passage.BodySearchText ?? passage.SearchText);
+                    insert.Parameters.AddWithValue("$title", passage.Title ?? string.Empty);
+                    insert.Parameters.AddWithValue("$heading", passage.Heading ?? string.Empty);
+                    insert.Parameters.AddWithValue("$filename", passage.FileName ?? string.Empty);
+                    insert.Parameters.AddWithValue("$path", passage.SourcePath ?? string.Empty);
+                    insert.Parameters.AddWithValue("$content_name", passage.ContentName ?? string.Empty);
+                    insert.Parameters.AddWithValue("$email_subject", passage.EmailSubject ?? string.Empty);
                     insert.Parameters.AddWithValue("$kind", (int)passage.Location.Kind);
                     insert.Parameters.AddWithValue("$page", (object?)passage.Location.Page ?? DBNull.Value);
                     insert.Parameters.AddWithValue("$sheet", (object?)passage.Location.Sheet ?? DBNull.Value);
@@ -796,13 +884,6 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                 }
             }
 
-            if (oldActive is not null && oldActive != request.RevisionId)
-            {
-                await DeleteFtsRevisionAsync(connection, transaction, oldActive.Value, token).ConfigureAwait(false);
-                await ExecuteAsync(connection, transaction, "UPDATE document_revisions SET status='superseded' WHERE id=$id;",
-                    [new("$id", oldActive.Value.ToString())], token).ConfigureAwait(false);
-            }
-
             var now = DateTimeOffset.UtcNow.ToString("O");
             var policyJson = request.EmbeddingPolicy is null
                 ? null
@@ -815,7 +896,7 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                 [new("$revision", request.RevisionId.ToString()), new("$sha", request.Sha256), new("$size", request.Size),
                  new("$modified", request.ModifiedUtc.ToString("O")), new("$now", now), new("$document", request.DocumentId.ToString())], token).ConfigureAwait(false);
             await ExecuteAsync(connection, transaction,
-                "INSERT INTO passages_fts(rowid,search_text) SELECT rowid,search_text FROM passages WHERE revision_id=$revision;",
+                "INSERT INTO passages_fts(rowid,body_text,title,heading,filename,path,content_name,sheet,email_subject) SELECT rowid,body_text,title,heading,filename,path,content_name,COALESCE(sheet,''),email_subject FROM passages WHERE revision_id=$revision;",
                 [new("$revision", request.RevisionId.ToString())], token).ConfigureAwait(false);
             await ExecuteAsync(connection, transaction,
                 "UPDATE projects SET search_generation=search_generation+1,updated_utc=$now WHERE id=$project;",
@@ -833,12 +914,6 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
             {
                 await InsertErrorAsync(connection, transaction, request.ProjectId, request.DocumentId, error.Code,
                     error.ItemName is null ? error.Message : $"{error.ItemName}: {error.Message}", error.Retryable, 0, sourcePath, token).ConfigureAwait(false);
-            }
-
-            if (oldActive is not null && oldActive != request.RevisionId)
-            {
-                await ExecuteAsync(connection, transaction, "DELETE FROM document_revisions WHERE id=$id;",
-                    [new("$id", oldActive.Value.ToString())], token).ConfigureAwait(false);
             }
 
             await TrimErrorsAsync(connection, transaction, request.ProjectId, token).ConfigureAwait(false);
@@ -1232,7 +1307,7 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
         Guid revisionId, CancellationToken cancellationToken)
     {
         await ExecuteAsync(connection, transaction,
-            "INSERT INTO passages_fts(passages_fts,rowid,search_text) SELECT 'delete',rowid,search_text FROM passages WHERE revision_id=$revision;",
+            "INSERT INTO passages_fts(passages_fts,rowid,body_text,title,heading,filename,path,content_name,sheet,email_subject) SELECT 'delete',rowid,body_text,title,heading,filename,path,content_name,COALESCE(sheet,''),email_subject FROM passages WHERE revision_id=$revision;",
             [new("$revision", revisionId.ToString())], cancellationToken).ConfigureAwait(false);
     }
 
@@ -1377,9 +1452,10 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                 throw new ContextMoleException("unsafe_folder", $"Folder roots cannot be symbolic links: {canonical[index]}");
             }
 
-            if (IsSameOrChild(key, appDataKey))
+            if (IsSameOrChild(key, appDataKey) || IsSameOrChild(appDataKey, key))
             {
-                throw new ContextMoleException("unsafe_folder", "The application data directory cannot be indexed.");
+                throw new ContextMoleException("unsafe_folder",
+                    "A project folder cannot contain or be contained by the application data directory.");
             }
 
             for (var other = 0; other < canonical.Length; other++)

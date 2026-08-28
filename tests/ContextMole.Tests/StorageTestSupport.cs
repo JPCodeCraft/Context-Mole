@@ -88,7 +88,9 @@ internal sealed class StorageTestDatabase : IAsyncDisposable
         [
             new PassageDraft(passageId, rootId, 0, text, TextNormalization.ForSearch(text),
                 new SourceLocation(LocationKind.Document), ExtractionMethod.NativeText, null,
-                includeVector ? TestVector() : null)
+                includeVector ? TestVector() : null, TextNormalization.ForSearch(text),
+                Title: null, FileName: Path.GetFileName(job.SourcePath),
+                SourcePath: Path.GetFullPath(job.SourcePath), ContentName: Path.GetFileName(job.SourcePath))
         ];
 
         var committed = await Writer.CommitRevisionAsync(new IndexCommitRequest(job.JobId, job.ProjectId,
@@ -159,6 +161,7 @@ internal sealed class StorageTestPaths : IAppPaths, IDisposable
     }
 
     public string DataDirectory { get; }
+    public string RootDirectory => _ownedRoot;
     public string DatabasePath { get; }
     public string AssetsDirectory { get; }
     public string LogsDirectory { get; }

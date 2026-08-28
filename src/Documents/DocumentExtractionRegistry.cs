@@ -151,6 +151,7 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
         var sections = new List<ExtractedSection>();
         var attachments = new List<ExtractedNode>();
         using var pdf = PdfDocument.Open(bytes, new ParsingOptions { SkipMissingFonts = true });
+        var title = MetadataTitle(pdf.Information.Title);
         foreach (var page in pdf.GetPages())
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -230,7 +231,7 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
             }
         }
 
-        return new ExtractedNode(name, mimeType, relationship, sections, attachments);
+        return new ExtractedNode(name, mimeType, relationship, sections, attachments, Title: title);
     }
 
     private static int? SafePdfRenderDpi(double widthPoints, double heightPoints)
@@ -313,9 +314,20 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
     private static ExtractedNode HtmlNode(string name, string? mimeType, string relationship, string html)
     {
         var document = new HtmlParser().ParseDocument(html);
+        var title = MetadataTitle(document.Title);
         foreach (var element in document.QuerySelectorAll("script,style,template,noscript,iframe,object,embed,svg,canvas"))
             element.Remove();
-        return TextNode(name, mimeType, relationship, document.Body?.TextContent ?? document.DocumentElement.TextContent, ExtractionMethod.Html);
+        return TextNode(name, mimeType, relationship,
+            document.Body?.TextContent ?? document.DocumentElement.TextContent, ExtractionMethod.Html) with
+        {
+            Title = title
+        };
+    }
+
+    private static string? MetadataTitle(string? value)
+    {
+        var title = TextNormalization.ForDisplay(value);
+        return title.Length == 0 ? null : title.Length <= 500 ? title : title[..500];
     }
 
     private static string DecodeText(byte[] bytes)

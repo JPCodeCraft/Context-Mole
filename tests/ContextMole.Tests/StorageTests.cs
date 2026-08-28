@@ -3,6 +3,8 @@ using System.Text;
 using ContextMole.Core;
 using ContextMole.Documents;
 using ContextMole.Infrastructure;
+using ContextMole.Search;
+using ContextMole.Storage;
 
 using Microsoft.Data.Sqlite;
 
@@ -11,6 +13,206 @@ namespace ContextMole.Tests;
 [Collection(nameof(SqliteIntegrationCollection))]
 public sealed class StorageTests
 {
+    [Fact]
+    public async Task ProjectFoldersCannotContainOrSitInsideApplicationData()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var database = await StorageTestDatabase.CreateAsync(cancellationToken);
+        var parent = Directory.GetParent(database.Paths.DataDirectory)!.FullName;
+
+        var ancestor = await Assert.ThrowsAsync<ContextMoleException>(() =>
+            database.Writer.CreateProjectAsync(new CreateProjectRequest("Unsafe ancestor", [parent]),
+                cancellationToken));
+        Assert.Equal("unsafe_folder", ancestor.Code);
+
+        var descendant = Path.Combine(database.Paths.DataDirectory, "nested-source");
+        Directory.CreateDirectory(descendant);
+        var child = await Assert.ThrowsAsync<ContextMoleException>(() =>
+            database.Writer.CreateProjectAsync(new CreateProjectRequest("Unsafe child", [descendant]),
+                cancellationToken));
+        Assert.Equal("unsafe_folder", child.Code);
+    }
+
+    [Fact]
+    public async Task MultiColumnFtsHonorsAgentFieldWeightOverrides()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var database = await StorageTestDatabase.CreateAsync(cancellationToken);
+        var (projectId, folderId) = await database.CreateProjectAsync("Weighted metadata", cancellationToken);
+
+        var bodySource = Path.Combine(database.Paths.SourceDirectory, "body-only.txt");
+        await File.WriteAllTextAsync(bodySource, "needle appears in the body", cancellationToken);
+        var bodyPending = await database.ObserveAndLeaseAsync(projectId, folderId, bodySource, false, cancellationToken);
+        var bodyDocument = await database.CommitAsync(bodyPending.Job, bodyPending.Sha256, bodyPending.File.Length,
+            new DateTimeOffset(bodyPending.File.LastWriteTimeUtc, TimeSpan.Zero), "needle appears in the body",
+            includeVector: false, cancellationToken: cancellationToken);
+
+        var nameSource = Path.Combine(database.Paths.SourceDirectory, "needle-report.txt");
+        await File.WriteAllTextAsync(nameSource, "unrelated content", cancellationToken);
+        var namePending = await database.ObserveAndLeaseAsync(projectId, folderId, nameSource, false, cancellationToken);
+        var nameDocument = await database.CommitAsync(namePending.Job, namePending.Sha256, namePending.File.Length,
+            new DateTimeOffset(namePending.File.LastWriteTimeUtc, TimeSpan.Zero), "unrelated content",
+            includeVector: false, cancellationToken: cancellationToken);
+
+        var query = StructuredSearchQuery.BuildFtsQuery([new SearchClause("needle", "needle")], 1);
+        var defaults = await database.Store.KeywordSearchAsync(projectId, query, 10, null,
+            new SearchFieldWeights(), cancellationToken);
+        Assert.Equal(nameDocument.DocumentId, defaults.Candidates[0].DocumentId);
+
+        var bodyOnly = await database.Store.KeywordSearchAsync(projectId, query, 10, null,
+            new SearchFieldWeights(Body: 10, Title: 0, Heading: 0, Filename: 0, Path: 0, ContentName: 0,
+                Sheet: 0, EmailSubject: 0), cancellationToken);
+        Assert.Equal(bodyDocument.DocumentId, bodyOnly.Candidates[0].DocumentId);
+    }
+
+    [Fact]
+    public async Task KeywordAndSemanticDateFiltersCompareTheSameInstantAcrossOffsets()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var database = await StorageTestDatabase.CreateAsync(cancellationToken);
+        var (projectId, folderId) = await database.CreateProjectAsync("Offset filters", cancellationToken);
+        var source = Path.Combine(database.Paths.SourceDirectory, "offset.txt");
+        await File.WriteAllTextAsync(source, "offset evidence", cancellationToken);
+        var pending = await database.ObserveAndLeaseAsync(projectId, folderId, source, false, cancellationToken);
+        var modified = new DateTimeOffset(2026, 1, 1, 0, 30, 0, TimeSpan.Zero);
+        var document = await database.CommitAsync(pending.Job, pending.Sha256, pending.File.Length, modified,
+            "offset evidence", includeVector: false, cancellationToken: cancellationToken);
+        var upperBoundWithOffset = new DateTimeOffset(2025, 12, 31, 22, 0, 0, TimeSpan.FromHours(-3));
+        var filters = new SearchFilters(ModifiedToUtc: upperBoundWithOffset);
+        var query = StructuredSearchQuery.BuildFtsQuery([new SearchClause("offset", "offset")], 1);
+
+        var keyword = await database.Store.KeywordSearchAsync(projectId, query, 10, filters, cancellationToken);
+        Assert.Equal(document.PassageId, Assert.Single(keyword.Candidates).PassageId);
+
+        var vectorEntry = new VectorEntry(document.PassageId, document.DocumentId, document.ContentId,
+            source, ".txt", modified, false, StorageTestDatabase.TestVector());
+        var semantic = new FlatVectorIndex(new VectorSnapshot(1, StorageTestDatabase.TestEmbeddingPolicy,
+            [vectorEntry])).Search(StorageTestDatabase.TestVector(), 10, filters);
+        Assert.Equal(document.PassageId, Assert.Single(semantic).PassageId);
+    }
+
+    [Fact]
+    public async Task VersionSixDerivedIndexIsDiscardedAndRebuiltWithoutTouchingSources()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var paths = new StorageTestPaths();
+        var source = Path.Combine(paths.SourceDirectory, "legacy.txt");
+        await File.WriteAllTextAsync(source, "legacy evidence remains", cancellationToken);
+        var projectId = Guid.NewGuid();
+        var folderId = Guid.NewGuid();
+        var documentId = Guid.NewGuid();
+        var revisionId = Guid.NewGuid();
+        var contentId = Guid.NewGuid();
+        var passageId = Guid.NewGuid();
+
+        await using (var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = paths.DatabasePath,
+            Mode = SqliteOpenMode.ReadWriteCreate
+        }.ToString()))
+        {
+            await connection.OpenAsync(cancellationToken);
+            var assembly = typeof(SqliteSearchStore).Assembly;
+            await using (var migrations = connection.CreateCommand())
+            {
+                migrations.CommandText = "CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_utc TEXT NOT NULL);";
+                await migrations.ExecuteNonQueryAsync(cancellationToken);
+            }
+            for (var version = 1; version <= 6; version++)
+            {
+                var marker = $".Migrations.{version:000}_";
+                var resource = assembly.GetManifestResourceNames().Single(name => name.Contains(marker, StringComparison.Ordinal));
+                await using var stream = assembly.GetManifestResourceStream(resource)!;
+                using var reader = new StreamReader(stream);
+                await using var migration = connection.CreateCommand();
+                migration.CommandText = await reader.ReadToEndAsync(cancellationToken);
+                await migration.ExecuteNonQueryAsync(cancellationToken);
+                await using var record = connection.CreateCommand();
+                record.CommandText = "INSERT INTO schema_migrations(version,applied_utc) VALUES($version,$now);";
+                record.Parameters.AddWithValue("$version", version);
+                record.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
+                await record.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            var now = DateTimeOffset.UtcNow.ToString("O");
+            await using var seed = connection.CreateCommand();
+            seed.CommandText = """
+                INSERT INTO projects(id,name,name_key,state,search_generation,created_utc,updated_utc)
+                  VALUES($project,'Legacy','LEGACY',0,1,$now,$now);
+                INSERT INTO project_folders(id,project_id,path,path_key,created_utc)
+                  VALUES($folder,$project,$folder_path,$folder_path,$now);
+                INSERT INTO documents(id,project_id,folder_id,path,path_key,file_name,extension,size,modified_utc,
+                  observation_epoch,tombstoned,available,created_utc,updated_utc)
+                  VALUES($document,$project,$folder,$path,$path,'legacy.txt','.txt',23,$now,1,0,1,$now,$now);
+                INSERT INTO document_revisions(id,document_id,sha256,status,embedding_policy_json,created_utc,activated_utc)
+                  VALUES($revision,$document,'legacy-sha','active','{}',$now,$now);
+                UPDATE documents SET active_revision_id=$revision,sha256='legacy-sha' WHERE id=$document;
+                INSERT INTO content_nodes(id,revision_id,ordinal,name,relationship,depth,status)
+                  VALUES($content,$revision,0,'legacy.txt','root',0,'indexed');
+                INSERT INTO passages(id,revision_id,content_id,ordinal,display_text,search_text,location_kind,
+                  extraction_method) VALUES($passage,$revision,$content,0,'legacy evidence remains',
+                  'legacy evidence remains',0,0);
+                INSERT INTO passages_fts(rowid,search_text)
+                  SELECT rowid,search_text FROM passages WHERE id=$passage;
+                INSERT INTO embeddings(passage_rowid,passage_id,revision_id,vector,policy_key)
+                  SELECT rowid,$passage,$revision,$vector,'legacy-policy' FROM passages WHERE id=$passage;
+                """;
+            seed.Parameters.AddWithValue("$project", projectId.ToString());
+            seed.Parameters.AddWithValue("$folder", folderId.ToString());
+            seed.Parameters.AddWithValue("$document", documentId.ToString());
+            seed.Parameters.AddWithValue("$revision", revisionId.ToString());
+            seed.Parameters.AddWithValue("$content", contentId.ToString());
+            seed.Parameters.AddWithValue("$passage", passageId.ToString());
+            seed.Parameters.AddWithValue("$folder_path", paths.SourceDirectory);
+            seed.Parameters.AddWithValue("$path", source);
+            seed.Parameters.AddWithValue("$now", now);
+            seed.Parameters.AddWithValue("$vector", new byte[1536]);
+            await seed.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        var writer = new DatabaseWriterService(paths);
+        await writer.StartAsync(cancellationToken);
+        await writer.Ready.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+        try
+        {
+            var store = new SqliteSearchStore(paths);
+            var query = StructuredSearchQuery.BuildFtsQuery([new SearchClause("legacy", "legacy")], 1);
+            Assert.Empty((await store.KeywordSearchAsync(projectId, query, 10, null,
+                cancellationToken)).Candidates);
+            Assert.True(File.Exists(source));
+            Assert.Equal("legacy evidence remains", await File.ReadAllTextAsync(source, cancellationToken));
+            var project = Assert.Single(await store.ListProjectsAsync(cancellationToken));
+            Assert.Equal(1, project.PendingCount);
+            Assert.Equal(0, (await store.LoadVectorSnapshotMetadataAsync(projectId, cancellationToken)).EntryCount);
+
+            await using var verify = new SqliteConnection($"Data Source={paths.DatabasePath};Mode=ReadOnly");
+            await verify.OpenAsync(cancellationToken);
+            await using var schema = verify.CreateCommand();
+            schema.CommandText = "SELECT MAX(version) FROM schema_migrations;";
+            Assert.Equal(7L, Convert.ToInt64(await schema.ExecuteScalarAsync(cancellationToken)));
+            await using var derivedRows = verify.CreateCommand();
+            derivedRows.CommandText = "SELECT (SELECT COUNT(*) FROM document_revisions),(SELECT COUNT(*) FROM passages),(SELECT COUNT(*) FROM embeddings);";
+            await using var derivedReader = await derivedRows.ExecuteReaderAsync(cancellationToken);
+            Assert.True(await derivedReader.ReadAsync(cancellationToken));
+            Assert.Equal(0, derivedReader.GetInt32(0));
+            Assert.Equal(0, derivedReader.GetInt32(1));
+            Assert.Equal(0, derivedReader.GetInt32(2));
+            await using var job = verify.CreateCommand();
+            job.CommandText = "SELECT kind,state FROM index_jobs WHERE document_id=$document;";
+            job.Parameters.AddWithValue("$document", documentId.ToString());
+            await using var jobReader = await job.ExecuteReaderAsync(cancellationToken);
+            Assert.True(await jobReader.ReadAsync(cancellationToken));
+            Assert.Equal((int)IndexJobKind.Reindex, jobReader.GetInt32(0));
+            Assert.Equal("queued", jobReader.GetString(1));
+        }
+        finally
+        {
+            await writer.StopAsync(CancellationToken.None);
+            writer.Dispose();
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
     [Fact]
     public async Task CommittedRevisionIsSearchableAndRenamePreservesDocumentIdentity()
     {
@@ -61,6 +263,119 @@ public sealed class StorageTests
         Assert.Equal(0, project.DocumentCount);
         Assert.Empty((await database.Store.KeywordSearchAsync(projectId,
             TextNormalization.QuoteFtsTerms("contrato"), 10, null, cancellationToken)).Candidates);
+    }
+
+    [Fact]
+    public async Task RenameQueuesFullReindexAndAtomicallyReusesStableIdsWithFreshSemanticMetadata()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var database = await StorageTestDatabase.CreateAsync(cancellationToken);
+        var (projectId, folderId) = await database.CreateProjectAsync("Rename semantic refresh", cancellationToken);
+        var source = Path.Combine(database.Paths.SourceDirectory, "old-name.txt");
+        await File.WriteAllTextAsync(source, "rename metadata evidence", cancellationToken);
+
+        var pending = await database.ObserveAndLeaseAsync(projectId, folderId, source, false, cancellationToken);
+        var contentId = Guid.NewGuid();
+        var passageId = Guid.NewGuid();
+        var initialNodes = new ContentNodeDraft[]
+        {
+            new(contentId, null, 0, "old-name.txt", "text/plain", "root", 0)
+        };
+        var initialPassages = new PassageDraft[]
+        {
+            new(passageId, contentId, 0, "rename metadata evidence",
+                $"Title: old-name.txt\nPath: {source}\nBody: rename metadata evidence",
+                new SourceLocation(LocationKind.Document), ExtractionMethod.NativeText, null,
+                StorageTestDatabase.TestVector(), "rename metadata evidence", "old-name.txt",
+                FileName: "old-name.txt", SourcePath: source, ContentName: "old-name.txt")
+        };
+        var first = await database.CommitAsync(pending.Job, pending.Sha256, pending.File.Length,
+            new DateTimeOffset(pending.File.LastWriteTimeUtc, TimeSpan.Zero), "unused", nodes: initialNodes,
+            passages: initialPassages, cancellationToken: cancellationToken);
+
+        var renamed = Path.Combine(database.Paths.SourceDirectory, "new-name.txt");
+        File.Move(source, renamed);
+        await database.Writer.HandleRenamedAsync(projectId, folderId, source, renamed, cancellationToken);
+        var reindex = await database.Writer.LeaseNextJobAsync(TimeSpan.FromMinutes(1), cancellationToken);
+        Assert.NotNull(reindex);
+        Assert.Equal(IndexJobKind.Reindex, reindex.Kind);
+        Assert.Equal(first.DocumentId, reindex.DocumentId);
+
+        var renamedFile = new FileInfo(renamed);
+        var renamedPath = Path.GetFullPath(renamed);
+        var replacementNodes = new ContentNodeDraft[]
+        {
+            new(contentId, null, 0, "new-name.txt", "text/plain", "root", 0)
+        };
+        var replacementPassages = new PassageDraft[]
+        {
+            new(passageId, contentId, 0, "rename metadata evidence",
+                $"Title: new-name.txt\nPath: {renamedPath}\nBody: rename metadata evidence",
+                new SourceLocation(LocationKind.Document), ExtractionMethod.NativeText, null,
+                StorageTestDatabase.TestVector(), "rename metadata evidence", "new-name.txt",
+                FileName: "new-name.txt", SourcePath: renamedPath, ContentName: "new-name.txt")
+        };
+        var second = await database.CommitAsync(reindex, await StorageTestDatabase.HashAsync(renamed,
+                cancellationToken), renamedFile.Length,
+            new DateTimeOffset(renamedFile.LastWriteTimeUtc, TimeSpan.Zero), "unused", nodes: replacementNodes,
+            passages: replacementPassages, cancellationToken: cancellationToken);
+
+        Assert.NotEqual(first.RevisionId, second.RevisionId);
+        Assert.Equal(first.ContentId, second.ContentId);
+        Assert.Equal(first.PassageId, second.PassageId);
+        await using var connection = new SqliteConnection($"Data Source={database.Paths.DatabasePath};Mode=ReadOnly");
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT p.search_text,p.filename,p.path,
+              (SELECT COUNT(*) FROM embeddings e WHERE e.passage_id=p.id)
+            FROM passages p JOIN documents d ON d.active_revision_id=p.revision_id
+            WHERE p.id=$passage;
+            """;
+        command.Parameters.AddWithValue("$passage", passageId.ToString());
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        Assert.True(await reader.ReadAsync(cancellationToken));
+        Assert.Contains("new-name.txt", reader.GetString(0));
+        Assert.DoesNotContain("old-name.txt", reader.GetString(0));
+        Assert.Equal("new-name.txt", reader.GetString(1));
+        Assert.Equal(renamedPath, reader.GetString(2));
+        Assert.Equal(1, reader.GetInt32(3));
+    }
+
+    [Fact]
+    public async Task HashCorrelatedRenameFallbackPreservesDocumentIdAndQueuesMetadataReindex()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var database = await StorageTestDatabase.CreateAsync(cancellationToken);
+        var (projectId, folderId) = await database.CreateProjectAsync("Hash rename fallback", cancellationToken);
+        var source = Path.Combine(database.Paths.SourceDirectory, "fallback-old.txt");
+        await File.WriteAllTextAsync(source, "hash correlated rename", cancellationToken);
+        var initial = await database.ObserveAndLeaseAsync(projectId, folderId, source, false, cancellationToken);
+        var committed = await database.CommitAsync(initial.Job, initial.Sha256, initial.File.Length,
+            new DateTimeOffset(initial.File.LastWriteTimeUtc, TimeSpan.Zero), "hash correlated rename",
+            cancellationToken: cancellationToken);
+
+        var renamed = Path.Combine(database.Paths.SourceDirectory, "fallback-new.txt");
+        File.Move(source, renamed);
+        var discovered = await database.ObserveAndLeaseAsync(projectId, folderId, renamed, false,
+            cancellationToken);
+        Assert.NotEqual(committed.DocumentId, discovered.Job.DocumentId);
+        var begin = await database.Writer.BeginRevisionAsync(discovered.Job, discovered.Sha256,
+            discovered.File.Length, new DateTimeOffset(discovered.File.LastWriteTimeUtc, TimeSpan.Zero),
+            cancellationToken);
+        Assert.False(begin.ShouldExtract);
+        Assert.Contains("full metadata reindex", begin.Reason ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+
+        var replacement = await database.Writer.LeaseNextJobAsync(TimeSpan.FromMinutes(1), cancellationToken);
+        Assert.NotNull(replacement);
+        Assert.Equal(IndexJobKind.Reindex, replacement.Kind);
+        Assert.Equal(committed.DocumentId, replacement.DocumentId);
+        var documents = await database.Store.ListDocumentsAsync(new DocumentListRequest(projectId, Limit: 10),
+            cancellationToken);
+        Assert.Equal(committed.DocumentId, Assert.Single(documents.Documents).DocumentId);
+        Assert.Equal(Path.GetFullPath(renamed), documents.Documents[0].SourcePath);
+        await database.Writer.FailJobAsync(replacement, "cleanup", "Deliberate cleanup", retryable: false,
+            cancellationToken: cancellationToken);
     }
 
     [Fact]

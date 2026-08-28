@@ -320,6 +320,8 @@ public sealed partial class DocumentExtractionRegistry
             .Attribute("full-path") ?? throw new InvalidDataException("EPUB has no package document.");
         packagePath = NormalizeZipPath(packagePath);
         var package = await ReadZipXmlAsync(archive, packagePath, context.Request.MaxAttachmentBytes, cancellationToken);
+        var title = MetadataTitle(package.Descendants()
+            .FirstOrDefault(element => element.Name.LocalName == "title")?.Value);
         var packageDirectory = ZipDirectory(packagePath);
         var manifest = package.Descendants().Where(element => element.Name.LocalName == "item")
             .Select(element => new EpubManifestItem(
@@ -358,7 +360,7 @@ public sealed partial class DocumentExtractionRegistry
                         StructurePath: $"spine[{chapter}]/{entryPath}")
                 });
         }
-        return new ExtractedNode(name, mimeType, relationship, sections, []);
+        return new ExtractedNode(name, mimeType, relationship, sections, [], Title: title);
     }
 
     private static bool IsEpubTextItem(EpubManifestItem item) =>

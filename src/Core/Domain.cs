@@ -56,6 +56,39 @@ public enum AttachmentScope
     AttachmentsOnly
 }
 
+public enum SearchMode
+{
+    Hybrid,
+    Keyword,
+    Semantic
+}
+
+public enum SearchClauseOccur
+{
+    Must,
+    Should,
+    MustNot
+}
+
+public enum SearchMatchKind
+{
+    Term,
+    Phrase,
+    Prefix
+}
+
+public enum SearchField
+{
+    Body,
+    Title,
+    Heading,
+    Filename,
+    Path,
+    ContentName,
+    Sheet,
+    EmailSubject
+}
+
 public enum DocumentInventoryStatus
 {
     Indexed,
@@ -212,7 +245,8 @@ public sealed record ExtractedNode(
     string Relationship,
     IReadOnlyList<ExtractedSection> Sections,
     IReadOnlyList<ExtractedNode> Attachments,
-    string Status = "indexed")
+    string Status = "indexed",
+    string? Title = null)
 {
     public static ExtractedNode Empty(string name, string relationship = "root") =>
         new(name, null, relationship, [], []);
@@ -288,7 +322,14 @@ public sealed record PassageDraft(
     SourceLocation Location,
     ExtractionMethod ExtractionMethod,
     double? OcrConfidence,
-    float[]? Embedding);
+    float[]? Embedding,
+    string? BodySearchText = null,
+    string? Title = null,
+    string? Heading = null,
+    string? FileName = null,
+    string? SourcePath = null,
+    string? ContentName = null,
+    string? EmailSubject = null);
 
 public sealed record IndexCommitRequest(
     Guid JobId,
@@ -325,15 +366,52 @@ public sealed record EmbeddingRefreshCommitRequest(
     IReadOnlyList<PassageEmbedding> Embeddings,
     EmbeddingPolicy Policy);
 
+public sealed record SearchClause(
+    string Id,
+    string Text,
+    SearchClauseOccur Occur = SearchClauseOccur.Should,
+    SearchMatchKind Match = SearchMatchKind.Term,
+    IReadOnlyList<SearchField>? Fields = null);
+
+public sealed record SearchFieldWeights(
+    double Body = 1.0,
+    double Title = 3.0,
+    double Heading = 2.0,
+    double Filename = 2.5,
+    double Path = 0.5,
+    double ContentName = 2.5,
+    double Sheet = 1.5,
+    double EmailSubject = 3.0);
+
+public sealed record SearchBranchWeights(double Keyword = 1.0, double Semantic = 1.0);
+
 public sealed record SearchFilters(
     IReadOnlyList<Guid>? DocumentIds = null,
+    IReadOnlyList<Guid>? ContentIds = null,
     IReadOnlyList<string>? PathPrefixes = null,
-    IReadOnlyList<string>? Extensions = null,
+    IReadOnlyList<string>? RootExtensions = null,
+    IReadOnlyList<string>? ContentExtensions = null,
     DateTimeOffset? ModifiedFromUtc = null,
     DateTimeOffset? ModifiedToUtc = null,
     AttachmentScope AttachmentScope = AttachmentScope.Any);
 
-public sealed record SearchRequest(Guid ProjectId, string Query, int Limit = 10, SearchFilters? Filters = null);
+public sealed record SearchResultOptions(
+    int GroupLimit = 10,
+    int PreviewsPerGroup = 1,
+    int MaxGroupsPerDocument = 2,
+    double SemanticConfidenceThreshold = 0.25,
+    bool StrictSemanticThreshold = false);
+
+public sealed record SearchRequest(
+    Guid ProjectId,
+    SearchMode Mode = SearchMode.Hybrid,
+    string? SemanticQuery = null,
+    IReadOnlyList<SearchClause>? Clauses = null,
+    int? MinimumShouldMatch = null,
+    SearchFieldWeights? FieldWeights = null,
+    SearchBranchWeights? BranchWeights = null,
+    SearchFilters? Filters = null,
+    SearchResultOptions? ResultOptions = null);
 
 public sealed record SearchCandidate(
     Guid PassageId,
@@ -351,7 +429,15 @@ public sealed record SearchCandidate(
     double? KeywordScore = null,
     double? SemanticScore = null,
     int? KeywordRank = null,
-    int? SemanticRank = null);
+    int? SemanticRank = null,
+    int Ordinal = 0,
+    string? BodySearchText = null,
+    string? Title = null,
+    string? Heading = null,
+    string? ContentName = null,
+    string? ContentMimeType = null,
+    string? ContentExtension = null,
+    string? EmailSubject = null);
 
 public sealed record SearchResultItem(
     Guid PassageId,
@@ -371,13 +457,54 @@ public sealed record SearchResultItem(
     double? KeywordScore,
     double? SemanticScore,
     int? KeywordRank,
-    int? SemanticRank);
+    int? SemanticRank,
+    bool LowConfidence,
+    IReadOnlyList<string> MatchedClauseIds,
+    IReadOnlyList<SearchField> MatchedFields,
+    IReadOnlyList<Guid> ConsolidatedPassageIds);
+
+public sealed record SearchResultGroup(
+    Guid DocumentId,
+    Guid ContentId,
+    string SourcePath,
+    string FileName,
+    string RootExtension,
+    string ContentName,
+    string? ContentMimeType,
+    string? ContentExtension,
+    IReadOnlyList<string> AttachmentChain,
+    double Score,
+    int TotalMatchCount,
+    int CollapsedMatchCount,
+    IReadOnlyList<SearchResultItem> Previews);
+
+public sealed record SearchSuppressedSource(
+    Guid DocumentId,
+    string SourcePath,
+    string FileName,
+    int MatchedContentGroups,
+    int ReturnedContentGroups,
+    int SuppressedContentGroups);
+
+public sealed record SearchWarning(string Code, string Message);
+
+public sealed record SearchBranchCandidateDepths(
+    int Keyword,
+    int OptionalKeywordBoost,
+    int Semantic);
 
 public sealed record SearchResponse(
+    SearchMode RequestedMode,
     string ActualMode,
-    IReadOnlyList<string> Warnings,
+    IReadOnlyList<SearchWarning> Warnings,
     long SearchGeneration,
-    IReadOnlyList<SearchResultItem> Results);
+    int CandidateMatchCount,
+    SearchBranchCandidateDepths InspectedCandidateDepths,
+    bool CandidateLimitReached,
+    int ReturnedGroupCount,
+    int SuppressedGroupCount,
+    IReadOnlyList<SearchSuppressedSource> SuppressedSources,
+    IReadOnlyList<SearchResultGroup> Results);
 
 public sealed record PassageInfo(
     Guid PassageId,
@@ -474,7 +601,8 @@ public sealed record VectorEntry(
     string Extension,
     DateTimeOffset ModifiedUtc,
     bool IsAttachment,
-    float[] Vector);
+    float[] Vector,
+    string? ContentExtension = null);
 
 public sealed record VectorSnapshot(
     long SearchGeneration,

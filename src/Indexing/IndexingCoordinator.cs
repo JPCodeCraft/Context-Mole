@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Security.Cryptography;
+using System.Text;
 using System.Threading.Channels;
 
 using ContextMole.Core;
@@ -12,6 +13,7 @@ namespace ContextMole.Indexing;
 public sealed class IndexingCoordinator(
     IIndexWriter writer,
     ISearchStore searchStore,
+    IAppPaths paths,
     IDocumentExtractor extractor,
     IEmbeddingGenerator embeddings,
     IndexingActivityTracker activities,
@@ -27,6 +29,7 @@ public sealed class IndexingCoordinator(
     private const int TokenProbeWordCount = 32;
     private readonly IIndexWriter _writer = writer;
     private readonly ISearchStore _searchStore = searchStore;
+    private readonly string _dataDirectory = NormalizeDirectoryPath(paths.DataDirectory);
     private readonly IDocumentExtractor _extractor = extractor;
     private readonly IEmbeddingGenerator _embeddings = embeddings;
     private readonly IndexingActivityTracker _activities = activities;
@@ -132,6 +135,12 @@ public sealed class IndexingCoordinator(
         foreach (var item in desired.Values)
         {
             FolderWatcher? existing;
+            if (IsAppDataPath(item.Folder.Path))
+            {
+                lock (_watchersGate) _watchers.Remove(item.Folder.Id, out existing);
+                existing?.Dispose();
+                continue;
+            }
             lock (_watchersGate)
             {
                 if (_watchers.TryGetValue(item.Folder.Id, out existing) &&
@@ -185,8 +194,12 @@ public sealed class IndexingCoordinator(
         return new FolderWatcher(folder.Path, watcher);
     }
 
-    private void Queue(Guid projectId, Guid folderId, string path, WatchChangeKind kind, string? oldPath = null) =>
+    private void Queue(Guid projectId, Guid folderId, string path, WatchChangeKind kind, string? oldPath = null)
+    {
+        if (kind != WatchChangeKind.Reconcile && IsAppDataPath(path) &&
+            (kind != WatchChangeKind.Rename || oldPath is null || IsAppDataPath(oldPath))) return;
         _watchChanges.Writer.TryWrite(new WatchChange(projectId, folderId, path, kind, oldPath, DateTimeOffset.UtcNow));
+    }
 
     private async Task DrainWatcherChangesAsync(CancellationToken cancellationToken)
     {
@@ -229,8 +242,25 @@ public sealed class IndexingCoordinator(
             return;
         }
 
+        var pathIsAppData = IsAppDataPath(change.Path);
+        var oldPathIsAppData = change.OldPath is not null && IsAppDataPath(change.OldPath);
+
         if (change.Kind == WatchChangeKind.Rename && change.OldPath is not null)
         {
+            if (pathIsAppData)
+            {
+                if (!oldPathIsAppData && SupportedContent.IsSupported(change.OldPath))
+                    await _writer.HandleDeletedAsync(change.ProjectId, change.FolderId, change.OldPath,
+                        cancellationToken).ConfigureAwait(false);
+                return;
+            }
+            if (oldPathIsAppData)
+            {
+                if (File.Exists(change.Path) && SupportedContent.IsSupported(change.Path))
+                    await ObservePathAsync(change.ProjectId, change.FolderId, change.Path, null, true,
+                        cancellationToken).ConfigureAwait(false);
+                return;
+            }
             if (File.Exists(change.Path) && SupportedContent.IsSupported(change.Path))
             {
                 await _writer.HandleRenamedAsync(change.ProjectId, change.FolderId, change.OldPath, change.Path,
@@ -251,6 +281,9 @@ public sealed class IndexingCoordinator(
             }
             return;
         }
+
+
+        if (pathIsAppData) return;
 
         if (change.Kind == WatchChangeKind.Delete)
         {
@@ -355,6 +388,9 @@ public sealed class IndexingCoordinator(
                     if (SupportedContent.IsSupported(path))
                         await ObservePathAsync(projectId, folderId, path, token, false, cancellationToken).ConfigureAwait(false);
                 }
+                if (PathsOverlap(root, _dataDirectory))
+                    await RemoveExcludedDocumentsAsync(projectId, folderId, root, cancellationToken)
+                        .ConfigureAwait(false);
                 if (!Directory.Exists(root))
                 {
                     _logger.LogInformation("Retaining index state because folder became unavailable: {Folder}", root);
@@ -376,6 +412,7 @@ public sealed class IndexingCoordinator(
     private async Task ObservePathAsync(Guid projectId, Guid folderId, string path, string? token, bool force,
         CancellationToken cancellationToken)
     {
+        if (IsAppDataPath(path)) return;
         var info = new FileInfo(path);
         if (!info.Exists || IsFileSystemLink(info))
             return;
@@ -473,6 +510,12 @@ public sealed class IndexingCoordinator(
                     cancellationToken).ConfigureAwait(false);
             return false;
         }
+        if (IsAppDataPath(before.FullName))
+        {
+            await _writer.HandleDeletedAsync(job.ProjectId, job.FolderId, job.SourcePath, cancellationToken)
+                .ConfigureAwait(false);
+            return false;
+        }
         if (!await IsFolderAvailableAsync(job.ProjectId, job.FolderId, cancellationToken).ConfigureAwait(false))
         {
             await _writer.FailJobAsync(job, "folder_unavailable",
@@ -512,7 +555,7 @@ public sealed class IndexingCoordinator(
         activity.SetStage(IndexingPipelineStage.ExtractingContent);
         var extraction = await _extractor.ExtractAsync(new ExtractionRequest(job.SourcePath), cancellationToken).ConfigureAwait(false);
         activity.SetStage(IndexingPipelineStage.ChunkingText);
-        var (contentNodes, passageSeeds) = FlattenAndChunk(extraction.Root);
+        var (contentNodes, passageSeeds) = FlattenAndChunk(extraction.Root, job.SourcePath, job.DocumentId);
         if (passageSeeds.Count == 0 && extraction.Errors.Count > 0)
         {
             var failure = extraction.Errors.FirstOrDefault(error => error.Retryable) ?? extraction.Errors[0];
@@ -630,7 +673,7 @@ public sealed class IndexingCoordinator(
     private async Task<bool> IsAuthorizedSourceAsync(IndexJobLease job, FileInfo source,
         CancellationToken cancellationToken)
     {
-        if (IsFileSystemLink(source)) return false;
+        if (IsFileSystemLink(source) || IsAppDataPath(source.FullName)) return false;
         var root = await GetFolderRootAsync(job.ProjectId, job.FolderId, cancellationToken).ConfigureAwait(false);
         if (root is null) return false;
 
@@ -700,29 +743,236 @@ public sealed class IndexingCoordinator(
             cancellationToken).ConfigureAwait(false);
     }
 
-    private (List<ContentNodeDraft> Nodes, List<PassageDraft> Passages) FlattenAndChunk(ExtractedNode root)
+    private (List<ContentNodeDraft> Nodes, List<PassageDraft> Passages) FlattenAndChunk(
+        ExtractedNode root, string sourcePath, Guid documentId)
     {
         var nodes = new List<ContentNodeDraft>();
         var passages = new List<PassageDraft>();
-        AddNode(root, null, 0, 0);
+        var fileName = Path.GetFileName(sourcePath);
+        AddNode(root, null, 0, 0, "root");
         return (nodes, passages);
 
-        void AddNode(ExtractedNode node, Guid? parentId, int ordinal, int depth)
+        void AddNode(ExtractedNode node, Guid? parentId, int ordinal, int depth, string structuralPath)
         {
-            var contentId = Guid.CreateVersion7();
+            var contentId = DeterministicId(documentId, "content", structuralPath);
             nodes.Add(new ContentNodeDraft(contentId, parentId, ordinal, node.Name, node.MimeType, node.Relationship, depth, node.Status));
             var passageOrdinal = 0;
-            foreach (var section in node.Sections)
-                foreach (var chunk in Chunk(section.Text))
+            var title = IndependentTitle(node.Title, node.Name, depth == 0 ? fileName : null);
+            var emailSubject = ExtractEmailSubject(node.Sections);
+            foreach (var prepared in PrepareSections(node.Sections))
+            {
+                var chunkOrdinal = 0;
+                foreach (var chunk in Chunk(prepared.Text))
                 {
-                    passages.Add(new PassageDraft(Guid.CreateVersion7(), contentId, passageOrdinal++, chunk,
-                        TextNormalization.ForSearch(chunk, section.Method == ExtractionMethod.NativeText && section.Location.Kind == LocationKind.Page),
-                        section.Location, section.Method, section.OcrConfidence, null));
+                    var section = prepared.Section;
+                    var body = TextNormalization.ForSearch(chunk,
+                        section.Method == ExtractionMethod.NativeText && section.Location.Kind == LocationKind.Page);
+                    var semanticText = BuildSemanticText(body, title, fileName, sourcePath, node.Name,
+                        section.Heading, section.Location.Sheet, emailSubject, prepared.TableHeader);
+                    var passageId = DeterministicId(contentId, "passage",
+                        $"{prepared.FirstSectionOrdinal}:{prepared.LastSectionOrdinal}:{LocationIdentity(section.Location)}:{chunkOrdinal++}");
+                    passages.Add(new PassageDraft(passageId, contentId, passageOrdinal++, chunk,
+                        semanticText, section.Location, section.Method, section.OcrConfidence, null, body, title,
+                        section.Heading, fileName, sourcePath, node.Name, emailSubject));
                 }
+            }
+            var siblingOccurrences = new Dictionary<string, int>(StringComparer.Ordinal);
             for (var index = 0; index < node.Attachments.Count; index++)
-                AddNode(node.Attachments[index], contentId, index, depth + 1);
+            {
+                var child = node.Attachments[index];
+                var siblingKey = $"{TextNormalization.NameKey(child.Relationship)}\u001f{TextNormalization.NameKey(child.Name)}";
+                siblingOccurrences.TryGetValue(siblingKey, out var occurrence);
+                siblingOccurrences[siblingKey] = occurrence + 1;
+                AddNode(child, contentId, index, depth + 1,
+                    $"{structuralPath}/{siblingKey}\u001f{occurrence}");
+            }
         }
     }
+
+    private static IReadOnlyList<PreparedSection> PrepareSections(IReadOnlyList<ExtractedSection> sections)
+    {
+        var normalized = sections.Select((section, ordinal) => new
+            {
+                Section = section,
+                Ordinal = ordinal,
+                Text = TextNormalization.ForDisplay(section.Text)
+            })
+            .Where(item => item.Text.Length > 0)
+            .ToArray();
+        var tableHeaders = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var item in normalized)
+        {
+            var table = TableBoundary(item.Section.Location);
+            if (table is null || tableHeaders.ContainsKey(table)) continue;
+            var header = NormalizeTableHeader(item.Text);
+            if (header is not null) tableHeaders[table] = header;
+        }
+
+        var result = new List<PreparedSection>();
+        foreach (var item in normalized)
+        {
+            var section = item.Section;
+            var boundary = StructuralBoundary(section);
+            var table = TableBoundary(section.Location);
+            var tableHeader = table is not null && tableHeaders.TryGetValue(table, out var header) ? header : null;
+            if (result.Count > 0)
+            {
+                var previous = result[^1];
+                var combinedWordCount = CountWords(previous.Text) + CountWords(item.Text);
+                if (CanMerge(section) && combinedWordCount <= 256 && previous.Boundary == boundary &&
+                    previous.Section.Method == section.Method &&
+                    string.Equals(previous.Section.Heading, section.Heading, StringComparison.Ordinal))
+                {
+                    result[^1] = previous with
+                    {
+                        Section = previous.Section with
+                        {
+                            Location = MergeLocations(previous.Section.Location, section.Location)
+                        },
+                        Text = $"{previous.Text}\n{item.Text}",
+                        LastSectionOrdinal = item.Ordinal
+                    };
+                    continue;
+                }
+            }
+            result.Add(new PreparedSection(section, item.Text, item.Ordinal, item.Ordinal, boundary, tableHeader));
+        }
+        return result;
+
+        static int CountWords(string value) =>
+            value.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).Length;
+    }
+
+    private static bool CanMerge(ExtractedSection section) => section.Location.Kind switch
+    {
+        LocationKind.Sheet => false,
+        LocationKind.Structure when IsStandaloneStructure(section.Location.StructurePath) => false,
+        _ => true
+    };
+
+    private static bool IsStandaloneStructure(string? path) =>
+        path is not null && !path.StartsWith("document/paragraph[", StringComparison.Ordinal);
+
+    private static string StructuralBoundary(ExtractedSection section)
+    {
+        var location = section.Location;
+        var locationBoundary = location.Kind switch
+        {
+            LocationKind.Page => $"page:{location.Page}:part:{location.StructurePath}",
+            LocationKind.Slide => $"slide:{location.Slide}:part:{location.StructurePath}",
+            LocationKind.Sheet => $"sheet:{location.Sheet}:{location.StructurePath}:{location.CellRange}",
+            LocationKind.EmailPart => $"email:{location.EmailPart}:part:{location.StructurePath}",
+            LocationKind.ImageFrame => $"image:{location.Page}:{location.ImageFrame}:part:{location.StructurePath}",
+            LocationKind.Structure when location.StructurePath?.StartsWith("document/paragraph[",
+                StringComparison.Ordinal) == true => "structure:document-body",
+            LocationKind.Structure => $"structure:{location.StructurePath}",
+            _ => "document"
+        };
+        return $"{locationBoundary}\u001fheading:{section.Heading}";
+    }
+
+    private static SourceLocation MergeLocations(SourceLocation first, SourceLocation last)
+    {
+        if (first == last) return first;
+        if (first.Kind == LocationKind.Structure && last.Kind == LocationKind.Structure &&
+            first.StructurePath is { } firstPath && last.StructurePath is { } lastPath)
+            return first with { StructurePath = $"{firstPath}..{lastPath}" };
+        return first;
+    }
+
+    private static string BuildSemanticText(string body, string title, string fileName, string sourcePath,
+        string contentName, string? heading, string? sheet, string? emailSubject, string? tableHeader)
+    {
+        var lines = new List<string>();
+        if (!string.IsNullOrWhiteSpace(title)) lines.Add($"Title: {title}");
+        lines.Add($"Filename: {fileName}");
+        lines.Add($"Path: {sourcePath}");
+        lines.Add($"Content: {contentName}");
+        if (!string.IsNullOrWhiteSpace(heading)) lines.Add($"Heading: {heading}");
+        if (!string.IsNullOrWhiteSpace(sheet)) lines.Add($"Sheet: {sheet}");
+        if (!string.IsNullOrWhiteSpace(emailSubject)) lines.Add($"Email subject: {emailSubject}");
+        if (!string.IsNullOrWhiteSpace(tableHeader)) lines.Add($"Table headers: {tableHeader}");
+        lines.Add($"Body: {body}");
+        return TextNormalization.ForSearch(string.Join('\n', lines));
+    }
+
+    private static string IndependentTitle(string? extractedTitle, string contentName, string? rootFileName)
+    {
+        var title = TextNormalization.ForDisplay(extractedTitle);
+        if (title.Length == 0) return string.Empty;
+        var titleKey = TextNormalization.NameKey(title);
+        var duplicateNames = new[] { contentName, Path.GetFileNameWithoutExtension(contentName), rootFileName,
+                rootFileName is null ? null : Path.GetFileNameWithoutExtension(rootFileName) }
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => TextNormalization.NameKey(value!));
+        return duplicateNames.Contains(titleKey, StringComparer.Ordinal) ? string.Empty : title;
+    }
+
+    private static string? ExtractEmailSubject(IReadOnlyList<ExtractedSection> sections)
+    {
+        foreach (var line in sections.Where(section => section.Location.Kind == LocationKind.EmailPart)
+                     .SelectMany(section => TextNormalization.ForDisplay(section.Text).Split('\n')))
+        {
+            if (line.StartsWith("Subject:", StringComparison.OrdinalIgnoreCase))
+            {
+                var subject = line["Subject:".Length..].Trim();
+                if (subject.Length > 0) return subject;
+            }
+        }
+        return null;
+    }
+
+    private static string? TableBoundary(SourceLocation location)
+    {
+        if (location.Kind == LocationKind.Sheet && !string.IsNullOrWhiteSpace(location.CellRange) &&
+            string.IsNullOrWhiteSpace(location.StructurePath))
+            return $"{location.Sheet}\u001fgrid";
+        if (location.Kind == LocationKind.Structure && IsTableStructure(location.StructurePath))
+            return location.StructurePath;
+        return null;
+    }
+
+    private static string? NormalizeTableHeader(string text)
+    {
+        var firstRow = text.Split('\n', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
+        if (firstRow is null) return null;
+        var cells = firstRow.Split('\t', StringSplitOptions.RemoveEmptyEntries)
+            .Select(cell =>
+            {
+                var separator = cell.LastIndexOf(": ", StringComparison.Ordinal);
+                return (separator >= 0 ? cell[(separator + 2)..] : cell).Trim();
+            })
+            .Where(cell => cell.Length > 0)
+            .ToArray();
+        if (cells.Length == 0) return null;
+        var header = string.Join(" | ", cells);
+        return header.Length <= 500 ? header : header[..500];
+    }
+
+    private static bool IsTableStructure(string? path) =>
+        path?.Contains("/table[", StringComparison.OrdinalIgnoreCase) == true ||
+        path?.StartsWith("table[", StringComparison.OrdinalIgnoreCase) == true;
+
+    private static string LocationIdentity(SourceLocation location) => string.Join('\u001f',
+        (int)location.Kind, location.Page, location.Sheet, location.CellRange, location.Slide,
+        location.StructurePath, location.EmailPart, location.ImageFrame);
+
+    private static Guid DeterministicId(Guid scopeId, string kind, string structuralIdentity)
+    {
+        var bytes = Encoding.UTF8.GetBytes($"{scopeId:N}\u001f{kind}\u001f{structuralIdentity}");
+        var hash = SHA256.HashData(bytes);
+        hash[6] = (byte)((hash[6] & 0x0f) | 0x50);
+        hash[8] = (byte)((hash[8] & 0x3f) | 0x80);
+        return new Guid(hash.AsSpan(0, 16));
+    }
+
+    private sealed record PreparedSection(
+        ExtractedSection Section,
+        string Text,
+        int FirstSectionOrdinal,
+        int LastSectionOrdinal,
+        string Boundary,
+        string? TableHeader);
 
     private IEnumerable<string> Chunk(string source)
     {
@@ -796,8 +1046,9 @@ public sealed class IndexingCoordinator(
         return (attributes & (FileAttributes.Offline | recallOnOpen | recallOnDataAccess)) != 0;
     }
 
-    private static IEnumerable<string> EnumerateFilesWithoutFollowingLinks(string root)
+    private IEnumerable<string> EnumerateFilesWithoutFollowingLinks(string root)
     {
+        if (IsAppDataPath(root)) yield break;
         var pending = new Stack<DirectoryInfo>();
         pending.Push(new DirectoryInfo(root));
         var options = new EnumerationOptions
@@ -812,7 +1063,7 @@ public sealed class IndexingCoordinator(
         {
             foreach (var entry in pending.Pop().EnumerateFileSystemInfos("*", options))
             {
-                if (IsFileSystemLink(entry)) continue;
+                if (IsFileSystemLink(entry) || IsAppDataPath(entry.FullName)) continue;
                 if ((entry.Attributes & FileAttributes.Directory) != 0)
                     pending.Push(new DirectoryInfo(entry.FullName));
                 else
@@ -823,6 +1074,61 @@ public sealed class IndexingCoordinator(
 
     private static bool IsFileSystemLink(FileSystemInfo info) =>
         (info.Attributes & FileAttributes.ReparsePoint) != 0 && !string.IsNullOrEmpty(info.LinkTarget);
+
+    private async Task RemoveExcludedDocumentsAsync(Guid projectId, Guid folderId, string folderRoot,
+        CancellationToken cancellationToken)
+    {
+        var excluded = new List<string>();
+        string? cursor = null;
+        var prefix = IsAppDataPath(folderRoot) ? NormalizeDirectoryPath(folderRoot) : _dataDirectory;
+        do
+        {
+            var page = await _searchStore.ListDocumentsAsync(new DocumentListRequest(projectId,
+                PathPrefixes: [prefix], Limit: 100, Cursor: cursor), cancellationToken).ConfigureAwait(false);
+            excluded.AddRange(page.Documents.Where(document => document.FolderId == folderId &&
+                IsAppDataPath(document.SourcePath)).Select(document => document.SourcePath));
+            cursor = page.NextCursor;
+        } while (cursor is not null);
+
+        foreach (var path in excluded)
+            await _writer.HandleDeletedAsync(projectId, folderId, path, cancellationToken).ConfigureAwait(false);
+    }
+
+    private bool IsAppDataPath(string path)
+    {
+        try
+        {
+            var fullPath = Path.GetFullPath(path);
+            var relative = Path.GetRelativePath(_dataDirectory, fullPath);
+            return relative == "." || !Path.IsPathRooted(relative) && relative != ".." &&
+                   !relative.StartsWith($"..{Path.DirectorySeparatorChar}", StringComparison.Ordinal) &&
+                   !relative.StartsWith($"..{Path.AltDirectorySeparatorChar}", StringComparison.Ordinal);
+        }
+        catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return false;
+        }
+    }
+
+    private static string NormalizeDirectoryPath(string path)
+    {
+        var fullPath = Path.GetFullPath(path);
+        var root = Path.GetPathRoot(fullPath);
+        return root is not null && string.Equals(fullPath, root, PathComparison())
+            ? fullPath
+            : fullPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+    }
+
+    private static bool PathsOverlap(string left, string right) =>
+        IsSameOrChildPath(left, right) || IsSameOrChildPath(right, left);
+
+    private static bool IsSameOrChildPath(string candidate, string root)
+    {
+        var relative = Path.GetRelativePath(NormalizeDirectoryPath(root), NormalizeDirectoryPath(candidate));
+        return relative == "." || !Path.IsPathRooted(relative) && relative != ".." &&
+               !relative.StartsWith($"..{Path.DirectorySeparatorChar}", StringComparison.Ordinal) &&
+               !relative.StartsWith($"..{Path.AltDirectorySeparatorChar}", StringComparison.Ordinal);
+    }
 
     private static string ErrorCode(Exception exception) => exception switch
     {

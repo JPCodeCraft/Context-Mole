@@ -32,13 +32,23 @@ public sealed class McpTools(
     });
 
     [McpServerTool(Name = "search_project", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false, UseStructuredContent = true)]
-    [Description("Use to find evidence in one known project. Runs ranked keyword and local-semantic search over indexed passages, including ZIP/RAR entries, and returns excerpts with IDs plus exact stored source, attachment-chain, and typed-location provenance; it does not return complete documents.")]
-    public Task<object> SearchProject(Guid project_id, string query, int limit = 10, McpSearchFilters? filters = null,
+    [Description("Agent-directed search over one indexed project. Choose keyword for exact terms/phrases/prefixes, semantic for concepts, or hybrid to fuse both. Mix passage-scoped must/should/must_not clauses, target metadata fields, override lexical/fusion weights, focus returned content_ids, and control grouped previews. Results are grouped by root or nested content node and include stable IDs, unique match counts, separate per-branch inspection depths, scores, confidence, matched clauses/fields, provenance, collapsed counts, and suppressed-source summaries. Borderline semantic matches are labelled rather than hidden unless strict_semantic_threshold is enabled.")]
+    public Task<object> SearchProject(
+        [Description("Stable project ID from list_projects; exactly one project is searched per call.")] Guid project_id,
+        [Description("Retrieval strategy: hybrid (default), keyword, or semantic.")] SearchMode mode = SearchMode.Hybrid,
+        [Description("Natural-language conceptual query for semantic/hybrid retrieval. Required for semantic mode; omit for keyword mode.")] string? semantic_query = null,
+        [Description("Structured lexical constraints. Clauses may independently be must, should, or must_not and term, phrase, or prefix. All required clause logic is evaluated within one passage, not across a document group.")] IReadOnlyList<McpSearchClause>? clauses = null,
+        [Description("Required number of should clauses that must match the same passage. Defaults to 1 when there are only should clauses, otherwise 0.")] int? minimum_should_match = null,
+        [Description("Optional 0-10 BM25 field-weight overrides. Omitted fields use agent-oriented defaults.")] McpSearchFieldWeights? field_weights = null,
+        [Description("Optional 0-10 keyword/semantic fusion weights; hybrid mode only.")] McpSearchBranchWeights? branch_weights = null,
+        [Description("Optional document/content/path/type/date/attachment filters. Use content_ids to focus a follow-up on selected groups.")] McpSearchFilters? filters = null,
+        [Description("Grouped result limits, diversity, and semantic confidence behavior.")] McpSearchResultOptions? result_options = null,
         CancellationToken cancellationToken = default) => RunAsync(async () =>
     {
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-        ValidateSearchInput(query, filters);
-        return await _search.SearchAsync(new SearchRequest(project_id, query, limit, filters?.ToDomain()), cancellationToken).ConfigureAwait(false);
+        return await _search.SearchAsync(new SearchRequest(project_id, mode, semantic_query,
+            clauses?.Select(clause => clause.ToDomain()).ToArray(), minimum_should_match, field_weights?.ToDomain(),
+            branch_weights?.ToDomain(), filters?.ToDomain(), result_options?.ToDomain()), cancellationToken).ConfigureAwait(false);
     });
 
     [McpServerTool(Name = "read_passages", ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false, UseStructuredContent = true)]
@@ -172,37 +182,61 @@ public sealed class McpTools(
         }
     }
 
-    private static void ValidateSearchInput(string query, McpSearchFilters? filters)
-    {
-        if (string.IsNullOrWhiteSpace(query))
-            throw new ContextMoleException("invalid_request", "query must not be empty.");
-        if (query.Length > 4096)
-            throw new ContextMoleException("invalid_request", "query must not exceed 4096 characters.");
-        if (filters is null) return;
-        if (!Enum.IsDefined(filters.AttachmentScope))
-            throw new ContextMoleException("invalid_filter", "attachment_scope is invalid.");
-        if (filters.DocumentIds is { Count: > 100 })
-            throw new ContextMoleException("invalid_filter", "document_ids must contain at most 100 IDs.");
-        if (filters.PathPrefixes is { Count: > 50 } ||
-            filters.PathPrefixes?.Any(path => string.IsNullOrWhiteSpace(path) || path.Length > 1024) == true)
-            throw new ContextMoleException("invalid_filter", "path_prefixes must contain at most 50 non-empty paths of up to 1024 characters.");
-        if (filters.Extensions is { Count: > 50 } ||
-            filters.Extensions?.Any(extension => string.IsNullOrWhiteSpace(extension) || extension.Length > 32) == true)
-            throw new ContextMoleException("invalid_filter", "extensions must contain at most 50 non-empty values of up to 32 characters.");
-        if (filters.ModifiedFromUtc is { } from && filters.ModifiedToUtc is { } to && from > to)
-            throw new ContextMoleException("invalid_filter", "modified_from_utc must not be later than modified_to_utc.");
-    }
+}
+
+public sealed record McpSearchClause(
+    [property: Description("Stable caller-defined ID echoed in matched_clause_ids (1-64 ASCII letters, numbers, dot, underscore, or hyphen).")] string Id,
+    [property: Description("Text to match: one token for term/prefix, or one-or-more tokens for phrase.")] string Text,
+    [property: Description("Boolean role: must, should, or must_not.")] SearchClauseOccur Occur = SearchClauseOccur.Should,
+    [property: Description("Match behavior: exact term, ordered phrase, or token prefix.")] SearchMatchKind Match = SearchMatchKind.Term,
+    [property: Description("Optional target fields; omission searches body, title, heading, filename, path, content_name, sheet, and email_subject.")] IReadOnlyList<SearchField>? Fields = null)
+{
+    public SearchClause ToDomain() => new(Id, Text, Occur, Match, Fields);
+}
+
+public sealed record McpSearchFieldWeights(
+    [property: Description("Body text weight, default 1.0.")] double Body = 1.0,
+    [property: Description("Document title weight, default 3.0.")] double Title = 3.0,
+    [property: Description("Section heading weight, default 2.0.")] double Heading = 2.0,
+    [property: Description("Root filename weight, default 2.5.")] double Filename = 2.5,
+    [property: Description("Authorized source path weight, default 0.5.")] double Path = 0.5,
+    [property: Description("Root/attachment/archive-entry name weight, default 2.5.")] double ContentName = 2.5,
+    [property: Description("Worksheet name weight, default 1.5.")] double Sheet = 1.5,
+    [property: Description("Email subject weight, default 3.0.")] double EmailSubject = 3.0)
+{
+    public SearchFieldWeights ToDomain() => new(Body, Title, Heading, Filename, Path, ContentName, Sheet, EmailSubject);
+}
+
+public sealed record McpSearchBranchWeights(
+    [property: Description("Keyword reciprocal-rank-fusion weight, default 1.0.")] double Keyword = 1.0,
+    [property: Description("Semantic reciprocal-rank-fusion weight, default 1.0.")] double Semantic = 1.0)
+{
+    public SearchBranchWeights ToDomain() => new(Keyword, Semantic);
 }
 
 public sealed record McpSearchFilters(
-    IReadOnlyList<Guid>? DocumentIds = null,
-    IReadOnlyList<string>? PathPrefixes = null,
-    IReadOnlyList<string>? Extensions = null,
-    DateTimeOffset? ModifiedFromUtc = null,
-    DateTimeOffset? ModifiedToUtc = null,
-    AttachmentScope AttachmentScope = AttachmentScope.Any)
+    [property: Description("Optional stable root document IDs.")] IReadOnlyList<Guid>? DocumentIds = null,
+    [property: Description("Optional stable content IDs returned by search/list_attachments; use for focused follow-ups.")] IReadOnlyList<Guid>? ContentIds = null,
+    [property: Description("Optional authorized source-directory prefixes.")] IReadOnlyList<string>? PathPrefixes = null,
+    [property: Description("Optional root source extensions such as .msg or pdf.")] IReadOnlyList<string>? RootExtensions = null,
+    [property: Description("Optional nested/root content-name extensions; e.g. pdf finds a PDF attachment inside an email or archive.")] IReadOnlyList<string>? ContentExtensions = null,
+    [property: Description("Optional inclusive source modified-time lower bound.")] DateTimeOffset? ModifiedFromUtc = null,
+    [property: Description("Optional inclusive source modified-time upper bound.")] DateTimeOffset? ModifiedToUtc = null,
+    [property: Description("any, root_only, or attachments_only.")] AttachmentScope AttachmentScope = AttachmentScope.Any)
 {
-    public SearchFilters ToDomain() => new(DocumentIds, PathPrefixes, Extensions, ModifiedFromUtc, ModifiedToUtc, AttachmentScope);
+    public SearchFilters ToDomain() => new(DocumentIds, ContentIds, PathPrefixes, RootExtensions, ContentExtensions,
+        ModifiedFromUtc, ModifiedToUtc, AttachmentScope);
+}
+
+public sealed record McpSearchResultOptions(
+    [property: Description("Maximum content groups returned, 1-50; default 10.")] int GroupLimit = 10,
+    [property: Description("Maximum consolidated passage previews per content group, 1-10; default 1.")] int PreviewsPerGroup = 1,
+    [property: Description("Diversity cap per root document, 1-50; default 2.")] int MaxGroupsPerDocument = 2,
+    [property: Description("Cosine score below which any preview with a semantic score is marked low_confidence; default 0.25, allowed -1 to 1.")] double SemanticConfidenceThreshold = 0.25,
+    [property: Description("False by default so borderline semantic leads remain visible. True hides semantic-only matches below the threshold.")] bool StrictSemanticThreshold = false)
+{
+    public SearchResultOptions ToDomain() => new(GroupLimit, PreviewsPerGroup, MaxGroupsPerDocument,
+        SemanticConfidenceThreshold, StrictSemanticThreshold);
 }
 
 public sealed record ToolError(string Code, string Message, bool Retryable);

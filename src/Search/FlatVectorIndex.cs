@@ -69,8 +69,11 @@ public sealed class FlatVectorIndex(VectorSnapshot snapshot) : IVectorIndex
     {
         if (filters is null) return true;
         if (filters.DocumentIds is not null && !filters.DocumentIds.Contains(entry.DocumentId)) return false;
+        if (filters.ContentIds is not null && !filters.ContentIds.Contains(entry.ContentId)) return false;
         if (filters.PathPrefixes is not null && !filters.PathPrefixes.Any(prefix => PathMatches(entry.SourcePath, prefix))) return false;
-        if (filters.Extensions is not null && !filters.Extensions.Contains(entry.Extension)) return false;
+        if (filters.RootExtensions is not null && !filters.RootExtensions.Contains(entry.Extension)) return false;
+        if (filters.ContentExtensions is not null &&
+            (entry.ContentExtension is null || !filters.ContentExtensions.Contains(entry.ContentExtension))) return false;
         if (filters.ModifiedFromUtc is { } from && entry.ModifiedUtc < from) return false;
         if (filters.ModifiedToUtc is { } to && entry.ModifiedUtc > to) return false;
         if (filters.AttachmentScope == AttachmentScope.RootOnly && entry.IsAttachment) return false;
@@ -90,8 +93,10 @@ public sealed class FlatVectorIndex(VectorSnapshot snapshot) : IVectorIndex
 
     private sealed record PreparedFilters(
         HashSet<Guid>? DocumentIds,
+        HashSet<Guid>? ContentIds,
         string[]? PathPrefixes,
-        HashSet<string>? Extensions,
+        HashSet<string>? RootExtensions,
+        HashSet<string>? ContentExtensions,
         DateTimeOffset? ModifiedFromUtc,
         DateTimeOffset? ModifiedToUtc,
         AttachmentScope AttachmentScope)
@@ -105,9 +110,13 @@ public sealed class FlatVectorIndex(VectorSnapshot snapshot) : IVectorIndex
                 : null;
             return new PreparedFilters(
                 filters.DocumentIds is { Count: > 0 } ? filters.DocumentIds.ToHashSet() : null,
+                filters.ContentIds is { Count: > 0 } ? filters.ContentIds.ToHashSet() : null,
                 paths,
-                filters.Extensions is { Count: > 0 }
-                    ? filters.Extensions.Select(NormalizeExtension).ToHashSet(StringComparer.OrdinalIgnoreCase)
+                filters.RootExtensions is { Count: > 0 }
+                    ? filters.RootExtensions.Select(NormalizeExtension).ToHashSet(StringComparer.OrdinalIgnoreCase)
+                    : null,
+                filters.ContentExtensions is { Count: > 0 }
+                    ? filters.ContentExtensions.Select(NormalizeExtension).ToHashSet(StringComparer.OrdinalIgnoreCase)
                     : null,
                 filters.ModifiedFromUtc,
                 filters.ModifiedToUtc,

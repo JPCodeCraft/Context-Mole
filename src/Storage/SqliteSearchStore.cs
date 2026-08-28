@@ -348,8 +348,16 @@ public sealed class SqliteSearchStore : ISearchStore
         return errors;
     }
 
-    public async Task<KeywordSearchPage> KeywordSearchAsync(Guid projectId, string ftsQuery, int count,
-        SearchFilters? filters, CancellationToken cancellationToken = default)
+    public Task<KeywordSearchPage> KeywordSearchAsync(Guid projectId, string ftsQuery, int count,
+        SearchFilters? filters, CancellationToken cancellationToken = default) =>
+        KeywordSearchAsync(projectId, ftsQuery, count, 0, filters, new SearchFieldWeights(), cancellationToken);
+
+    public Task<KeywordSearchPage> KeywordSearchAsync(Guid projectId, string ftsQuery, int count,
+        SearchFilters? filters, SearchFieldWeights fieldWeights, CancellationToken cancellationToken = default) =>
+        KeywordSearchAsync(projectId, ftsQuery, count, 0, filters, fieldWeights, cancellationToken);
+
+    public async Task<KeywordSearchPage> KeywordSearchAsync(Guid projectId, string ftsQuery, int count, int offset,
+        SearchFilters? filters, SearchFieldWeights fieldWeights, CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenRequiredAsync(cancellationToken).ConfigureAwait(false);
         using var transaction = connection.BeginTransaction(deferred: true);
@@ -364,7 +372,10 @@ public sealed class SqliteSearchStore : ISearchStore
         var sql = new StringBuilder("""
             SELECT p.id,d.id,c.id,p.display_text,d.path,d.file_name,d.extension,d.modified_utc,
                    p.location_kind,p.page,p.sheet,p.cell_range,p.slide,p.structure_path,p.email_part,p.image_frame,
-                   p.extraction_method,p.ocr_confidence,c.depth,-bm25(passages_fts)
+                   p.extraction_method,p.ocr_confidence,c.depth,
+                   -bm25(passages_fts,$weight_body,$weight_title,$weight_heading,$weight_filename,
+                     $weight_path,$weight_content_name,$weight_sheet,$weight_email_subject),
+                   p.ordinal,p.body_text,p.title,p.heading,p.content_name,c.mime_type,p.email_subject
             FROM passages_fts
             JOIN passages p ON p.rowid=passages_fts.rowid
             JOIN document_revisions r ON r.id=p.revision_id AND r.status='active'
@@ -374,9 +385,18 @@ public sealed class SqliteSearchStore : ISearchStore
             """);
         command.Parameters.AddWithValue("$query", ftsQuery);
         command.Parameters.AddWithValue("$project", projectId.ToString());
+        command.Parameters.AddWithValue("$weight_body", fieldWeights.Body);
+        command.Parameters.AddWithValue("$weight_title", fieldWeights.Title);
+        command.Parameters.AddWithValue("$weight_heading", fieldWeights.Heading);
+        command.Parameters.AddWithValue("$weight_filename", fieldWeights.Filename);
+        command.Parameters.AddWithValue("$weight_path", fieldWeights.Path);
+        command.Parameters.AddWithValue("$weight_content_name", fieldWeights.ContentName);
+        command.Parameters.AddWithValue("$weight_sheet", fieldWeights.Sheet);
+        command.Parameters.AddWithValue("$weight_email_subject", fieldWeights.EmailSubject);
         AppendFilters(sql, command, filters, "d", "c");
-        sql.Append(" ORDER BY bm25(passages_fts),p.id LIMIT $limit;");
-        command.Parameters.AddWithValue("$limit", Math.Clamp(count, 1, 500));
+        sql.Append(" ORDER BY bm25(passages_fts,$weight_body,$weight_title,$weight_heading,$weight_filename,$weight_path,$weight_content_name,$weight_sheet,$weight_email_subject),p.id LIMIT $limit OFFSET $offset;");
+        command.Parameters.AddWithValue("$limit", Math.Clamp(count, 1, 1000));
+        command.Parameters.AddWithValue("$offset", Math.Max(0, offset));
         command.CommandText = sql.ToString();
         var rows = await ReadCandidateRowsAsync(connection, command, includeScore: true, cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
@@ -413,7 +433,7 @@ public sealed class SqliteSearchStore : ISearchStore
         await using var command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText = """
-            SELECT e.passage_id,d.id,c.id,d.path,d.extension,d.modified_utc,c.depth,e.vector
+            SELECT e.passage_id,d.id,c.id,d.path,d.extension,d.modified_utc,c.depth,e.vector,c.name
             FROM embeddings e
             JOIN passages p ON p.rowid=e.passage_rowid
             JOIN document_revisions r ON r.id=e.revision_id AND r.status='active'
@@ -437,7 +457,8 @@ public sealed class SqliteSearchStore : ISearchStore
             entries.Add(new VectorEntry(Guid.Parse(reader.GetString(0)), Guid.Parse(reader.GetString(1)),
                 Guid.Parse(reader.GetString(2)), reader.GetString(3), reader.GetString(4),
                 DateTimeOffset.Parse(reader.GetString(5)), reader.GetInt32(6) > 0,
-                MemoryMarshal.Cast<byte, float>(bytes.AsSpan()).ToArray()));
+                MemoryMarshal.Cast<byte, float>(bytes.AsSpan()).ToArray(),
+                NormalizeContentExtension(reader.GetString(8))));
         }
 
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
@@ -532,7 +553,7 @@ public sealed class SqliteSearchStore : ISearchStore
         await using var command = connection.CreateCommand();
         command.Transaction = transaction;
         var sql = new StringBuilder("""
-            SELECT e.passage_id,d.id,c.id,d.path,d.extension,d.modified_utc,c.depth,e.vector
+            SELECT e.passage_id,d.id,c.id,d.path,d.extension,d.modified_utc,c.depth,e.vector,c.name
             FROM embeddings e
             JOIN passages p ON p.rowid=e.passage_rowid
             JOIN document_revisions r ON r.id=e.revision_id AND r.status='active'
@@ -552,7 +573,8 @@ public sealed class SqliteSearchStore : ISearchStore
             yield return new VectorEntry(Guid.Parse(reader.GetString(0)), Guid.Parse(reader.GetString(1)),
                 Guid.Parse(reader.GetString(2)), reader.GetString(3), reader.GetString(4),
                 DateTimeOffset.Parse(reader.GetString(5)), reader.GetInt32(6) > 0,
-                MemoryMarshal.Cast<byte, float>(bytes.AsSpan()).ToArray());
+                MemoryMarshal.Cast<byte, float>(bytes.AsSpan()).ToArray(),
+                NormalizeContentExtension(reader.GetString(8)));
         }
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
@@ -575,7 +597,8 @@ public sealed class SqliteSearchStore : ISearchStore
         var sql = new StringBuilder("""
             SELECT p.id,d.id,c.id,p.display_text,d.path,d.file_name,d.extension,d.modified_utc,
                    p.location_kind,p.page,p.sheet,p.cell_range,p.slide,p.structure_path,p.email_part,p.image_frame,
-                   p.extraction_method,p.ocr_confidence,c.depth,NULL
+                   p.extraction_method,p.ocr_confidence,c.depth,NULL,
+                   p.ordinal,p.body_text,p.title,p.heading,p.content_name,c.mime_type,p.email_subject
             FROM passages p
             JOIN document_revisions r ON r.id=p.revision_id AND r.status='active'
             JOIN documents d ON d.id=r.document_id AND d.active_revision_id=r.id AND d.tombstoned=0
@@ -1123,7 +1146,9 @@ public sealed class SqliteSearchStore : ISearchStore
                 raw.Add(new CandidateRow(Guid.Parse(reader.GetString(0)), Guid.Parse(reader.GetString(1)), Guid.Parse(reader.GetString(2)),
                     reader.GetString(3), reader.GetString(4), reader.GetString(5), reader.GetString(6), DateTimeOffset.Parse(reader.GetString(7)),
                     ReadLocation(reader, 8), (ExtractionMethod)reader.GetInt32(16), reader.IsDBNull(17) ? null : reader.GetDouble(17),
-                    reader.GetInt32(18), includeScore && !reader.IsDBNull(19) ? reader.GetDouble(19) : null));
+                    reader.GetInt32(18), includeScore && !reader.IsDBNull(19) ? reader.GetDouble(19) : null,
+                    reader.GetInt32(20), reader.GetString(21), reader.GetString(22), reader.GetString(23),
+                    reader.GetString(24), reader.IsDBNull(25) ? null : reader.GetString(25), reader.GetString(26)));
             }
         }
 
@@ -1148,7 +1173,10 @@ public sealed class SqliteSearchStore : ISearchStore
             }
             result.Add(new SearchCandidate(row.PassageId, row.DocumentId, row.ContentId, row.DisplayText, row.SourcePath,
                 row.FileName, row.FileType, row.ModifiedUtc, row.Location, chain, row.Method, row.OcrConfidence,
-                KeywordScore: row.Score));
+                KeywordScore: row.Score, Ordinal: row.Ordinal, BodySearchText: row.BodySearchText,
+                Title: row.Title, Heading: row.Heading, ContentName: row.ContentName,
+                ContentMimeType: row.ContentMimeType, ContentExtension: NormalizeContentExtension(row.ContentName),
+                EmailSubject: row.EmailSubject));
         }
 
         return result;
@@ -1182,16 +1210,38 @@ public sealed class SqliteSearchStore : ISearchStore
             sql.Append(')');
         }
 
-        if (filters.Extensions is { Count: > 0 })
+        if (filters.ContentIds is { Count: > 0 })
+        {
+            sql.Append($" AND {contentAlias}.id IN (");
+            AppendGuidParameters(sql, command, filters.ContentIds, "content");
+            sql.Append(')');
+        }
+
+        if (filters.RootExtensions is { Count: > 0 })
         {
             sql.Append($" AND lower({documentAlias}.extension) IN (");
-            for (var index = 0; index < filters.Extensions.Count; index++)
+            for (var index = 0; index < filters.RootExtensions.Count; index++)
             {
                 if (index > 0) sql.Append(',');
-                var name = $"$extension{index}";
+                var name = $"$root_extension{index}";
                 sql.Append(name);
-                var extension = filters.Extensions[index];
+                var extension = filters.RootExtensions[index];
                 command.Parameters.AddWithValue(name, (extension.StartsWith('.') ? extension : $".{extension}").ToLowerInvariant());
+            }
+            sql.Append(')');
+        }
+
+        if (filters.ContentExtensions is { Count: > 0 })
+        {
+            sql.Append(" AND (");
+            for (var index = 0; index < filters.ContentExtensions.Count; index++)
+            {
+                if (index > 0) sql.Append(" OR ");
+                var name = $"$content_extension{index}";
+                sql.Append($"lower({contentAlias}.name) LIKE '%' || {name}");
+                var extension = filters.ContentExtensions[index];
+                command.Parameters.AddWithValue(name,
+                    (extension.StartsWith('.') ? extension : $".{extension}").ToLowerInvariant());
             }
             sql.Append(')');
         }
@@ -1199,13 +1249,13 @@ public sealed class SqliteSearchStore : ISearchStore
         if (filters.ModifiedFromUtc is not null)
         {
             sql.Append($" AND {documentAlias}.modified_utc >= $modified_from");
-            command.Parameters.AddWithValue("$modified_from", filters.ModifiedFromUtc.Value.ToString("O"));
+            command.Parameters.AddWithValue("$modified_from", filters.ModifiedFromUtc.Value.ToUniversalTime().ToString("O"));
         }
 
         if (filters.ModifiedToUtc is not null)
         {
             sql.Append($" AND {documentAlias}.modified_utc <= $modified_to");
-            command.Parameters.AddWithValue("$modified_to", filters.ModifiedToUtc.Value.ToString("O"));
+            command.Parameters.AddWithValue("$modified_to", filters.ModifiedToUtc.Value.ToUniversalTime().ToString("O"));
         }
 
         if (filters.AttachmentScope == AttachmentScope.RootOnly)
@@ -1348,9 +1398,17 @@ public sealed class SqliteSearchStore : ISearchStore
 
     private static string EncodeCursor(int value) => Convert.ToBase64String(Encoding.UTF8.GetBytes(value.ToString()));
 
+    private static string? NormalizeContentExtension(string contentName)
+    {
+        var extension = Path.GetExtension(contentName);
+        return string.IsNullOrWhiteSpace(extension) ? null : extension.ToLowerInvariant();
+    }
+
     private sealed record CandidateRow(Guid PassageId, Guid DocumentId, Guid ContentId, string DisplayText,
         string SourcePath, string FileName, string FileType, DateTimeOffset ModifiedUtc, SourceLocation Location,
-        ExtractionMethod Method, double? OcrConfidence, int Depth, double? Score);
+        ExtractionMethod Method, double? OcrConfidence, int Depth, double? Score, int Ordinal,
+        string BodySearchText, string Title, string Heading, string ContentName, string? ContentMimeType,
+        string EmailSubject);
 
     private sealed record PassageRow(Guid PassageId, Guid DocumentId, Guid ContentId, int Ordinal, string Text,
         string SourcePath, string FileName, string FileType, DateTimeOffset ModifiedUtc, SourceLocation Location,

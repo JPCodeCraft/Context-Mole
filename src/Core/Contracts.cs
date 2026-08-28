@@ -121,6 +121,14 @@ public interface ISearchStore
         CancellationToken cancellationToken = default);
     Task<IReadOnlyList<ProjectErrorInfo>> ListProjectErrorsAsync(Guid projectId, int limit, CancellationToken cancellationToken = default);
     Task<KeywordSearchPage> KeywordSearchAsync(Guid projectId, string ftsQuery, int count, SearchFilters? filters, CancellationToken cancellationToken = default);
+    Task<KeywordSearchPage> KeywordSearchAsync(Guid projectId, string ftsQuery, int count, SearchFilters? filters,
+        SearchFieldWeights fieldWeights, CancellationToken cancellationToken = default) =>
+        KeywordSearchAsync(projectId, ftsQuery, count, filters, cancellationToken);
+    Task<KeywordSearchPage> KeywordSearchAsync(Guid projectId, string ftsQuery, int count, int offset,
+        SearchFilters? filters, SearchFieldWeights fieldWeights, CancellationToken cancellationToken = default) =>
+        offset == 0
+            ? KeywordSearchAsync(projectId, ftsQuery, count, filters, fieldWeights, cancellationToken)
+            : Task.FromResult(new KeywordSearchPage(0, []));
     Task<VectorSnapshotMetadata> LoadVectorSnapshotMetadataAsync(Guid projectId, CancellationToken cancellationToken = default);
     Task<VectorSnapshot> LoadVectorSnapshotAsync(Guid projectId, CancellationToken cancellationToken = default);
     IAsyncEnumerable<VectorEntry> StreamVectorEntriesAsync(Guid projectId, long expectedGeneration, SearchFilters? filters,
