@@ -558,6 +558,7 @@
         "dependencies": {
           "ContextMole.Core": "[1.0.0, )",
           "Microsoft.Extensions.DependencyInjection.Abstractions": "[10.0.11, )",
+          "Microsoft.Extensions.Hosting.Abstractions": "[10.0.11, )",
           "Microsoft.ML.OnnxRuntime": "[1.29.0, )",
           "SkiaSharp": "[4.150.1, )",
           "Tokenizers.HuggingFace": "[3.23.1, )"
@@ -592,6 +593,12 @@
           "Microsoft.Data.Sqlite": "[10.0.11, )",
           "Microsoft.Extensions.DependencyInjection.Abstractions": "[10.0.11, )",
           "Microsoft.Extensions.Hosting.Abstractions": "[10.0.11, )"
+        }
+      },
+      "contextmole.uninstallhelper": {
+        "type": "Project",
+        "dependencies": {
+          "ContextMole.Core": "[1.0.0, )"
         }
       },
       "AngleSharp": {

@@ -32,6 +32,7 @@ internal static class Program
             .CreateLogger();
         builder.Services.AddSerilog(dispose: true);
         builder.Services.AddContextMoleInfrastructure(includeOcr: false);
+        builder.Services.AddContextMoleProcessLifetime("mcp");
         builder.Services.AddContextMoleDocuments();
         builder.Services.AddReadOnlyContextMoleStorage();
         builder.Services.AddContextMoleSearch();

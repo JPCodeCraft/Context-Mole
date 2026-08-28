@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>ContextMole.UninstallHelper</AssemblyName>
+    <RootNamespace>ContextMole.UninstallHelper</RootNamespace>
+    <AssemblyTitle>Context Mole Uninstall Helper</AssemblyTitle>
+    <Description>Safely completes an in-app Context Mole uninstall after the application exits.</Description>
+    <ApplicationManifest>..\App.UI\app.manifest</ApplicationManifest>
+    <ApplicationIcon>..\App.UI\Assets\context-mole.ico</ApplicationIcon>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Core\ContextMole.Core.csproj" />
+  </ItemGroup>
+</Project>

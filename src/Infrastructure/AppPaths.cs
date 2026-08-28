@@ -4,17 +4,21 @@ namespace ContextMole.Infrastructure;
 
 public sealed class AppPaths : IAppPaths
 {
-    public const string DataDirectoryEnvironmentVariable = "CONTEXTMOLE_DATA_DIR";
+    public const string DataDirectoryEnvironmentVariable = ContextMoleLocalData.DataDirectoryEnvironmentVariable;
 
-    public AppPaths()
+    public AppPaths() : this(ResolveDataDirectory())
     {
-        var overridePath = Environment.GetEnvironmentVariable(DataDirectoryEnvironmentVariable);
-        DataDirectory = Path.GetFullPath(string.IsNullOrWhiteSpace(overridePath) ? GetDefaultDataDirectory() : overridePath);
+    }
+
+    internal AppPaths(string dataDirectory)
+    {
+        DataDirectory = Path.GetFullPath(dataDirectory);
         DatabasePath = Path.Combine(DataDirectory, "index.db");
         AssetsDirectory = Path.Combine(DataDirectory, "assets");
         LogsDirectory = Path.Combine(DataDirectory, "logs");
         TempDirectory = Path.Combine(DataDirectory, "temp");
 
+        using var uninstallAdmission = ContextMoleExternalUninstallGate.EnterLeaseAdmission(DataDirectory);
         Directory.CreateDirectory(DataDirectory);
         Directory.CreateDirectory(AssetsDirectory);
         Directory.CreateDirectory(LogsDirectory);
@@ -22,34 +26,19 @@ public sealed class AppPaths : IAppPaths
         ApplyPrivatePermissions();
     }
 
+    private static string ResolveDataDirectory()
+    {
+        var overridePath = Environment.GetEnvironmentVariable(DataDirectoryEnvironmentVariable);
+        return string.IsNullOrWhiteSpace(overridePath)
+            ? ContextMoleLocalData.GetDefaultDataDirectory()
+            : overridePath;
+    }
+
     public string DataDirectory { get; }
     public string DatabasePath { get; }
     public string AssetsDirectory { get; }
     public string LogsDirectory { get; }
     public string TempDirectory { get; }
-
-    private static string GetDefaultDataDirectory()
-    {
-        return GetPlatformDataDirectory("ContextMole");
-    }
-
-    private static string GetPlatformDataDirectory(string applicationDirectory)
-    {
-        if (OperatingSystem.IsWindows())
-        {
-            return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), applicationDirectory);
-        }
-
-        if (OperatingSystem.IsMacOS())
-        {
-            return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Library", "Application Support", applicationDirectory);
-        }
-
-        var xdgData = Environment.GetEnvironmentVariable("XDG_DATA_HOME");
-        return string.IsNullOrWhiteSpace(xdgData)
-            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local", "share", applicationDirectory)
-            : Path.Combine(xdgData, applicationDirectory);
-    }
 
     private void ApplyPrivatePermissions()
     {

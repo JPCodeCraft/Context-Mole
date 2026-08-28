@@ -4,14 +4,10 @@ using System.Security;
 using ContextMole.Core;
 
 using Microsoft.Extensions.Logging;
-using Microsoft.Win32;
-
 namespace ContextMole.App.UI;
 
 internal sealed class WindowsStartupService
 {
-    private const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
-    private const string ValueName = "Context Mole";
     private const string EnabledPreference = "enabled";
     private const string DisabledPreference = "disabled";
     private readonly ILogger<WindowsStartupService> _logger;
@@ -84,28 +80,10 @@ internal sealed class WindowsStartupService
     }
 
     [SupportedOSPlatform("windows")]
-    private static bool ReadRegistryEnabled()
-    {
-        using var key = Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: false);
-        return key?.GetValue(ValueName) is string value && !string.IsNullOrWhiteSpace(value);
-    }
+    private static bool ReadRegistryEnabled() => WindowsStartupRegistration.IsEnabled();
 
     [SupportedOSPlatform("windows")]
-    private static void SetRegistryEnabled(bool enabled)
-    {
-        using var key = Registry.CurrentUser.CreateSubKey(RunKeyPath, writable: true)
-            ?? throw new IOException("The Windows startup registry key could not be opened.");
-        if (!enabled)
-        {
-            key.DeleteValue(ValueName, throwOnMissingValue: false);
-            return;
-        }
-
-        var executable = Environment.ProcessPath;
-        if (string.IsNullOrWhiteSpace(executable))
-            throw new InvalidOperationException("The application executable path is unavailable.");
-        key.SetValue(ValueName, $"\"{executable}\"", RegistryValueKind.String);
-    }
+    private static void SetRegistryEnabled(bool enabled) => WindowsStartupRegistration.SetEnabled(enabled);
 
     private bool? ReadPreference()
     {

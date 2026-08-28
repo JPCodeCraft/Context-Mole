@@ -61,4 +61,13 @@
     <MSBuild Projects="..\Mcp\ContextMole.Mcp.csproj" Targets="Publish" BuildInParallel="false"
              Properties="Configuration=$(Configuration);TargetFramework=$(TargetFramework);RuntimeIdentifier=$(RuntimeIdentifier);SelfContained=$(SelfContained);Version=$(Version);SourceRevisionId=$(SourceRevisionId);ContinuousIntegrationBuild=$(ContinuousIntegrationBuild);PublishSingleFile=false;PublishTrimmed=false;PublishAot=false;PublishDir=$(_McpBundleDirectory);ContextMoleSkipMcpBundle=true" />
   </Target>
+
+  <Target Name="PublishBundledUninstallHelper" AfterTargets="Publish"
+          Condition="'$(RuntimeIdentifier)' == 'win-x64' and '$(ContextMoleSkipUninstallHelperBundle)' != 'true'">
+    <PropertyGroup>
+      <_UninstallHelperBundleDirectory>$(PublishDir)uninstall-helper\</_UninstallHelperBundleDirectory>
+    </PropertyGroup>
+    <MSBuild Projects="..\UninstallHelper\ContextMole.UninstallHelper.csproj" Targets="Publish" BuildInParallel="false"
+             Properties="Configuration=$(Configuration);TargetFramework=$(TargetFramework);RuntimeIdentifier=win-x64;SelfContained=true;Version=$(Version);SourceRevisionId=$(SourceRevisionId);ContinuousIntegrationBuild=$(ContinuousIntegrationBuild);PublishSingleFile=true;EnableCompressionInSingleFile=true;PublishTrimmed=false;PublishReadyToRun=false;PublishAot=false;DebugType=None;PublishDir=$(_UninstallHelperBundleDirectory);ContextMoleSkipUninstallHelperBundle=true" />
+  </Target>
 </Project>

@@ -15,6 +15,9 @@
   <Folder Name="/src/Infrastructure/">
     <Project Path="src/Infrastructure/ContextMole.Infrastructure.csproj" />
   </Folder>
+  <Folder Name="/src/UninstallHelper/">
+    <Project Path="src/UninstallHelper/ContextMole.UninstallHelper.csproj" />
+  </Folder>
   <Folder Name="/src/Mcp/">
     <Project Path="src/Mcp/ContextMole.Mcp.csproj" />
   </Folder>

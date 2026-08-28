@@ -43,6 +43,9 @@ internal static class Program
             builder.Services.AddSerilog(dispose: true);
             builder.Services.AddSingleton<IAppPaths>(paths);
             builder.Services.AddContextMoleInfrastructure(includeOcr: true);
+            // The UI initiates and drains its own uninstall. It holds a lease, while only MCP
+            // sidecars need the marker monitor that stops a host started by an AI client.
+            builder.Services.AddContextMoleProcessLifetime("ui", stopOnShutdownRequest: false);
             builder.Services.AddSingleton<McpServerDeploymentService>();
             builder.Services.AddSingleton<AiConnectionsService>();
             builder.Services.AddContextMoleDocuments();
@@ -50,6 +53,7 @@ internal static class Program
             builder.Services.AddContextMoleIndexing();
             builder.Services.AddSingleton<ApplicationUpdateService>();
             builder.Services.AddSingleton<WindowsStartupService>();
+            builder.Services.AddSingleton<WindowsUninstallService>();
             builder.Services.AddSingleton<ViewModels.MainViewModel>();
             _host = builder.Build();
             _host.StartAsync().GetAwaiter().GetResult();

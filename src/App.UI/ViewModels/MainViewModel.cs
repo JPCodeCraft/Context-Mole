@@ -30,6 +30,7 @@ internal partial class MainViewModel : ViewModelBase
     private readonly IndexingActivityTracker _indexingActivities;
     private readonly EmbeddingPolicyRefreshTracker _embeddingPolicyRefreshes;
     private readonly ApplicationUpdateService _applicationUpdates;
+    private readonly WindowsUninstallService _windowsUninstall;
     private readonly Dictionary<string, int> _aiConnectionCatalogOrder = new(StringComparer.Ordinal);
     private readonly SemaphoreSlim _refreshGate = new(1, 1);
     private CancellationTokenSource? _polling;
@@ -54,7 +55,8 @@ internal partial class MainViewModel : ViewModelBase
         AiConnectionsService aiConnections,
         IndexingActivityTracker indexingActivities,
         EmbeddingPolicyRefreshTracker embeddingPolicyRefreshes,
-        ApplicationUpdateService applicationUpdates)
+        ApplicationUpdateService applicationUpdates,
+        WindowsUninstallService windowsUninstall)
     {
         _writer = writer;
         _store = store;
@@ -69,6 +71,7 @@ internal partial class MainViewModel : ViewModelBase
         _indexingActivities = indexingActivities;
         _embeddingPolicyRefreshes = embeddingPolicyRefreshes;
         _applicationUpdates = applicationUpdates;
+        _windowsUninstall = windowsUninstall;
         _applicationUpdates.SnapshotChanged += OnApplicationUpdateSnapshotChanged;
         ApplicationUpdate = _applicationUpdates.Snapshot;
         SelectedCpuUsageProfile = _cpuUsageSettings.Profile;
@@ -167,6 +170,11 @@ internal partial class MainViewModel : ViewModelBase
     public bool IsOcrUnavailable => !_ocrEngine.IsAvailable;
     public bool IsOcrAvailable => !IsOcrUnavailable;
     public bool IsWindowsStartupSupported => _windowsStartup.IsSupported;
+    public bool IsWindowsUninstallVisible => _windowsUninstall.Availability.IsVisible;
+    public bool CanUninstallFromSettings => _windowsUninstall.Availability.CanUninstall;
+    public bool CanDeleteLocalDataDuringUninstall => _windowsUninstall.Availability.CanDeleteData;
+    public string WindowsUninstallMessage => _windowsUninstall.Availability.Message;
+    public string LocalDataDirectory => _windowsUninstall.Availability.DataDirectory;
     public string CpuUsageSummary
     {
         get

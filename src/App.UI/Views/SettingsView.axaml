@@ -184,6 +184,19 @@
                     VerticalAlignment="Center" />
         </Grid>
       </Border>
+
+      <Border Classes="card" IsVisible="{Binding IsWindowsUninstallVisible}">
+        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="24">
+          <StackPanel Spacing="6">
+            <TextBlock Text="Uninstall Context Mole" Classes="sectionTitle" />
+            <TextBlock Text="{Binding WindowsUninstallMessage}"
+                       Classes="muted" TextWrapping="Wrap" />
+          </StackPanel>
+          <Button Grid.Column="1" Classes="danger" Content="Uninstall Context Mole…"
+                  IsEnabled="{Binding CanUninstallFromSettings}"
+                  Click="UninstallContextMole" VerticalAlignment="Center" />
+        </Grid>
+      </Border>
     </StackPanel>
   </ScrollViewer>
 

@@ -174,6 +174,24 @@ public partial class SettingsView : UserControl
         }
     }
 
+    private async void UninstallContextMole(object? sender, RoutedEventArgs args)
+    {
+        if (!ViewModel.CanUninstallFromSettings || Application.Current is not App app) return;
+
+        var availability = Program.Services.GetRequiredService<WindowsUninstallService>().Availability;
+        var choice = await new UninstallWindow(availability).ShowDialog<UninstallChoice?>(Owner);
+        if (choice is null) return;
+
+        try
+        {
+            await app.UninstallAsync(choice == UninstallChoice.DeleteData);
+        }
+        catch (Exception exception)
+        {
+            await ConfirmWindow.ShowErrorAsync(Owner, exception.Message);
+        }
+    }
+
     private async Task RunUiActionAsync(Func<Task> action)
     {
         try

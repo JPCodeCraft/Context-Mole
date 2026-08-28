@@ -104,4 +104,11 @@ public partial class App : Application
 
         await QuitAsync();
     }
+
+    public async Task UninstallAsync(bool deleteLocalData)
+    {
+        var uninstallService = Program.Services.GetRequiredService<WindowsUninstallService>();
+        uninstallService.StartUninstall(deleteLocalData);
+        await QuitAsync();
+    }
 }

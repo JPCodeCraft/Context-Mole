@@ -26,6 +26,7 @@
     <ProjectReference Include="..\..\src\Mcp\ContextMole.Mcp.csproj" />
     <ProjectReference Include="..\..\src\Search\ContextMole.Search.csproj" />
     <ProjectReference Include="..\..\src\Storage\ContextMole.Storage.csproj" />
+    <ProjectReference Include="..\..\src\UninstallHelper\ContextMole.UninstallHelper.csproj" />
   </ItemGroup>
 
 </Project>
