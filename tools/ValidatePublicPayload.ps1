@@ -19,6 +19,7 @@ if ($applicationExecutables.Count -ne 1) {
 
 $applicationRoot = $applicationExecutables[0].DirectoryName
 $mcpRoot = Join-Path $applicationRoot "mcp-server"
+$uninstallHelperRoot = Join-Path $applicationRoot "uninstall-helper"
 $requiredFiles = @(
     (Join-Path $applicationRoot "LICENSE"),
     (Join-Path $applicationRoot "THIRD-PARTY-NOTICES.md"),
@@ -26,13 +27,27 @@ $requiredFiles = @(
     (Join-Path $mcpRoot "ContextMole.Mcp.exe"),
     (Join-Path $mcpRoot "LICENSE"),
     (Join-Path $mcpRoot "THIRD-PARTY-NOTICES.md"),
-    (Join-Path $mcpRoot "THIRD-PARTY-LICENSES\SharpCompress.txt")
+    (Join-Path $mcpRoot "THIRD-PARTY-LICENSES\SharpCompress.txt"),
+    (Join-Path $uninstallHelperRoot "ContextMole.UninstallHelper.exe")
 )
 
 foreach ($requiredFile in $requiredFiles) {
     if (-not (Test-Path -LiteralPath $requiredFile -PathType Leaf)) {
         throw "Published payload is missing required file: $requiredFile"
     }
+}
+
+$uninstallHelperFiles = @(Get-ChildItem -LiteralPath $uninstallHelperRoot -File)
+if ($uninstallHelperFiles.Count -ne 1 -or $uninstallHelperFiles[0].Name -cne "ContextMole.UninstallHelper.exe") {
+    throw "The Windows uninstall helper must be packaged as exactly one self-contained executable."
+}
+
+$allUninstallHelpers = @(Get-ChildItem -LiteralPath $payloadRoot -Recurse -File -Filter "ContextMole.UninstallHelper.exe")
+$expectedUninstallHelper = [System.IO.Path]::GetFullPath(
+    (Join-Path $uninstallHelperRoot "ContextMole.UninstallHelper.exe"))
+if ($allUninstallHelpers.Count -ne 1 -or
+    [System.IO.Path]::GetFullPath($allUninstallHelpers[0].FullName) -cne $expectedUninstallHelper) {
+    throw "Expected exactly one Windows uninstall helper at uninstall-helper\ContextMole.UninstallHelper.exe."
 }
 
 $issues = [System.Collections.Generic.List[string]]::new()

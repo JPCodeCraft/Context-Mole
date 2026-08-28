@@ -62,8 +62,10 @@ dotnet run --file tools/BootstrapAssets.cs -- --accept-gemma-terms
 
 Before publishing, follow the platform checklist in [NATIVE-SMOKE.md](NATIVE-SMOKE.md). Linux and macOS desktop/native-loader checks must be run on those operating systems.
 
-For a Windows publish, verify that legal notices are included and that no sensitive files or local user paths were packaged:
+For a Windows publish, verify that legal notices are included, the bundled MCP server and single-file uninstall helper are present, and no sensitive files or local user paths were packaged:
 
 ```powershell
 ./tools/ValidatePublicPayload.ps1 -PublishedDirectory artifacts/publish/win-x64
 ```
+
+The stable-tag workflow also installs the generated Setup executable on its disposable Windows runner. It proves that ordinary Velopack uninstall preserves `%LOCALAPPDATA%\ContextMole`, then reinstalls and invokes the packaged in-app helper to prove Delete removes only that canonical directory while an outside source fixture remains byte-for-byte unchanged. `TestPackagedWindowsUninstall.ps1` refuses to run outside a confirmed GitHub Actions disposable profile; use the manual VM/profile checklist for local release testing.

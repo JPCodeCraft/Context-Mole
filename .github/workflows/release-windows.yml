@@ -82,27 +82,47 @@ jobs:
         run: |
           $main = "artifacts/publish/win-x64/ContextMole.App.UI.exe"
           $sidecar = "artifacts/publish/win-x64/mcp-server/ContextMole.Mcp.exe"
+          $uninstallHelper = "artifacts/publish/win-x64/uninstall-helper/ContextMole.UninstallHelper.exe"
           $icon = "src/App.UI/Assets/context-mole.ico"
-          foreach ($required in @($main, $sidecar, $icon)) {
+          foreach ($required in @($main, $sidecar, $uninstallHelper, $icon)) {
             if (-not (Test-Path -LiteralPath $required -PathType Leaf)) { throw "Missing required publish file: $required" }
           }
-          if ((Get-Item $main).VersionInfo.ProductVersion -notlike "$env:VERSION*") { throw "The application version does not match the tag." }
-          if ((Get-Item $sidecar).VersionInfo.ProductVersion -notlike "$env:VERSION*") { throw "The MCP sidecar version does not match the tag." }
+          $expectedProductVersion = "$env:VERSION+$env:GITHUB_SHA"
+          foreach ($versionedFile in @($main, $sidecar, $uninstallHelper)) {
+            $actualProductVersion = (Get-Item -LiteralPath $versionedFile).VersionInfo.ProductVersion
+            if ($actualProductVersion -cne $expectedProductVersion) {
+              throw "Expected $versionedFile to have product version '$expectedProductVersion', but found '$actualProductVersion'."
+            }
+          }
           ./tools/ValidateWindowsBranding.ps1 -PublishedExecutable $main
           ./tools/ValidatePublicPayload.ps1 -PublishedDirectory "artifacts/publish/win-x64"
 
-      - name: Generate GitHub release notes
+      - name: Prepare curated and generated release notes
         shell: pwsh
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           New-Item -ItemType Directory -Force -Path artifacts | Out-Null
-          $notes = gh api --method POST "repos/$env:GITHUB_REPOSITORY/releases/generate-notes" `
+          $generatedNotes = gh api --method POST "repos/$env:GITHUB_REPOSITORY/releases/generate-notes" `
             -f tag_name="$env:GITHUB_REF_NAME" `
             -f target_commitish="$env:GITHUB_SHA" `
             --jq .body
           if ($LASTEXITCODE -ne 0) { throw "GitHub could not generate release notes." }
-          $notes | Out-File -FilePath artifacts/release-notes.md -Encoding utf8
+          $sections = [System.Collections.Generic.List[string]]::new()
+          $curatedPath = "docs/releases/$env:GITHUB_REF_NAME.md"
+          if (Test-Path -LiteralPath $curatedPath -PathType Leaf) {
+            $curatedNotes = (Get-Content -LiteralPath $curatedPath -Raw).Trim()
+            if ($curatedNotes.Length -gt 0) { $sections.Add($curatedNotes) }
+          } else {
+            Write-Host "No curated notes found at $curatedPath; using GitHub-generated notes only."
+          }
+          $generatedNotes = ($generatedNotes | Out-String).Trim()
+          if ($generatedNotes.Length -gt 0) { $sections.Add($generatedNotes) }
+          if ($sections.Count -eq 0) { throw "Release notes are empty." }
+          [System.IO.File]::WriteAllText(
+            (Join-Path $PWD "artifacts/release-notes.md"),
+            ($sections -join "`n`n---`n`n") + "`n",
+            [System.Text.UTF8Encoding]::new($false))
 
       - name: Download the previous win-x64 feed
         shell: pwsh
@@ -110,11 +130,13 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           New-Item -ItemType Directory -Force -Path artifacts/velopack | Out-Null
-          $previousRelease = gh api "repos/$env:GITHUB_REPOSITORY/releases?per_page=1" | ConvertFrom-Json | Select-Object -First 1
+          $releaseJson = gh api "repos/$env:GITHUB_REPOSITORY/releases?per_page=1"
+          if ($LASTEXITCODE -ne 0) { throw "GitHub Release history lookup failed." }
+          $previousRelease = $releaseJson | ConvertFrom-Json | Select-Object -First 1
           $compatiblePackage = $previousRelease.assets | Where-Object {
             $_.name -like 'JPCodeCraft.ContextMole-*-full.nupkg'
           } | Select-Object -First 1
-          if ($LASTEXITCODE -eq 0 -and $null -ne $compatiblePackage) {
+          if ($null -ne $compatiblePackage) {
             dnx vpk download github `
               --repoUrl "https://github.com/$env:GITHUB_REPOSITORY" `
               --channel win-x64 `
@@ -148,19 +170,62 @@ jobs:
       - name: Validate the Velopack output
         shell: pwsh
         run: |
-          $setup = Get-ChildItem artifacts/velopack -File -Filter '*Setup*.exe' | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
-          $fullPackage = Get-ChildItem artifacts/velopack -File -Filter '*-full.nupkg' | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+          $setupName = "JPCodeCraft.ContextMole-win-x64-Setup.exe"
+          $fullPackageName = "JPCodeCraft.ContextMole-$env:VERSION-win-x64-full.nupkg"
+          $setupPath = Join-Path "artifacts/velopack" $setupName
+          $fullPackagePath = Join-Path "artifacts/velopack" $fullPackageName
           $feed = "artifacts/velopack/releases.win-x64.json"
-          if ($null -eq $setup) { throw "Velopack did not produce Setup.exe." }
-          if ($null -eq $fullPackage) { throw "Velopack did not produce a full package." }
+          if (-not (Test-Path -LiteralPath $setupPath -PathType Leaf)) { throw "Velopack did not produce $setupName." }
+          if (-not (Test-Path -LiteralPath $fullPackagePath -PathType Leaf)) { throw "Velopack did not produce $fullPackageName." }
           if (-not (Test-Path -LiteralPath $feed -PathType Leaf)) { throw "Velopack did not produce releases.win-x64.json." }
-          $expanded = Join-Path $env:RUNNER_TEMP "contextmole-package"
-          Expand-Archive -LiteralPath $fullPackage.FullName -DestinationPath $expanded -Force
-          if ($null -eq (Get-ChildItem $expanded -Recurse -File -Filter ContextMole.Mcp.exe | Select-Object -First 1)) {
-            throw "The full package does not contain the MCP sidecar."
+
+          $feedDocument = Get-Content -LiteralPath $feed -Raw | ConvertFrom-Json
+          $matchingFeedAssets = @($feedDocument.Assets | Where-Object {
+            $_.PackageId -ceq "JPCodeCraft.ContextMole" -and
+            $_.Version -ceq $env:VERSION -and
+            $_.Type -ceq "Full" -and
+            $_.FileName -ceq $fullPackageName
+          })
+          if ($matchingFeedAssets.Count -ne 1) {
+            throw "The win-x64 feed must contain exactly one full-package entry for version $env:VERSION and file $fullPackageName."
+          }
+
+          $expanded = Join-Path $env:RUNNER_TEMP "contextmole-package-$env:VERSION"
+          [System.IO.Compression.ZipFile]::ExtractToDirectory(
+            (Resolve-Path -LiteralPath $fullPackagePath).Path,
+            $expanded,
+            $true)
+          $nuspecFiles = @(Get-ChildItem -LiteralPath $expanded -File -Filter '*.nuspec')
+          if ($nuspecFiles.Count -ne 1) { throw "Expected exactly one package manifest in the full nupkg." }
+          [xml] $nuspec = Get-Content -LiteralPath $nuspecFiles[0].FullName -Raw
+          if ($nuspec.package.metadata.id -cne "JPCodeCraft.ContextMole") {
+            throw "The full package ID does not match JPCodeCraft.ContextMole."
+          }
+          if ($nuspec.package.metadata.version -cne $env:VERSION) {
+            throw "The full package version does not match tag $env:GITHUB_REF_NAME."
+          }
+
+          $packagedApplications = @(Get-ChildItem -LiteralPath $expanded -Recurse -File -Filter ContextMole.App.UI.exe)
+          if ($packagedApplications.Count -ne 1) { throw "The full package must contain exactly one application executable." }
+          $packagedRoot = $packagedApplications[0].DirectoryName
+          $packagedSidecar = Join-Path $packagedRoot "mcp-server/ContextMole.Mcp.exe"
+          $packagedHelper = Join-Path $packagedRoot "uninstall-helper/ContextMole.UninstallHelper.exe"
+          if (-not (Test-Path -LiteralPath $packagedSidecar -PathType Leaf)) {
+            throw "The full package does not contain the MCP sidecar at mcp-server/ContextMole.Mcp.exe."
+          }
+          if (-not (Test-Path -LiteralPath $packagedHelper -PathType Leaf)) {
+            throw "The full package does not contain the uninstall helper at uninstall-helper/ContextMole.UninstallHelper.exe."
           }
           ./tools/ValidatePublicPayload.ps1 -PublishedDirectory $expanded
-          ./tools/ValidateWindowsBranding.ps1 -SetupExecutable $setup.FullName
+          ./tools/ValidateWindowsBranding.ps1 -SetupExecutable $setupPath
+
+      - name: Smoke test packaged Windows uninstall behavior
+        shell: pwsh
+        run: |
+          ./tools/TestPackagedWindowsUninstall.ps1 `
+            -SetupExecutable "artifacts/velopack/JPCodeCraft.ContextMole-win-x64-Setup.exe" `
+            -InstallDirectory (Join-Path $env:RUNNER_TEMP "ContextMole-package-smoke-$env:GITHUB_RUN_ID") `
+            -DisposableProfileConfirmed
 
       - name: Publish GitHub Release and update feed
         shell: pwsh
@@ -180,3 +245,32 @@ jobs:
             --version 1.2.0 `
             --yes
           gh release edit "$env:GITHUB_REF_NAME" --notes-file artifacts/release-notes.md --repo "$env:GITHUB_REPOSITORY"
+
+      - name: Verify published GitHub Release assets
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          $release = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$env:GITHUB_REF_NAME" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw "GitHub Release lookup failed." }
+          if ($release.tag_name -cne $env:GITHUB_REF_NAME) { throw "The published release tag is incorrect." }
+          if ($release.draft -or $release.prerelease) { throw "The stable release must be published and not marked as a prerelease." }
+          $tagCommit = (git rev-parse "$($env:GITHUB_REF_NAME)^{commit}").Trim()
+          if ($LASTEXITCODE -ne 0 -or $tagCommit -cne $env:GITHUB_SHA) {
+            throw "The release tag does not resolve to the workflow commit."
+          }
+
+          $expectedAssets = @(
+            "JPCodeCraft.ContextMole-win-x64-Setup.exe",
+            "JPCodeCraft.ContextMole-$env:VERSION-win-x64-full.nupkg",
+            "releases.win-x64.json"
+          )
+          foreach ($expectedAsset in $expectedAssets) {
+            $matches = @($release.assets | Where-Object { $_.name -ceq $expectedAsset })
+            if ($matches.Count -ne 1) { throw "Expected exactly one uploaded release asset named $expectedAsset." }
+            if ($matches[0].state -cne "uploaded" -or [long] $matches[0].size -le 0) {
+              throw "Release asset $expectedAsset is not completely uploaded."
+            }
+            $response = Invoke-WebRequest -Uri $matches[0].browser_download_url -Method Head -MaximumRedirection 5
+            if ($response.StatusCode -ne 200) { throw "Release asset $expectedAsset is not downloadable." }
+          }
