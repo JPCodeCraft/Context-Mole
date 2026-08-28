@@ -1,6 +1,18 @@
 # Context Mole
 
-[Website](https://contextmole.com/)
+<p align="center">
+  <a href="https://contextmole.com/">
+    <img src="docs/branding/context-mole/originals/context-mole-01-app-icon.png" alt="Context Mole mascot" width="160">
+  </a>
+</p>
+
+<p align="center">
+  <a href="https://contextmole.com/"><img alt="Website" src="https://img.shields.io/badge/website-contextmole.com-2D7FF9?style=flat-square&amp;logo=googlechrome&amp;logoColor=white"></a>
+  <a href="https://github.com/JPCodeCraft/Context-Mole/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/JPCodeCraft/Context-Mole?display_name=tag&amp;sort=semver&amp;style=flat-square&amp;logo=github"></a>
+  <a href="https://github.com/JPCodeCraft/Context-Mole/actions/workflows/release-windows.yml"><img alt="Release status" src="https://img.shields.io/github/actions/workflow/status/JPCodeCraft/Context-Mole/release-windows.yml?style=flat-square&amp;label=release"></a>
+  <a href="https://github.com/JPCodeCraft/Context-Mole/releases/latest"><img alt="Platform" src="https://img.shields.io/badge/platform-Windows%2010%2B-0078D4?style=flat-square&amp;logo=windows11&amp;logoColor=white"></a>
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/JPCodeCraft/Context-Mole?style=flat-square"></a>
+</p>
 
 Context Mole is a private, local document index for AI assistants. The desktop app watches your folders and builds a searchable SQLite index; its read-only MCP server lets compatible agents find passages with exact file, attachment, page, sheet, slide, or message provenance.
 
