@@ -182,7 +182,7 @@ $markerPath = [System.IO.Path]::Combine($lifecycleDirectory, "shutdown-request.j
     [System.Text.UTF8Encoding]::new($false))
 
 $helperDirectory = [System.IO.Path]::Combine(
-    $runnerTemp,
+    [System.IO.Path]::GetTempPath(),
     "ContextMole-uninstall-$([Guid]::NewGuid().ToString('N'))")
 [System.IO.Directory]::CreateDirectory($helperDirectory) | Out-Null
 $helperExecutable = [System.IO.Path]::Combine($helperDirectory, "ContextMole.UninstallHelper.exe")
