@@ -56,37 +56,44 @@
                 <Border Classes="metricCard" Margin="0,0,9,0">
                   <StackPanel Spacing="5">
                     <TextBlock Text="TOTAL FILES" Classes="eyebrow" />
-                    <TextBlock Text="{Binding DocumentCount}" Classes="metricValue" />
+                    <TextBlock Text="{Binding DocumentCount}" Classes="metricValue"
+                               ToolTip.Tip="Unique files currently discovered across this project's folders." />
                   </StackPanel>
                 </Border>
                 <Border Classes="metricCard" Margin="0,0,9,0">
                   <StackPanel Spacing="5">
-                    <TextBlock Text="SEARCHABLE" Classes="eyebrow" />
-                    <TextBlock Text="{Binding IndexedCount}" Classes="metricValue" />
+                    <TextBlock Text="SEARCHABLE NOW" Classes="eyebrow" />
+                    <TextBlock Text="{Binding IndexedCount}" Classes="metricValue"
+                               ToolTip.Tip="Files with a successful indexed version. A searchable file can also be queued or processing while its index is updated." />
                   </StackPanel>
                 </Border>
                 <Border Classes="metricCard" Margin="0,0,9,0">
                   <StackPanel Spacing="5">
                     <TextBlock Text="PROCESSING" Classes="eyebrow" />
-                    <TextBlock Text="{Binding ProcessingCount}" Classes="metricValue" />
+                    <TextBlock Text="{Binding ProcessingCount}" Classes="metricValue"
+                               ToolTip.Tip="Files actively using processor capacity. A previous indexed version may remain searchable." />
                   </StackPanel>
                 </Border>
                 <Border Classes="metricCard" Margin="0,0,9,0">
                   <StackPanel Spacing="5">
                     <TextBlock Text="QUEUED" Classes="eyebrow" />
-                    <TextBlock Text="{Binding QueuedCount}" Classes="metricValue" />
+                    <TextBlock Text="{Binding QueuedCount}" Classes="metricValue"
+                               ToolTip.Tip="Files waiting for processing, including scheduled retries. A previous indexed version may remain searchable." />
                     <TextBlock IsVisible="{Binding HasQueueBreakdown}"
                                Text="{Binding QueuedBreakdownDisplay}" Classes="quiet" FontSize="10" />
                   </StackPanel>
                 </Border>
                 <Border Classes="metricCard" Classes.hasErrors="{Binding HasErrors}">
                   <StackPanel Spacing="5">
-                    <TextBlock Text="ISSUES" Classes="eyebrow" />
+                    <TextBlock Text="UNRESOLVED ISSUES" Classes="eyebrow" />
                     <TextBlock Text="{Binding ErrorCount}" Classes="metricValue"
-                               Classes.hasErrors="{Binding HasErrors}" />
+                               Classes.hasErrors="{Binding HasErrors}"
+                               ToolTip.Tip="Unresolved error records, not unique files. One file can have more than one issue." />
                   </StackPanel>
                 </Border>
               </UniformGrid>
+              <TextBlock Text="Total files is the unique file count. Processing + Queued is the pending workload. Searchable can overlap that work while a last good index remains available; unresolved issues are error records, and one file can have more than one."
+                         Classes="quiet" FontSize="11" TextWrapping="Wrap" />
 
               <Border IsVisible="{Binding HasMixedSemanticIndex}" Classes="card semanticCoverageWarning">
                 <Grid ColumnDefinitions="*,Auto" ColumnSpacing="18">

@@ -96,6 +96,28 @@ public sealed class CpuSchedulingRegressionTests
         Assert.Equal(cpuSettings.ThreadLimit, cpuBudget.LastThreadCount);
     }
 
+    [Fact]
+    public async Task OcrTimeoutStartsAfterWaitingForCpuCapacity()
+    {
+        using var paths = new TemporaryAppPaths();
+        WriteIdentityOcrAssets(paths);
+        var cpuSettings = new FixedCpuUsageSettings(logicalProcessorCount: 8);
+        var cpuBudget = new BlockingCpuBudget(cpuSettings);
+        using var engine = new PpOcrV6Engine(paths, cpuSettings, cpuBudget);
+        engine.MarkAssetsPrepared();
+        await engine.EnsureAvailableAsync(TestContext.Current.CancellationToken);
+
+        var recognition = engine.RecognizeAsync(
+            new OcrRequest(ReadOnlyMemory<byte>.Empty, ".png", TimeSpan.FromMilliseconds(100)),
+            TestContext.Current.CancellationToken);
+        await cpuBudget.AcquisitionStarted.WaitAsync(TestContext.Current.CancellationToken);
+        await Task.Delay(300, TestContext.Current.CancellationToken);
+        cpuBudget.Release();
+
+        var exception = await Assert.ThrowsAsync<ContextMoleException>(() => recognition);
+        Assert.Equal("ocr_image_invalid", exception.Code);
+    }
+
     private static void WriteIdentityOcrAssets(IAppPaths paths)
     {
         var modelDirectory = Path.Combine(paths.AssetsDirectory, "pp-ocrv6-medium",
@@ -157,6 +179,38 @@ public sealed class CpuSchedulingRegressionTests
             public void Dispose()
             {
                 if (Interlocked.Exchange(ref _disposed, 1) == 0) onDispose();
+            }
+        }
+    }
+
+    private sealed class BlockingCpuBudget(ICpuUsageSettings settings) : IGlobalCpuBudget
+    {
+        private readonly TaskCompletionSource _acquisitionStarted = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _release = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public int MaximumWorkerCount => settings.MaximumThreadLimit;
+        public Task AcquisitionStarted => _acquisitionStarted.Task;
+
+        public ValueTask<ICpuWorkerLease> AcquireWorkerAsync(CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public async ValueTask<ICpuFullCapacityLease> AcquireFullCapacityAsync(
+            CancellationToken cancellationToken)
+        {
+            _acquisitionStarted.TrySetResult();
+            await _release.Task.WaitAsync(cancellationToken);
+            return new FullCapacityLease(settings.ThreadLimit);
+        }
+
+        public void Release() => _release.TrySetResult();
+
+        private sealed class FullCapacityLease(int threadCount) : ICpuFullCapacityLease
+        {
+            public int ThreadCount { get; } = threadCount;
+            public void Dispose()
+            {
             }
         }
     }

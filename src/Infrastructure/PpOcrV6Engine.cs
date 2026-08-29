@@ -213,12 +213,12 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
 
     public async Task<OcrResult> RecognizeAsync(OcrRequest request, CancellationToken cancellationToken)
     {
-        using var deadline = new CancellationTokenSource();
-        deadline.CancelAfter(request.Timeout);
         using var operation = CancellationTokenSource.CreateLinkedTokenSource(
-            cancellationToken, _lifetime.Token, deadline.Token);
+            cancellationToken, _lifetime.Token);
         var operationToken = operation.Token;
 
+        CancellationTokenSource? deadline = null;
+        CancellationTokenSource? inferenceOperation = null;
         var inferenceGateHeld = false;
         try
         {
@@ -233,9 +233,14 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
             if (!IsAvailable || _configuredThreadCount != cpuCapacity.ThreadCount)
                 LoadCore(cpuCapacity.ThreadCount);
 
-            return RecognizeCore(request.ImageBytes.Span, operationToken);
+            // Admission, serialized OCR queueing, and lazy session setup are not OCR work. Start
+            // the caller's deadline only once this request can immediately execute inference.
+            deadline = new CancellationTokenSource(request.Timeout);
+            inferenceOperation = CancellationTokenSource.CreateLinkedTokenSource(
+                operationToken, deadline.Token);
+            return RecognizeCore(request.ImageBytes.Span, inferenceOperation.Token);
         }
-        catch (OperationCanceledException) when (deadline.IsCancellationRequested &&
+        catch (OperationCanceledException) when (deadline?.IsCancellationRequested == true &&
                                                  !cancellationToken.IsCancellationRequested &&
                                                  !_lifetime.IsCancellationRequested)
         {
@@ -247,6 +252,8 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
         }
         finally
         {
+            inferenceOperation?.Dispose();
+            deadline?.Dispose();
             if (inferenceGateHeld)
             {
                 ScheduleSessionIdleUnload();
