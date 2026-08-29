@@ -46,6 +46,15 @@ public partial class ProjectsView : UserControl
         await RunUiActionAsync(sender as Control, ViewModel.RetryFailedFilesAsync);
     }
 
+    private async void RepairSemanticIndex(object? sender, RoutedEventArgs args)
+    {
+        if (_projectActionBusy || ViewModel.SelectedProject is not { CanRepairSemanticIndex: true }) return;
+        if (!await ConfirmWindow.AskAsync(Owner, "Repair semantic index?",
+                "Only files with missing, incomplete, or outdated embeddings will be queued. " +
+                "Keyword search and original files will not be changed.", "Repair")) return;
+        await RunUiActionAsync(sender as Control, ViewModel.RepairSemanticIndexAsync);
+    }
+
     private async void ReindexProject(object? sender, RoutedEventArgs args)
     {
         if (_projectActionBusy || ViewModel.SelectedProject is null) return;

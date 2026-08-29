@@ -88,6 +88,28 @@
                 </Border>
               </UniformGrid>
 
+              <Border IsVisible="{Binding HasMixedSemanticIndex}" Classes="card semanticCoverageWarning">
+                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="18">
+                  <StackPanel Spacing="6">
+                    <StackPanel Orientation="Horizontal" Spacing="10">
+                      <TextBlock Text="Mixed semantic index" Classes="sectionTitle" />
+                      <Border Background="{DynamicResource WarningSubtleBrush}" CornerRadius="8" Padding="8,2">
+                        <TextBlock Text="{Binding SemanticIndexStatusLabel}"
+                                   Foreground="{DynamicResource WarningBrush}" FontSize="10"
+                                   FontWeight="SemiBold" />
+                      </Border>
+                    </StackPanel>
+                    <TextBlock Text="{Binding SemanticIndexStatusMessage}" Classes="muted"
+                               TextWrapping="Wrap" MaxWidth="720" />
+                  </StackPanel>
+                  <Button Grid.Column="1" IsVisible="{Binding ShowSemanticRepairButton}"
+                          Content="Repair semantic index" Click="RepairSemanticIndex"
+                          IsEnabled="{Binding CanRepairSemanticIndex}"
+                          ToolTip.Tip="{Binding RepairSemanticIndexToolTip}"
+                          VerticalAlignment="Center" />
+                </Grid>
+              </Border>
+
               <Border IsVisible="{Binding $parent[UserControl].((vm:MainViewModel)DataContext).HasActiveIndexingItems}"
                       Classes="card">
                 <StackPanel Spacing="12">
@@ -317,6 +339,10 @@
       <Setter Property="BorderThickness" Value="1" />
       <Setter Property="CornerRadius" Value="9" />
       <Setter Property="Padding" Value="0,13,14,13" />
+    </Style>
+    <Style Selector="Border.semanticCoverageWarning">
+      <Setter Property="Background" Value="{DynamicResource WarningSubtleBrush}" />
+      <Setter Property="BorderBrush" Value="#5C4A2D" />
     </Style>
   </UserControl.Styles>
 </UserControl>

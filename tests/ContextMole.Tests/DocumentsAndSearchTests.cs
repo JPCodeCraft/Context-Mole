@@ -510,6 +510,37 @@ public sealed class HybridSearchTests
     }
 
     [Fact]
+    public async Task HybridSearchUsesCompatibleVectorsWhenSemanticCoverageIsPartial()
+    {
+        var keywordOnly = Candidate(Guid.NewGuid(), "exact keyword evidence") with
+        {
+            BodySearchText = "exact keyword evidence"
+        };
+        var semantic = Candidate(Guid.NewGuid(), "conceptual evidence from a compatible vector");
+        var snapshot = new VectorSnapshot(24, Policy, [VectorEntry(semantic, 1f)]);
+        var metadata = new VectorSnapshotMetadata(snapshot.SearchGeneration, Policy, 1,
+            Warning: "Semantic search covers 1 of 2 indexed documents; 1 is excluded. Background embedding repair is queued.",
+            IsComplete: false, TotalDocumentCount: 2, CompatibleDocumentCount: 1,
+            RepairQueuedDocumentCount: 1, TotalPassageCount: 2);
+        var store = new SearchStoreFake([keywordOnly], snapshot, [keywordOnly, semantic],
+            vectorMetadata: metadata);
+
+        var result = await CreateSearch(store, new EmbeddingGeneratorFake(Policy, Policy, Vector(1))).SearchAsync(
+            new SearchRequest(Guid.NewGuid(), SearchMode.Hybrid, "conceptual evidence",
+                [new SearchClause("exact", "exact", SearchClauseOccur.Should)], MinimumShouldMatch: 0),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal("hybrid", result.ActualMode);
+        Assert.Contains(result.Warnings, warning => warning.Code == "semantic_partial_coverage" &&
+                                                   warning.Message.Contains("1 of 2", StringComparison.Ordinal));
+        Assert.DoesNotContain(result.Warnings, warning => warning.Code == "semantic_unavailable");
+        Assert.DoesNotContain(result.Warnings, warning => warning.Code == "fallback_keyword");
+        var passageIds = result.Results.SelectMany(group => group.Previews).Select(preview => preview.PassageId);
+        Assert.Contains(keywordOnly.PassageId, passageIds);
+        Assert.Contains(semantic.PassageId, passageIds);
+    }
+
+    [Fact]
     public void SemanticOnlyNegativeClausesDoNotProduceAnInvalidFtsQuery()
     {
         var clauses = new[]
@@ -837,7 +868,8 @@ public sealed class HybridSearchTests
         Exception? streamingException = null,
         Exception? branchException = null,
         int? maximumCandidateBatch = null,
-        Exception? candidateLoadException = null) : ISearchStore
+        Exception? candidateLoadException = null,
+        VectorSnapshotMetadata? vectorMetadata = null) : ISearchStore
     {
         private readonly Dictionary<Guid, SearchCandidate> _candidates =
             candidates.ToDictionary(candidate => candidate.PassageId);
@@ -870,10 +902,17 @@ public sealed class HybridSearchTests
         public Task<VectorSnapshotMetadata> LoadVectorSnapshotMetadataAsync(Guid projectId,
             CancellationToken cancellationToken = default) => branchException is not null
             ? Task.FromException<VectorSnapshotMetadata>(branchException)
-            : Task.FromResult(new VectorSnapshotMetadata(snapshot.SearchGeneration, snapshot.Policy,
+            : Task.FromResult(vectorMetadata ?? new VectorSnapshotMetadata(snapshot.SearchGeneration, snapshot.Policy,
                 snapshot.Entries.Count, snapshot.RequiresStreaming, snapshot.Warning));
 
+        public Task<VectorSnapshotMetadata> LoadVectorSnapshotMetadataAsync(Guid projectId,
+            EmbeddingPolicy targetPolicy, CancellationToken cancellationToken = default) =>
+            LoadVectorSnapshotMetadataAsync(projectId, cancellationToken);
+
         public Task<VectorSnapshot> LoadVectorSnapshotAsync(Guid projectId,
+            CancellationToken cancellationToken = default) => Task.FromResult(snapshot);
+
+        public Task<VectorSnapshot> LoadVectorSnapshotAsync(Guid projectId, EmbeddingPolicy targetPolicy,
             CancellationToken cancellationToken = default) => Task.FromResult(snapshot);
 
         public async IAsyncEnumerable<VectorEntry> StreamVectorEntriesAsync(Guid projectId, long expectedGeneration,
@@ -888,6 +927,10 @@ public sealed class HybridSearchTests
 
             await Task.CompletedTask;
         }
+
+        public IAsyncEnumerable<VectorEntry> StreamVectorEntriesAsync(Guid projectId, long expectedGeneration,
+            EmbeddingPolicy targetPolicy, SearchFilters? filters, CancellationToken cancellationToken = default) =>
+            StreamVectorEntriesAsync(projectId, expectedGeneration, filters, cancellationToken);
 
         public Task<IReadOnlyList<SearchCandidate>> LoadCandidatesAsync(Guid projectId,
             IReadOnlyCollection<Guid> passageIds, long expectedGeneration,

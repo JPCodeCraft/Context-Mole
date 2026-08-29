@@ -431,6 +431,18 @@ public sealed class SqliteSearchStore : ISearchStore
         return metadata;
     }
 
+    public async Task<VectorSnapshotMetadata> LoadVectorSnapshotMetadataAsync(Guid projectId,
+        EmbeddingPolicy targetPolicy, CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenRequiredAsync(cancellationToken).ConfigureAwait(false);
+        using var transaction = connection.BeginTransaction(deferred: true);
+        var generation = await ReadGenerationAsync(connection, transaction, projectId, cancellationToken).ConfigureAwait(false);
+        var metadata = await ReadVectorMetadataAsync(connection, transaction, projectId, generation, targetPolicy,
+            cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return metadata;
+    }
+
     public async Task<VectorSnapshot> LoadVectorSnapshotAsync(Guid projectId, CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenRequiredAsync(cancellationToken).ConfigureAwait(false);
@@ -481,6 +493,54 @@ public sealed class SqliteSearchStore : ISearchStore
         return incompatible
             ? new VectorSnapshot(generation, null, [], Warning: "An embedding vector or policy is invalid.")
             : new VectorSnapshot(generation, policy, entries);
+    }
+
+    public async Task<VectorSnapshot> LoadVectorSnapshotAsync(Guid projectId, EmbeddingPolicy targetPolicy,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenRequiredAsync(cancellationToken).ConfigureAwait(false);
+        using var transaction = connection.BeginTransaction(deferred: true);
+        var generation = await ReadGenerationAsync(connection, transaction, projectId, cancellationToken).ConfigureAwait(false);
+        var snapshotMetadata = await ReadVectorMetadataAsync(connection, transaction, projectId, generation,
+            targetPolicy, cancellationToken).ConfigureAwait(false);
+        if (snapshotMetadata.EntryCount == 0 || snapshotMetadata.RequiresStreaming)
+        {
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return new VectorSnapshot(generation, targetPolicy, [], snapshotMetadata.RequiresStreaming,
+                snapshotMetadata.Warning);
+        }
+
+        var policyJson = JsonSerializer.Serialize(targetPolicy, StorageJsonOptions);
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT e.passage_id,d.id,c.id,d.path,d.extension,d.modified_utc,c.depth,e.vector,c.name
+            FROM embeddings e
+            JOIN passages p ON p.rowid=e.passage_rowid
+            JOIN document_revisions r ON r.id=e.revision_id AND r.status='active'
+            JOIN documents d ON d.id=r.document_id AND d.active_revision_id=r.id AND d.tombstoned=0
+            JOIN content_nodes c ON c.id=p.content_id
+            WHERE d.project_id=$project AND r.embedding_policy_json=$policy_json
+              AND e.policy_key=$policy_key AND LENGTH(e.vector)=1536
+            ORDER BY e.passage_rowid;
+            """;
+        command.Parameters.AddWithValue("$project", projectId.ToString());
+        command.Parameters.AddWithValue("$policy_json", policyJson);
+        command.Parameters.AddWithValue("$policy_key", targetPolicy.Key);
+        var entries = new List<VectorEntry>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            var bytes = (byte[])reader[7];
+            entries.Add(new VectorEntry(Guid.Parse(reader.GetString(0)), Guid.Parse(reader.GetString(1)),
+                Guid.Parse(reader.GetString(2)), reader.GetString(3), reader.GetString(4),
+                DateTimeOffset.Parse(reader.GetString(5)), reader.GetInt32(6) > 0,
+                MemoryMarshal.Cast<byte, float>(bytes.AsSpan()).ToArray(),
+                NormalizeContentExtension(reader.GetString(8))));
+        }
+
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return new VectorSnapshot(generation, targetPolicy, entries);
     }
 
     private static async Task<VectorSnapshotMetadata> ReadVectorMetadataAsync(
@@ -558,6 +618,96 @@ public sealed class SqliteSearchStore : ISearchStore
         return new VectorSnapshotMetadata(generation, policy, total);
     }
 
+    private static async Task<VectorSnapshotMetadata> ReadVectorMetadataAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        Guid projectId,
+        long generation,
+        EmbeddingPolicy targetPolicy,
+        CancellationToken cancellationToken)
+    {
+        var policyJson = JsonSerializer.Serialize(targetPolicy, StorageJsonOptions);
+        await using var metadata = connection.CreateCommand();
+        metadata.Transaction = transaction;
+        metadata.CommandText = """
+            WITH active_revisions AS (
+              SELECT r.id,r.embedding_policy_json,d.id AS document_id,d.path,d.extension
+              FROM documents d
+              JOIN document_revisions r ON r.id=d.active_revision_id AND r.status='active'
+              WHERE d.project_id=$project AND d.tombstoned=0
+            ),
+            revision_coverage AS (
+              SELECT r.id,r.document_id,r.path,r.extension,r.embedding_policy_json,
+                     COUNT(p.rowid) AS passage_count,
+                     COALESCE(SUM(CASE
+                       WHEN r.embedding_policy_json=$policy_json AND e.policy_key=$policy_key
+                            AND LENGTH(e.vector)=1536 THEN 1 ELSE 0 END),0) AS compatible_passage_count
+              FROM active_revisions r
+              LEFT JOIN passages p ON p.revision_id=r.id
+              LEFT JOIN embeddings e ON e.passage_rowid=p.rowid AND e.revision_id=r.id
+                                      AND e.policy_key=$policy_key
+              GROUP BY r.id,r.document_id,r.path,r.extension,r.embedding_policy_json
+            )
+            SELECT
+              COALESCE(SUM(compatible_passage_count),0),
+              COALESCE(AVG(CASE WHEN compatible_passage_count>0
+                                THEN LENGTH(path)+LENGTH(extension) END),0),
+              COUNT(*),
+              COALESCE(SUM(CASE WHEN embedding_policy_json=$policy_json
+                                     AND compatible_passage_count=passage_count THEN 1 ELSE 0 END),0),
+              COALESCE(SUM(passage_count),0),
+              COALESCE(SUM(CASE WHEN NOT (COALESCE(embedding_policy_json,'')=$policy_json
+                                          AND compatible_passage_count=passage_count)
+                                     AND EXISTS(
+                                       SELECT 1 FROM index_jobs j
+                                       WHERE j.document_id=revision_coverage.document_id
+                                         AND j.state IN ('queued','retry_wait','running')
+                                         AND (j.kind<>$embedding_refresh OR j.target_policy_key=$policy_key)
+                                     ) THEN 1 ELSE 0 END),0)
+            FROM revision_coverage;
+            """;
+        metadata.Parameters.AddWithValue("$project", projectId.ToString());
+        metadata.Parameters.AddWithValue("$policy_json", policyJson);
+        metadata.Parameters.AddWithValue("$policy_key", targetPolicy.Key);
+        metadata.Parameters.AddWithValue("$embedding_refresh", (int)IndexJobKind.EmbeddingRefresh);
+
+        long entryCount;
+        double averageStringChars;
+        int totalDocumentCount;
+        int compatibleDocumentCount;
+        long totalPassageCount;
+        int repairQueuedDocumentCount;
+        await using (var reader = await metadata.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
+        {
+            await reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+            entryCount = reader.GetInt64(0);
+            averageStringChars = reader.GetDouble(1);
+            totalDocumentCount = checked((int)reader.GetInt64(2));
+            compatibleDocumentCount = checked((int)reader.GetInt64(3));
+            totalPassageCount = reader.GetInt64(4);
+            repairQueuedDocumentCount = checked((int)reader.GetInt64(5));
+        }
+
+        var excludedDocumentCount = Math.Max(0, totalDocumentCount - compatibleDocumentCount);
+        var isComplete = excludedDocumentCount == 0;
+        string? warning = null;
+        if (!isComplete)
+        {
+            var repairStatus = repairQueuedDocumentCount >= excludedDocumentCount
+                ? " Background embedding repair is queued for every excluded document."
+                : repairQueuedDocumentCount > 0
+                    ? $" Background embedding repair is queued for {repairQueuedDocumentCount} of them."
+                    : " Embedding repair has not been queued for the excluded documents.";
+            warning = $"Semantic search covers {compatibleDocumentCount} of {totalDocumentCount} indexed documents " +
+                      $"with the active embedding policy; {excludedDocumentCount} are excluded.{repairStatus}";
+        }
+
+        var estimatedEntryBytes = VectorEntryBaseBytes + averageStringChars * sizeof(char);
+        var requiresStreaming = entryCount > 0 && entryCount > VectorCacheBudgetBytes / estimatedEntryBytes;
+        return new VectorSnapshotMetadata(generation, targetPolicy, entryCount, requiresStreaming, warning,
+            isComplete, totalDocumentCount, compatibleDocumentCount, repairQueuedDocumentCount, totalPassageCount);
+    }
+
     public async IAsyncEnumerable<VectorEntry> StreamVectorEntriesAsync(Guid projectId, long expectedGeneration,
         SearchFilters? filters, [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
@@ -586,6 +736,47 @@ public sealed class SqliteSearchStore : ISearchStore
         {
             var bytes = (byte[])reader[7];
             if (bytes.Length != 1536) continue;
+            yield return new VectorEntry(Guid.Parse(reader.GetString(0)), Guid.Parse(reader.GetString(1)),
+                Guid.Parse(reader.GetString(2)), reader.GetString(3), reader.GetString(4),
+                DateTimeOffset.Parse(reader.GetString(5)), reader.GetInt32(6) > 0,
+                MemoryMarshal.Cast<byte, float>(bytes.AsSpan()).ToArray(),
+                NormalizeContentExtension(reader.GetString(8)));
+        }
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    public async IAsyncEnumerable<VectorEntry> StreamVectorEntriesAsync(Guid projectId, long expectedGeneration,
+        EmbeddingPolicy targetPolicy, SearchFilters? filters,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenRequiredAsync(cancellationToken).ConfigureAwait(false);
+        using var transaction = connection.BeginTransaction(deferred: true);
+        var generation = await ReadGenerationAsync(connection, transaction, projectId, cancellationToken).ConfigureAwait(false);
+        if (generation != expectedGeneration)
+            throw new ContextMoleException("index_changed", "The project index changed before semantic streaming began.", true);
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        var sql = new StringBuilder("""
+            SELECT e.passage_id,d.id,c.id,d.path,d.extension,d.modified_utc,c.depth,e.vector,c.name
+            FROM embeddings e
+            JOIN passages p ON p.rowid=e.passage_rowid
+            JOIN document_revisions r ON r.id=e.revision_id AND r.status='active'
+            JOIN documents d ON d.id=r.document_id AND d.active_revision_id=r.id AND d.tombstoned=0
+            JOIN content_nodes c ON c.id=p.content_id
+            WHERE d.project_id=$project AND r.embedding_policy_json=$policy_json
+              AND e.policy_key=$policy_key AND LENGTH(e.vector)=1536
+            """);
+        command.Parameters.AddWithValue("$project", projectId.ToString());
+        command.Parameters.AddWithValue("$policy_json",
+            JsonSerializer.Serialize(targetPolicy, StorageJsonOptions));
+        command.Parameters.AddWithValue("$policy_key", targetPolicy.Key);
+        AppendFilters(sql, command, filters, "d", "c");
+        sql.Append(" ORDER BY e.passage_rowid;");
+        command.CommandText = sql.ToString();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            var bytes = (byte[])reader[7];
             yield return new VectorEntry(Guid.Parse(reader.GetString(0)), Guid.Parse(reader.GetString(1)),
                 Guid.Parse(reader.GetString(2)), reader.GetString(3), reader.GetString(4),
                 DateTimeOffset.Parse(reader.GetString(5)), reader.GetInt32(6) > 0,

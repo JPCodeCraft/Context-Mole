@@ -20,6 +20,8 @@ public sealed class ProjectItemViewModel : ViewModelBase
     private string? _currentFile;
     private ProjectWorkSummary _work = new(0, 0, 0, 0, null);
     private IndexingTimingSnapshot? _runtimeWork;
+    private VectorSnapshotMetadata? _semanticIndex;
+    private bool _semanticModelAvailable;
 
     public ProjectItemViewModel(ProjectSummary project)
     {
@@ -110,6 +112,36 @@ public sealed class ProjectItemViewModel : ViewModelBase
     public bool HasErrors => ErrorCount > 0;
     public bool CanReindex => State == ProjectState.Active;
     public bool CanRetryFailedFiles => State == ProjectState.Active && ErrorCount > 0;
+    public bool HasMixedSemanticIndex => _semanticIndex?.HasPartialCoverage == true;
+    public bool IsSemanticRepairQueued => _semanticIndex?.IsRepairQueued == true;
+    public bool ShowSemanticRepairButton => HasMixedSemanticIndex && !IsSemanticRepairQueued;
+    public bool CanRepairSemanticIndex => ShowSemanticRepairButton && State == ProjectState.Active &&
+                                          _semanticModelAvailable;
+    public string SemanticIndexStatusLabel => IsSemanticRepairQueued ? "REPAIR QUEUED" : "PARTIAL COVERAGE";
+    public string SemanticIndexStatusMessage
+    {
+        get
+        {
+            if (_semanticIndex is not { HasPartialCoverage: true } metadata) return string.Empty;
+            var excluded = metadata.ExcludedDocumentCount;
+            var coverage = $"Meaning-based search currently covers {metadata.CompatibleDocumentCount} of " +
+                           $"{metadata.TotalDocumentCount} indexed files.";
+            if (metadata.IsRepairQueued)
+                return $"{coverage} The remaining {excluded} {(excluded == 1 ? "file is" : "files are")} queued for background repair.";
+            if (metadata.RepairQueuedDocumentCount > 0)
+            {
+                var remaining = excluded - metadata.RepairQueuedDocumentCount;
+                return $"{coverage} Repair is queued for {metadata.RepairQueuedDocumentCount}; " +
+                       $"{remaining} still {(remaining == 1 ? "needs" : "need")} repair.";
+            }
+            return $"{coverage} {excluded} {(excluded == 1 ? "file needs" : "files need")} compatible embeddings.";
+        }
+    }
+    public string RepairSemanticIndexToolTip => State == ProjectState.Paused
+        ? "Resume indexing before repairing semantic coverage."
+        : !_semanticModelAvailable
+            ? "The selected semantic model must be available before repair can be queued."
+            : "Queue only files with missing, incomplete, or outdated embeddings.";
     public string ReindexToolTip => IsPaused
         ? "Resume indexing before rebuilding this project."
         : "Rebuild the local index from the watched folders.";
@@ -163,6 +195,8 @@ public sealed class ProjectItemViewModel : ViewModelBase
         var previousHasErrors = HasErrors;
         var previousCanReindex = CanReindex;
         var previousCanRetryFailedFiles = CanRetryFailedFiles;
+        var previousCanRepairSemanticIndex = CanRepairSemanticIndex;
+        var previousRepairSemanticIndexToolTip = RepairSemanticIndexToolTip;
         var previousReindexToolTip = ReindexToolTip;
         var previousRetryFailedFilesToolTip = RetryFailedFilesToolTip;
         var previousPauseActionLabel = PauseActionLabel;
@@ -206,6 +240,10 @@ public sealed class ProjectItemViewModel : ViewModelBase
         if (previousHasErrors != HasErrors) OnPropertyChanged(nameof(HasErrors));
         if (previousCanReindex != CanReindex) OnPropertyChanged(nameof(CanReindex));
         if (previousCanRetryFailedFiles != CanRetryFailedFiles) OnPropertyChanged(nameof(CanRetryFailedFiles));
+        if (previousCanRepairSemanticIndex != CanRepairSemanticIndex)
+            OnPropertyChanged(nameof(CanRepairSemanticIndex));
+        if (!string.Equals(previousRepairSemanticIndexToolTip, RepairSemanticIndexToolTip, StringComparison.Ordinal))
+            OnPropertyChanged(nameof(RepairSemanticIndexToolTip));
         if (!string.Equals(previousReindexToolTip, ReindexToolTip, StringComparison.Ordinal)) OnPropertyChanged(nameof(ReindexToolTip));
         if (!string.Equals(previousRetryFailedFilesToolTip, RetryFailedFilesToolTip, StringComparison.Ordinal)) OnPropertyChanged(nameof(RetryFailedFilesToolTip));
         if (!string.Equals(previousPauseActionLabel, PauseActionLabel, StringComparison.Ordinal)) OnPropertyChanged(nameof(PauseActionLabel));
@@ -294,6 +332,20 @@ public sealed class ProjectItemViewModel : ViewModelBase
         while (RecentErrors.Count > errors.Count) RecentErrors.RemoveAt(RecentErrors.Count - 1);
         OnPropertyChanged(nameof(HasRecentErrors));
         OnPropertyChanged(nameof(RecentErrorsSummary));
+    }
+
+    public void UpdateSemanticIndex(VectorSnapshotMetadata? metadata, bool modelAvailable)
+    {
+        if (_semanticIndex == metadata && _semanticModelAvailable == modelAvailable) return;
+        _semanticIndex = metadata;
+        _semanticModelAvailable = modelAvailable;
+        OnPropertyChanged(nameof(HasMixedSemanticIndex));
+        OnPropertyChanged(nameof(IsSemanticRepairQueued));
+        OnPropertyChanged(nameof(ShowSemanticRepairButton));
+        OnPropertyChanged(nameof(CanRepairSemanticIndex));
+        OnPropertyChanged(nameof(SemanticIndexStatusLabel));
+        OnPropertyChanged(nameof(SemanticIndexStatusMessage));
+        OnPropertyChanged(nameof(RepairSemanticIndexToolTip));
     }
 
     public void UpdateFileTypeCounts(IReadOnlyList<ProjectFileTypeCount> counts)

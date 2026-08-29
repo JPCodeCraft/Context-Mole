@@ -558,6 +558,61 @@ public sealed class StorageTests
     }
 
     [Fact]
+    public async Task PolicyScopedVectorsKeepValidDocumentsSearchableWhileMixedDocumentsAwaitRepair()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var database = await StorageTestDatabase.CreateAsync(cancellationToken);
+        var (projectId, folderId) = await database.CreateProjectAsync("Partial semantic coverage", cancellationToken);
+
+        var compatiblePath = await WriteAsync("compatible.txt", "compatible semantic evidence",
+            database.Paths.SourceDirectory, cancellationToken);
+        var compatiblePending = await database.ObserveAndLeaseAsync(projectId, folderId, compatiblePath, false,
+            cancellationToken);
+        var compatible = await database.CommitAsync(compatiblePending.Job, compatiblePending.Sha256,
+            compatiblePending.File.Length,
+            new DateTimeOffset(compatiblePending.File.LastWriteTimeUtc, TimeSpan.Zero),
+            "compatible semantic evidence", cancellationToken: cancellationToken);
+
+        var legacyPolicy = StorageTestDatabase.TestEmbeddingPolicy with { Revision = "legacy" };
+        var legacyPath = await WriteAsync("legacy.txt", "legacy keyword evidence",
+            database.Paths.SourceDirectory, cancellationToken);
+        var legacyPending = await database.ObserveAndLeaseAsync(projectId, folderId, legacyPath, false,
+            cancellationToken);
+        var legacy = await database.CommitAsync(legacyPending.Job, legacyPending.Sha256, legacyPending.File.Length,
+            new DateTimeOffset(legacyPending.File.LastWriteTimeUtc, TimeSpan.Zero), "legacy keyword evidence",
+            cancellationToken: cancellationToken, embeddingPolicy: legacyPolicy);
+
+        var metadata = await database.Store.LoadVectorSnapshotMetadataAsync(projectId,
+            StorageTestDatabase.TestEmbeddingPolicy, cancellationToken);
+        Assert.False(metadata.IsComplete);
+        Assert.Equal(2, metadata.TotalDocumentCount);
+        Assert.Equal(1, metadata.CompatibleDocumentCount);
+        Assert.Equal(1, metadata.ExcludedDocumentCount);
+        Assert.Equal(1, metadata.EntryCount);
+        Assert.Equal(0, metadata.RepairQueuedDocumentCount);
+
+        var snapshot = await database.Store.LoadVectorSnapshotAsync(projectId,
+            StorageTestDatabase.TestEmbeddingPolicy, cancellationToken);
+        Assert.Equal(compatible.PassageId, Assert.Single(snapshot.Entries).PassageId);
+        Assert.DoesNotContain(snapshot.Entries, entry => entry.PassageId == legacy.PassageId);
+        var streamed = new List<VectorEntry>();
+        await foreach (var entry in database.Store.StreamVectorEntriesAsync(projectId, metadata.SearchGeneration,
+                           StorageTestDatabase.TestEmbeddingPolicy, null, cancellationToken))
+            streamed.Add(entry);
+        Assert.Equal(compatible.PassageId, Assert.Single(streamed).PassageId);
+
+        Assert.Single((await database.Store.KeywordSearchAsync(projectId,
+            TextNormalization.QuoteFtsTerms("keyword"), 10, null, cancellationToken)).Candidates);
+
+        await database.Writer.RequestEmbeddingRefreshAsync(projectId, StorageTestDatabase.TestEmbeddingPolicy,
+            retryFailed: true, cancellationToken);
+        var queued = await database.Store.LoadVectorSnapshotMetadataAsync(projectId,
+            StorageTestDatabase.TestEmbeddingPolicy, cancellationToken);
+        Assert.True(queued.IsRepairQueued);
+        Assert.Equal(1, queued.RepairQueuedDocumentCount);
+    }
+
+    [Fact]
     public async Task FailedEmbeddingPolicyDoesNotBlockAReplacementPolicy()
     {
         var cancellationToken = TestContext.Current.CancellationToken;

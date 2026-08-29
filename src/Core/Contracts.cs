@@ -139,9 +139,19 @@ public interface ISearchStore
             ? KeywordSearchAsync(projectId, ftsQuery, count, filters, fieldWeights, cancellationToken)
             : Task.FromResult(new KeywordSearchPage(0, []));
     Task<VectorSnapshotMetadata> LoadVectorSnapshotMetadataAsync(Guid projectId, CancellationToken cancellationToken = default);
+    Task<VectorSnapshotMetadata> LoadVectorSnapshotMetadataAsync(Guid projectId, EmbeddingPolicy targetPolicy,
+        CancellationToken cancellationToken = default) =>
+        LoadVectorSnapshotMetadataAsync(projectId, cancellationToken);
     Task<VectorSnapshot> LoadVectorSnapshotAsync(Guid projectId, CancellationToken cancellationToken = default);
+    Task<VectorSnapshot> LoadVectorSnapshotAsync(Guid projectId, EmbeddingPolicy targetPolicy,
+        CancellationToken cancellationToken = default) =>
+        LoadVectorSnapshotAsync(projectId, cancellationToken);
     IAsyncEnumerable<VectorEntry> StreamVectorEntriesAsync(Guid projectId, long expectedGeneration, SearchFilters? filters,
         CancellationToken cancellationToken = default);
+    IAsyncEnumerable<VectorEntry> StreamVectorEntriesAsync(Guid projectId, long expectedGeneration,
+        EmbeddingPolicy targetPolicy,
+        SearchFilters? filters, CancellationToken cancellationToken = default) =>
+        StreamVectorEntriesAsync(projectId, expectedGeneration, filters, cancellationToken);
     Task<IReadOnlyList<SearchCandidate>> LoadCandidatesAsync(Guid projectId, IReadOnlyCollection<Guid> passageIds,
         long expectedGeneration, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<PassageInfo>> ReadPassagesAsync(Guid projectId, IReadOnlyCollection<Guid> passageIds, int contextBefore, int contextAfter, CancellationToken cancellationToken = default);

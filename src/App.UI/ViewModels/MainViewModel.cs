@@ -45,6 +45,11 @@ internal partial class MainViewModel : ViewModelBase
     private Guid? _fileTypeCountsProjectId;
     private long _fileTypeCountsGeneration = -1;
     private int _fileTypeCountsDocumentCount = -1;
+    private Guid? _semanticStatusProjectId;
+    private long _semanticStatusGeneration = -1;
+    private string? _semanticStatusPolicyKey;
+    private bool _semanticStatusModelAvailable;
+    private DateTimeOffset _nextSemanticStatusRefreshUtc = DateTimeOffset.MinValue;
     private bool _isProjectReordering;
 
     public MainViewModel(
@@ -337,7 +342,11 @@ internal partial class MainViewModel : ViewModelBase
     partial void OnSelectedProjectChanged(ProjectItemViewModel? value)
     {
         ReconcileIndexingActivities(_indexingActivities.GetSnapshot(value?.Id));
-        if (value is not null) _ = RefreshErrorsSafeAsync(value.Id);
+        if (value is not null)
+        {
+            _ = RefreshErrorsSafeAsync(value.Id);
+            _ = RefreshSemanticIndexSafeAsync(value.Id, value.SearchGeneration);
+        }
     }
 
     public void StartPolling()
@@ -480,6 +489,17 @@ internal partial class MainViewModel : ViewModelBase
         };
     }
 
+    public async Task RepairSemanticIndexAsync()
+    {
+        if (SelectedProject is not { CanRepairSemanticIndex: true } selected ||
+            !_embeddingGenerator.IsAvailable || _embeddingGenerator.Policy is not { } policy) return;
+        await _writer.RequestEmbeddingRefreshAsync(selected.Id, policy, retryFailed: true);
+        _embeddingPolicyRefreshes.TryBeginRefresh(selected.Id, policy.Key);
+        await RefreshSemanticIndexAsync(selected.Id, selected.SearchGeneration);
+        await RefreshAsync(selected.Id);
+        StatusMessage = $"Queued semantic-index repair for {selected.Name}. Meaning-based coverage will expand in the background.";
+    }
+
     public Task SetCpuUsageProfileAsync(CpuUsageProfile profile)
     {
         _cpuUsageSettings.SetProfile(profile);
@@ -558,9 +578,8 @@ internal partial class MainViewModel : ViewModelBase
                 if (!_embeddingPolicyRefreshes.TryBeginRefresh(project.Id, policy.Key)) continue;
                 try
                 {
-                    var metadata = await _store.LoadVectorSnapshotMetadataAsync(project.Id);
-                    if (!metadata.IsComplete ||
-                        !string.Equals(metadata.Policy?.Key, policy.Key, StringComparison.Ordinal))
+                    var metadata = await _store.LoadVectorSnapshotMetadataAsync(project.Id, policy);
+                    if (!metadata.IsComplete)
                     {
                         await _writer.RequestEmbeddingRefreshAsync(project.Id, policy, retryFailed: true);
                         queuedProjects++;
@@ -637,6 +656,10 @@ internal partial class MainViewModel : ViewModelBase
             var projects = _projectOrder.Apply(
                 await _store.ListProjectsAsync(cancellationToken).ConfigureAwait(false));
             (Guid Id, long Generation, int DocumentCount)? fileTypeRefresh = null;
+            (Guid Id, long Generation)? semanticRefresh = null;
+            var semanticPolicyKey = _embeddingGenerator.Policy?.Key;
+            var semanticModelAvailable = _embeddingGenerator.IsAvailable && semanticPolicyKey is not null;
+            var semanticStatusRefreshDue = DateTimeOffset.UtcNow >= _nextSemanticStatusRefreshUtc;
             await Dispatcher.UIThread.InvokeAsync(() =>
             {
                 var selectedId = preferredProjectId ?? SelectedProject?.Id;
@@ -663,10 +686,21 @@ internal partial class MainViewModel : ViewModelBase
                 {
                     fileTypeRefresh = (selected.Id, selected.SearchGeneration, selected.DocumentCount);
                 }
+                if (SelectedProject is { } semanticProject &&
+                    (_semanticStatusProjectId != semanticProject.Id ||
+                     _semanticStatusGeneration != semanticProject.SearchGeneration ||
+                     !string.Equals(_semanticStatusPolicyKey, semanticPolicyKey, StringComparison.Ordinal) ||
+                     _semanticStatusModelAvailable != semanticModelAvailable || semanticStatusRefreshDue))
+                {
+                    semanticRefresh = (semanticProject.Id, semanticProject.SearchGeneration);
+                }
             });
 
             if (fileTypeRefresh is { } refresh)
                 await RefreshFileTypeCountsAsync(refresh, cancellationToken).ConfigureAwait(false);
+            if (semanticRefresh is { } statusRefresh)
+                await RefreshSemanticIndexAsync(statusRefresh.Id, statusRefresh.Generation, cancellationToken)
+                    .ConfigureAwait(false);
         }
         finally
         {
@@ -860,6 +894,18 @@ internal partial class MainViewModel : ViewModelBase
         }
     }
 
+    private async Task RefreshSemanticIndexSafeAsync(Guid projectId, long generation)
+    {
+        try
+        {
+            await RefreshSemanticIndexAsync(projectId, generation).ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            await Dispatcher.UIThread.InvokeAsync(() => StatusMessage = exception.Message);
+        }
+    }
+
     private async Task RefreshFileTypeCountsAsync((Guid Id, long Generation, int DocumentCount) refresh,
         CancellationToken cancellationToken)
     {
@@ -886,6 +932,26 @@ internal partial class MainViewModel : ViewModelBase
             {
                 selected.UpdateErrors(errors);
             }
+        });
+    }
+
+    private async Task RefreshSemanticIndexAsync(Guid projectId, long generation,
+        CancellationToken cancellationToken = default)
+    {
+        var policy = _embeddingGenerator.Policy;
+        var modelAvailable = _embeddingGenerator.IsAvailable && policy is not null;
+        var metadata = modelAvailable
+            ? await _store.LoadVectorSnapshotMetadataAsync(projectId, policy!, cancellationToken).ConfigureAwait(false)
+            : null;
+        _semanticStatusProjectId = projectId;
+        _semanticStatusGeneration = metadata?.SearchGeneration ?? generation;
+        _semanticStatusPolicyKey = policy?.Key;
+        _semanticStatusModelAvailable = modelAvailable;
+        _nextSemanticStatusRefreshUtc = DateTimeOffset.UtcNow.AddSeconds(10);
+        await Dispatcher.UIThread.InvokeAsync(() =>
+        {
+            if (SelectedProject is { Id: var selectedId } selected && selectedId == projectId)
+                selected.UpdateSemanticIndex(metadata, modelAvailable);
         });
     }
 

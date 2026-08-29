@@ -657,7 +657,16 @@ public sealed record VectorSnapshotMetadata(
     long EntryCount,
     bool RequiresStreaming = false,
     string? Warning = null,
-    bool IsComplete = true);
+    bool IsComplete = true,
+    int TotalDocumentCount = 0,
+    int CompatibleDocumentCount = 0,
+    int RepairQueuedDocumentCount = 0,
+    long TotalPassageCount = 0)
+{
+    public int ExcludedDocumentCount => Math.Max(0, TotalDocumentCount - CompatibleDocumentCount);
+    public bool HasPartialCoverage => ExcludedDocumentCount > 0;
+    public bool IsRepairQueued => HasPartialCoverage && RepairQueuedDocumentCount >= ExcludedDocumentCount;
+}
 
 public sealed record KeywordSearchPage(long SearchGeneration, IReadOnlyList<SearchCandidate> Candidates);
 

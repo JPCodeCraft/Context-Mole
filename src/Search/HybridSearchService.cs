@@ -51,27 +51,33 @@ public sealed class HybridSearchService(
         {
             try
             {
-                vectorMetadata = await _store.LoadVectorSnapshotMetadataAsync(request.ProjectId, cancellationToken)
-                    .ConfigureAwait(false);
-                if (vectorMetadata.Warning is not null)
-                    warnings.Add(new SearchWarning("semantic_index_incomplete", vectorMetadata.Warning));
-                if (vectorMetadata.EntryCount > 0)
-                    await EnsureEmbeddingAvailableAsync(cancellationToken).ConfigureAwait(false);
+                await EnsureEmbeddingAvailableAsync(cancellationToken).ConfigureAwait(false);
+                var activePolicy = _embeddingGenerator.Policy;
+                if (_embeddingGenerator.IsAvailable && activePolicy is not null)
+                {
+                    vectorMetadata = await _store.LoadVectorSnapshotMetadataAsync(request.ProjectId, activePolicy,
+                        cancellationToken).ConfigureAwait(false);
+                    if (vectorMetadata.Warning is not null)
+                    {
+                        var warningCode = vectorMetadata.HasPartialCoverage && vectorMetadata.EntryCount > 0
+                            ? "semantic_partial_coverage"
+                            : "semantic_index_incomplete";
+                        warnings.Add(new SearchWarning(warningCode, vectorMetadata.Warning));
+                    }
+                }
 
-                var semanticEnabled = _embeddingGenerator.IsAvailable && vectorMetadata.Policy is not null &&
-                                      vectorMetadata.EntryCount > 0 && vectorMetadata.IsComplete;
+                var semanticEnabled = _embeddingGenerator.IsAvailable && activePolicy is not null &&
+                                      vectorMetadata.Policy is not null && vectorMetadata.EntryCount > 0;
                 var unavailableReason = !_embeddingGenerator.IsAvailable
                     ? _embeddingGenerator.UnavailableReason ?? "Granite model assets are unavailable."
-                    : vectorMetadata.EntryCount == 0
-                        ? "No semantic embeddings are currently available for this project."
-                        : vectorMetadata.Policy is null
-                            ? "The project contains incompatible embedding policy generations."
-                            : !vectorMetadata.IsComplete
-                                ? "Semantic embeddings are incomplete while background indexing continues."
-                                : !string.Equals(vectorMetadata.Policy.Key, _embeddingGenerator.Policy?.Key,
-                                    StringComparison.Ordinal)
-                                    ? "The active embedding policy differs from the local model while re-embedding completes."
-                                    : null;
+                    : activePolicy is null
+                        ? "The active embedding policy is unavailable."
+                        : vectorMetadata.EntryCount == 0
+                            ? "No semantic embeddings compatible with the active model are currently available for this project."
+                            : vectorMetadata.Policy is null ||
+                              !string.Equals(vectorMetadata.Policy.Key, activePolicy.Key, StringComparison.Ordinal)
+                                ? "The active embedding policy differs from the indexed vectors while re-embedding completes."
+                                : null;
                 if (!semanticEnabled || unavailableReason is not null)
                     warnings.Add(new SearchWarning("semantic_unavailable",
                         unavailableReason ?? "Semantic search is unavailable."));
@@ -199,10 +205,10 @@ public sealed class HybridSearchService(
                 {
                     var maximum = (int)Math.Min(int.MaxValue, vectorMetadata.EntryCount);
                     var target = Math.Min(semanticTarget, maximum);
-                    semanticMatches = vectorMetadata.RequiresStreaming
-                        ? (await FlatVectorIndex.SearchStreamingAsync(
-                            _store.StreamVectorEntriesAsync(request.ProjectId, vectorMetadata.SearchGeneration,
-                                request.Filters, cancellationToken), queryEmbedding!.Vector, target,
+                        semanticMatches = vectorMetadata.RequiresStreaming
+                            ? (await FlatVectorIndex.SearchStreamingAsync(
+                                _store.StreamVectorEntriesAsync(request.ProjectId, vectorMetadata.SearchGeneration,
+                                vectorMetadata.Policy!, request.Filters, cancellationToken), queryEmbedding!.Vector, target,
                             cancellationToken).ConfigureAwait(false)).ToArray()
                         : vectorIndex!.Search(queryEmbedding!.Vector, target, request.Filters).ToArray();
                     semanticExhausted = target >= maximum || semanticMatches.Length < target;
@@ -633,7 +639,8 @@ public sealed class HybridSearchService(
             if (_cache.TryGet(projectId, metadata.SearchGeneration, policyKey, out cached))
                 return cached;
 
-            var snapshot = await _store.LoadVectorSnapshotAsync(projectId, cancellationToken).ConfigureAwait(false);
+            var snapshot = await _store.LoadVectorSnapshotAsync(projectId, metadata.Policy!, cancellationToken)
+                .ConfigureAwait(false);
             if (snapshot.SearchGeneration != metadata.SearchGeneration ||
                 !string.Equals(snapshot.Policy?.Key, policyKey, StringComparison.Ordinal))
                 throw new ContextMoleException("index_changed", "The project index changed while loading semantic vectors.", true);

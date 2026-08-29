@@ -72,7 +72,8 @@ internal sealed class StorageTestDatabase : IAsyncDisposable
         IReadOnlyList<ExtractionError>? errors = null,
         IReadOnlyList<ContentNodeDraft>? nodes = null,
         IReadOnlyList<PassageDraft>? passages = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        EmbeddingPolicy? embeddingPolicy = null)
     {
         var begin = await Writer.BeginRevisionAsync(job, sha256, size, modified, cancellationToken);
         if (!begin.ShouldExtract || begin.RevisionId is null)
@@ -95,7 +96,7 @@ internal sealed class StorageTestDatabase : IAsyncDisposable
 
         var committed = await Writer.CommitRevisionAsync(new IndexCommitRequest(job.JobId, job.ProjectId,
             job.DocumentId, begin.RevisionId.Value, job.ExpectedObservationEpoch, sha256, size, modified, nodes,
-            passages, includeVector ? TestEmbeddingPolicy : null, errors ?? []), cancellationToken);
+            passages, includeVector ? embeddingPolicy ?? TestEmbeddingPolicy : null, errors ?? []), cancellationToken);
         if (!committed)
             throw new InvalidOperationException("The test revision was unexpectedly rejected.");
         return new CommittedTestDocument(job.DocumentId, begin.RevisionId.Value, nodes[0].Id, passages[0].Id);

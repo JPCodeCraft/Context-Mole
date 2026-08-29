@@ -427,9 +427,9 @@ public sealed class IndexingCoordinator(
                 if (project.IndexedCount == 0 || project.State == ProjectState.Paused) continue;
                 try
                 {
-                    var metadata = await _searchStore.LoadVectorSnapshotMetadataAsync(project.Id, cancellationToken)
-                        .ConfigureAwait(false);
-                    if (metadata.IsComplete && string.Equals(metadata.Policy?.Key, policy.Key, StringComparison.Ordinal))
+                    var metadata = await _searchStore.LoadVectorSnapshotMetadataAsync(project.Id, policy,
+                        cancellationToken).ConfigureAwait(false);
+                    if (metadata.IsComplete)
                     {
                         _policyRefreshes.CancelRefresh(project.Id, policy.Key);
                         continue;
