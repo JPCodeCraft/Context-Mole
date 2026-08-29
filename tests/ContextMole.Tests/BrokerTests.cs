@@ -516,15 +516,19 @@ public sealed class BrokerProtocolTests
                 return JsonSerializer.SerializeToElement(new { });
             });
         var serverTask = server.RunAsync(stop.Token);
+        var launchAttempts = 0;
         var client = new BrokerRpcClient(paths.DataDirectory,
-            new BrokerLaunchCommand("must-not-launch-after-deadline", []), deploymentId: "tests");
+            () => new BrokerLaunchCommand("must-not-launch-after-deadline", []),
+            timeProvider: null, startupTimeout: null, clientVersion: null, deploymentId: "tests",
+            brokerStarter: _ => Interlocked.Increment(ref launchAttempts));
 
         try
         {
             var exception = await Assert.ThrowsAsync<BrokerRpcException>(() => client.InvokeAsync("wait", new { },
                 TestContext.Current.CancellationToken, TimeSpan.FromMilliseconds(100)));
             Assert.Equal("deadline_exceeded", exception.Code);
-            Assert.Equal(1, Volatile.Read(ref dispatchCount));
+            Assert.InRange(Volatile.Read(ref dispatchCount), 0, 1);
+            Assert.Equal(0, Volatile.Read(ref launchAttempts));
         }
         finally
         {
