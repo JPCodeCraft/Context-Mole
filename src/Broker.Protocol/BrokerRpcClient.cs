@@ -147,7 +147,7 @@ public sealed class BrokerRpcClient
     private static readonly TimeSpan ProbeConnectTimeout = TimeSpan.FromMilliseconds(500);
 
     private readonly BrokerEndpoint _endpoint;
-    private readonly Lazy<BrokerLaunchCommand> _launchCommand;
+    private readonly Func<BrokerLaunchCommand> _launchCommandFactory;
     private readonly object _authenticationTokenGate = new();
     private string? _authenticationToken;
     private readonly string _clientVersion;
@@ -191,8 +191,7 @@ public sealed class BrokerRpcClient
     {
         _endpoint = new BrokerEndpoint(dataDirectory);
         ArgumentNullException.ThrowIfNull(launchCommandFactory);
-        _launchCommand = new Lazy<BrokerLaunchCommand>(launchCommandFactory,
-            LazyThreadSafetyMode.ExecutionAndPublication);
+        _launchCommandFactory = launchCommandFactory;
         _timeProvider = timeProvider ?? TimeProvider.System;
         _startupTimeout = startupTimeout ?? BrokerProtocol.DefaultStartupTimeout;
         if (_startupTimeout <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(startupTimeout));
@@ -386,8 +385,8 @@ public sealed class BrokerRpcClient
         }
         using (launchAdmission)
         {
-            var deadline = _timeProvider.GetUtcNow().Add(_startupTimeout);
-            await using var startupLock = await AcquireStartupLockAsync(deadline, cancellationToken)
+            var startupLockDeadline = _timeProvider.GetUtcNow().Add(_startupTimeout);
+            await using var startupLock = await AcquireStartupLockAsync(startupLockDeadline, cancellationToken)
                 .ConfigureAwait(false);
 
             var availability = await ProbeBrokerAsync(cancellationToken).ConfigureAwait(false);
@@ -396,6 +395,7 @@ public sealed class BrokerRpcClient
             // Resolve and validate the staged payload before asking a usable older broker to exit. A bad or
             // incomplete deployment must leave the existing broker online for older adapters.
             var launchCommand = ResolveLaunchCommand();
+            var deadline = _timeProvider.GetUtcNow().Add(_startupTimeout);
             CancellationTokenSource? recoveryCancellation = null;
             try
             {
@@ -577,8 +577,9 @@ public sealed class BrokerRpcClient
         BrokerLaunchCommand command;
         try
         {
-            command = _launchCommand.Value ?? throw new InvalidOperationException(
+            var sourceCommand = _launchCommandFactory() ?? throw new InvalidOperationException(
                 "The broker launch command factory returned no command.");
+            command = BrokerDevelopmentDeployment.StageIfRepositoryBuild(_endpoint, sourceCommand);
             ArgumentException.ThrowIfNullOrWhiteSpace(command.FileName);
             ArgumentNullException.ThrowIfNull(command.Arguments);
             if (Path.IsPathFullyQualified(command.FileName))

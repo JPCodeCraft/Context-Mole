@@ -16,8 +16,6 @@ public static class InfrastructureServices
         services.AddSingleton<IEmbeddingModelSettings>(provider => provider.GetRequiredService<EmbeddingModelSettings>());
         services.AddSingleton<IGlobalCpuBudget, GlobalCpuBudget>();
         services.AddSingleton<ISystemMemorySnapshotProvider, SystemMemorySnapshotProvider>();
-        services.AddSingleton<IMemoryAdmissionStatusStore, MemoryAdmissionStatusStore>();
-        services.AddSingleton<IMemoryAdmissionController, MemoryAdmissionController>();
         services.AddSingleton<IEmbeddingGenerator, GraniteEmbeddingGenerator>();
         services.AddSingleton<GraniteModelInstaller>();
         if (includeOcr)

@@ -463,13 +463,20 @@ internal partial class MainViewModel : ViewModelBase
     {
         if (SelectedProject is null) return;
         var id = SelectedProject.Id;
-        var queued = await _writer.RetryFailedFilesAsync(id);
+        var result = await _writer.RetryFailedFilesAsync(id);
         await RefreshAsync(id);
-        StatusMessage = queued switch
+        StatusMessage = result switch
         {
-            0 => "No failed files needed to be queued.",
-            1 => "Queued 1 failed file for retry.",
-            _ => $"Queued {queued} failed files for retry."
+            { QueuedCount: 0, AlreadyPendingCount: 1 } =>
+                "The failed file is already queued or being processed. Its error will clear after a successful retry.",
+            { QueuedCount: 0, AlreadyPendingCount: > 1 } =>
+                $"All {result.AlreadyPendingCount} failed files are already queued or being processed. " +
+                "Their errors will clear after successful retries.",
+            { QueuedCount: 0 } => "No file-specific failures are currently available to retry.",
+            { QueuedCount: 1, AlreadyPendingCount: 0 } => "Queued 1 failed file for retry.",
+            { AlreadyPendingCount: 0 } => $"Queued {result.QueuedCount} failed files for retry.",
+            _ => $"Queued {result.QueuedCount} failed files for retry; {result.AlreadyPendingCount} were already " +
+                 "queued or being processed."
         };
     }
 
@@ -960,12 +967,8 @@ internal partial class MainViewModel : ViewModelBase
                 : string.Empty;
             workParts.Add($"{snapshot.ProcessingCount} processing{retrySuffix}");
         }
-        if (snapshot.WaitingForMemoryCount > 0)
-            workParts.Add($"{snapshot.WaitingForMemoryCount} waiting for memory");
         if (snapshot.WaitingForCpuCount > 0)
             workParts.Add($"{snapshot.WaitingForCpuCount} waiting for CPU");
-        if (snapshot.QueuedCount > 0)
-            workParts.Add($"{snapshot.QueuedCount} queued");
 
         var activeText = workParts.Count == 0 ? "No files active" : string.Join(" · ", workParts);
         var completedText = snapshot.AverageCompletedDuration is { } average

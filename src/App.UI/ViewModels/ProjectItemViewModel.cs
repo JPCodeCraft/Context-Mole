@@ -54,14 +54,8 @@ public sealed class ProjectItemViewModel : ViewModelBase
         ? Work.RunningRetryCount
         : Math.Min(ProcessingCount, _runtimeWork.RetryingCount);
     public DateTimeOffset? NextRetryUtc => Work.NextRetryUtc;
-    public int WaitingForMemoryCount => Math.Min(ClaimedButNotProcessingCount,
-        _runtimeWork?.WaitingForMemoryCount ?? 0);
-    public int WaitingForCpuCount => Math.Min(
-        Math.Max(0, ClaimedButNotProcessingCount - WaitingForMemoryCount),
+    public int WaitingForCpuCount => Math.Min(ClaimedButNotProcessingCount,
         _runtimeWork?.WaitingForCpuCount ?? 0);
-    public int AdmissionQueuedCount => Math.Min(
-        Math.Max(0, ClaimedButNotProcessingCount - WaitingForMemoryCount - WaitingForCpuCount),
-        _runtimeWork?.QueuedCount ?? 0);
     private int ClaimedButNotProcessingCount => _runtimeWork is null
         ? 0
         : Math.Max(0, Work.ProcessingCount - ProcessingCount);
@@ -78,7 +72,6 @@ public sealed class ProjectItemViewModel : ViewModelBase
     public string Phase => State == ProjectState.Paused ? "Paused"
         : RunningRetryCount > 0 ? "Retrying"
         : ProcessingCount > 0 ? "Indexing"
-        : WaitingForMemoryCount > 0 ? "Waiting for memory"
         : WaitingForCpuCount > 0 ? "Waiting for CPU"
         : EffectiveWorkPhase == ProjectWorkPhase.RetryScheduled ? "Retry scheduled"
         : EffectiveWorkPhase == ProjectWorkPhase.Queued ? "Queued"
@@ -95,12 +88,9 @@ public sealed class ProjectItemViewModel : ViewModelBase
         "Indexing" => ProcessingSourcePath is null
             ? "Indexing is active."
             : $"Indexing {Path.GetFileName(ProcessingSourcePath)} now.",
-        "Waiting for memory" => WaitingForMemoryCount == 1
-            ? "1 file is waiting for safe memory admission."
-            : $"{WaitingForMemoryCount} files are waiting for safe memory admission.",
         "Waiting for CPU" => WaitingForCpuCount == 1
-            ? "1 file has memory reserved and is waiting for processor capacity."
-            : $"{WaitingForCpuCount} files have memory reserved and are waiting for processor capacity.",
+            ? "1 file is waiting for processor capacity."
+            : $"{WaitingForCpuCount} files are waiting for processor capacity.",
         "Retry scheduled" when NextRetryUtc is not null =>
             $"Next retry is scheduled for {NextRetryUtc.Value.ToLocalTime():g}.",
         "Retry scheduled" => "A retry is scheduled for later.",
@@ -115,20 +105,17 @@ public sealed class ProjectItemViewModel : ViewModelBase
     public bool IsRetrying => Phase == "Retrying";
     public bool IsRetryScheduled => Phase == "Retry scheduled";
     public bool IsRetryStatus => IsRetrying || IsRetryScheduled;
-    public bool IsWaitingForResources => Phase is "Waiting for memory" or "Waiting for CPU";
+    public bool IsWaitingForResources => Phase == "Waiting for CPU";
     public bool NeedsAttention => Phase == "Needs attention";
     public bool HasErrors => ErrorCount > 0;
     public bool CanReindex => State == ProjectState.Active;
-    public bool CanRetryFailedFiles => State == ProjectState.Active && ErrorCount > 0 &&
-        PendingCount == 0 && CurrentFile is null;
+    public bool CanRetryFailedFiles => State == ProjectState.Active && ErrorCount > 0;
     public string ReindexToolTip => IsPaused
         ? "Resume indexing before rebuilding this project."
         : "Rebuild the local index from the watched folders.";
     public string RetryFailedFilesToolTip => IsPaused
         ? "Resume indexing before retrying failed files."
-        : PendingCount > 0 || CurrentFile is not null
-            ? "Wait for the current indexing work to finish."
-            : "Queue only the files that currently have errors.";
+        : "Queue failed files that do not already have active indexing work.";
     public bool HasFileTypeCounts => FileTypeCounts.Count > 0;
     public bool HasNoFileTypeCounts => !HasFileTypeCounts;
     public bool HasQueueBreakdown => QueuedBreakdownDisplay.Length > 0;
@@ -136,16 +123,11 @@ public sealed class ProjectItemViewModel : ViewModelBase
     {
         get
         {
-            var parts = new List<string>(4);
+            var parts = new List<string>(2);
             if (RetryScheduledCount > 0)
                 parts.Add(RetryScheduledCount == 1 ? "1 scheduled retry" : $"{RetryScheduledCount} scheduled retries");
-            if (WaitingForMemoryCount > 0)
-                parts.Add($"{WaitingForMemoryCount} memory wait");
             if (WaitingForCpuCount > 0)
                 parts.Add($"{WaitingForCpuCount} CPU wait");
-            if (AdmissionQueuedCount > 0)
-                parts.Add(AdmissionQueuedCount == 1 ? "1 awaiting admission" :
-                    $"{AdmissionQueuedCount} awaiting admission");
             return string.Join(" · ", parts);
         }
     }
@@ -261,9 +243,7 @@ public sealed class ProjectItemViewModel : ViewModelBase
         var previousProcessingCount = ProcessingCount;
         var previousQueuedCount = QueuedCount;
         var previousRunningRetryCount = RunningRetryCount;
-        var previousWaitingForMemoryCount = WaitingForMemoryCount;
         var previousWaitingForCpuCount = WaitingForCpuCount;
-        var previousAdmissionQueuedCount = AdmissionQueuedCount;
         var previousHasQueueBreakdown = HasQueueBreakdown;
         var previousQueuedBreakdownDisplay = QueuedBreakdownDisplay;
 
@@ -282,10 +262,7 @@ public sealed class ProjectItemViewModel : ViewModelBase
         if (previousProcessingCount != ProcessingCount) OnPropertyChanged(nameof(ProcessingCount));
         if (previousQueuedCount != QueuedCount) OnPropertyChanged(nameof(QueuedCount));
         if (previousRunningRetryCount != RunningRetryCount) OnPropertyChanged(nameof(RunningRetryCount));
-        if (previousWaitingForMemoryCount != WaitingForMemoryCount)
-            OnPropertyChanged(nameof(WaitingForMemoryCount));
         if (previousWaitingForCpuCount != WaitingForCpuCount) OnPropertyChanged(nameof(WaitingForCpuCount));
-        if (previousAdmissionQueuedCount != AdmissionQueuedCount) OnPropertyChanged(nameof(AdmissionQueuedCount));
         if (previousHasQueueBreakdown != HasQueueBreakdown) OnPropertyChanged(nameof(HasQueueBreakdown));
         if (!string.Equals(previousQueuedBreakdownDisplay, QueuedBreakdownDisplay, StringComparison.Ordinal))
             OnPropertyChanged(nameof(QueuedBreakdownDisplay));

@@ -291,7 +291,8 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
             return null;
         }, cancellationToken);
 
-    public Task<int> RetryFailedFilesAsync(Guid projectId, CancellationToken cancellationToken = default) =>
+    public Task<RetryFailedFilesResult> RetryFailedFilesAsync(Guid projectId,
+        CancellationToken cancellationToken = default) =>
         EnqueueAsync(async (connection, token) =>
         {
             using var transaction = connection.BeginTransaction();
@@ -317,15 +318,15 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                 SELECT d.id,d.observation_epoch,
                   CASE WHEN latest.state='failed' AND latest.kind=$embedding_refresh
                     THEN $embedding_refresh ELSE $reindex END,
-                  latest.target_policy_key
-                FROM documents d
-                LEFT JOIN latest_jobs latest ON latest.document_id=d.id
-                WHERE d.project_id=$project AND d.tombstoned=0
-                  AND NOT EXISTS(
+                  latest.target_policy_key,
+                  EXISTS(
                     SELECT 1 FROM index_jobs open_job
                     WHERE open_job.project_id=$project AND open_job.document_id=d.id
                       AND open_job.state IN ('queued','retry_wait','running')
                   )
+                FROM documents d
+                LEFT JOIN latest_jobs latest ON latest.document_id=d.id
+                WHERE d.project_id=$project AND d.tombstoned=0
                   AND (
                   EXISTS(SELECT 1 FROM project_errors e WHERE e.project_id=$project AND e.document_id=d.id)
                   OR COALESCE(latest.state,'')='failed'
@@ -335,19 +336,23 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
             select.Parameters.AddWithValue("$project", projectId.ToString());
             select.Parameters.AddWithValue("$embedding_refresh", (int)IndexJobKind.EmbeddingRefresh);
             select.Parameters.AddWithValue("$reindex", (int)IndexJobKind.Reindex);
-            var documents = new List<(Guid Id, long Epoch, IndexJobKind Kind, string? TargetPolicyKey)>();
+            var documents = new List<(Guid Id, long Epoch, IndexJobKind Kind, string? TargetPolicyKey,
+                bool AlreadyPending)>();
             await using (var reader = await select.ExecuteReaderAsync(token).ConfigureAwait(false))
             {
                 while (await reader.ReadAsync(token).ConfigureAwait(false))
                 {
                     documents.Add((Guid.Parse(reader.GetString(0)), reader.GetInt64(1),
-                        (IndexJobKind)reader.GetInt32(2), reader.IsDBNull(3) ? null : reader.GetString(3)));
+                        (IndexJobKind)reader.GetInt32(2), reader.IsDBNull(3) ? null : reader.GetString(3),
+                        reader.GetInt64(4) != 0));
                 }
             }
 
             var now = DateTimeOffset.UtcNow.ToString("O");
+            var queuedCount = 0;
             foreach (var document in documents)
             {
+                if (document.AlreadyPending) continue;
                 var nextEpoch = document.Kind == IndexJobKind.EmbeddingRefresh
                     ? document.Epoch
                     : document.Epoch + 1;
@@ -360,10 +365,11 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                 }
                 await UpsertOpenJobAsync(connection, transaction, projectId, document.Id, nextEpoch,
                     document.Kind, now, token, document.TargetPolicyKey).ConfigureAwait(false);
+                queuedCount++;
             }
 
             await transaction.CommitAsync(token).ConfigureAwait(false);
-            return documents.Count;
+            return new RetryFailedFilesResult(queuedCount, documents.Count - queuedCount);
         }, cancellationToken);
 
     public Task RemoveProjectAsync(Guid projectId, CancellationToken cancellationToken = default) =>
@@ -1257,6 +1263,8 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
         await ExecuteAsync(connection, transaction,
             "UPDATE index_jobs SET state='completed',lease_until_utc=NULL,updated_utc=$now WHERE document_id=$document AND state IN ('queued','retry_wait','running');",
             [new("$now", now), new("$document", documentId.Value.ToString())], cancellationToken).ConfigureAwait(false);
+        await ClearDocumentErrorsAsync(connection, transaction, projectId, documentId.Value, cancellationToken)
+            .ConfigureAwait(false);
         if (revisionId is not null)
         {
             await ExecuteAsync(connection, transaction, "UPDATE document_revisions SET status='superseded' WHERE id=$id;",

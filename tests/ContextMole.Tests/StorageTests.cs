@@ -257,10 +257,18 @@ public sealed class StorageTests
             Assert.Single((await database.Store.KeywordSearchAsync(projectId,
                 TextNormalization.QuoteFtsTerms("contrato"), 10, null, cancellationToken)).Candidates).DocumentId);
 
+        await database.Writer.RequestReindexAsync(projectId, cancellationToken);
+        var failedReindex = await database.Writer.LeaseNextJobAsync(TimeSpan.FromMinutes(1), cancellationToken);
+        Assert.NotNull(failedReindex);
+        await database.Writer.FailJobAsync(failedReindex, "deleted_file_failure", "Failure before deletion",
+            retryable: false, cancellationToken);
+        Assert.Single(await database.Store.ListProjectErrorsAsync(projectId, 10, cancellationToken));
+
         File.Delete(renamed);
         await database.Writer.HandleDeletedAsync(projectId, folderId, renamed, cancellationToken);
         project = (await database.Store.ListProjectsAsync(cancellationToken)).Single(item => item.Id == projectId);
         Assert.Equal(0, project.DocumentCount);
+        Assert.Empty(await database.Store.ListProjectErrorsAsync(projectId, 10, cancellationToken));
         Assert.Empty((await database.Store.KeywordSearchAsync(projectId,
             TextNormalization.QuoteFtsTerms("contrato"), 10, null, cancellationToken)).Candidates);
     }
@@ -512,8 +520,10 @@ public sealed class StorageTests
         await database.Writer.FailJobAsync(repair, "embedding_refresh_failed", "Explicit model repair failed",
             retryable: false, cancellationToken: cancellationToken);
 
-        Assert.Equal(1, await database.Writer.RetryFailedFilesAsync(projectId, cancellationToken));
-        Assert.Equal(0, await database.Writer.RetryFailedFilesAsync(projectId, cancellationToken));
+        Assert.Equal(new RetryFailedFilesResult(1, 0),
+            await database.Writer.RetryFailedFilesAsync(projectId, cancellationToken));
+        Assert.Equal(new RetryFailedFilesResult(0, 1),
+            await database.Writer.RetryFailedFilesAsync(projectId, cancellationToken));
         var explicitRetry = await database.Writer.LeaseNextJobAsync(TimeSpan.FromMinutes(1), cancellationToken);
         Assert.NotNull(explicitRetry);
         Assert.Equal(IndexJobKind.EmbeddingRefresh, explicitRetry.Kind);
@@ -700,8 +710,10 @@ public sealed class StorageTests
             Assert.Single((await database.Store.ListDocumentsAsync(new DocumentListRequest(projectId,
                 DocumentStatusFilter.Error), cancellationToken)).Documents).DocumentId);
 
-        Assert.Equal(1, await database.Writer.RetryFailedFilesAsync(projectId, cancellationToken));
-        Assert.Equal(0, await database.Writer.RetryFailedFilesAsync(projectId, cancellationToken));
+        Assert.Equal(new RetryFailedFilesResult(1, 0),
+            await database.Writer.RetryFailedFilesAsync(projectId, cancellationToken));
+        Assert.Equal(new RetryFailedFilesResult(0, 1),
+            await database.Writer.RetryFailedFilesAsync(projectId, cancellationToken));
         var retry = await database.Writer.LeaseNextJobAsync(TimeSpan.FromMinutes(1), cancellationToken);
         Assert.NotNull(retry);
         Assert.Equal(bravo.Observation.DocumentId, retry.DocumentId);

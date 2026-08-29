@@ -165,6 +165,52 @@ public sealed class EmbeddingLifecycleRegressionTests
         }
     }
 
+    [Fact]
+    public async Task UpdateCleanupRaceIsRecordedAsARetryableEmbeddingFailure()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var database = await StorageTestDatabase.CreateAsync(cancellationToken);
+        var source = Path.Combine(database.Paths.SourceDirectory, "update-race.txt");
+        await File.WriteAllTextAsync(source, "Keyword search survives an interrupted application update.",
+            cancellationToken);
+        var (projectId, _) = await database.CreateProjectAsync("Update race", cancellationToken);
+
+        var policy = StorageTestDatabase.TestEmbeddingPolicy with
+        {
+            ModelId = "update-race-model",
+            Revision = "2"
+        };
+        await using var embeddings = MutableEmbeddingGenerator.Available(policy,
+            failPassageEmbeddings: true, failureCode: "application_shutting_down",
+            failureMessage: "Context Mole is being uninstalled. This local process will not start while cleanup is in progress.");
+        using var budget = new GlobalCpuBudget(new StorageFixedCpuSettings());
+        using var coordinator = new IndexingCoordinator(database.Writer, database.Store, database.Paths,
+            new CountingExtractor(new DocumentExtractionRegistry(new StorageNoOcr())), embeddings,
+            new IndexingActivityTracker(), new EmbeddingPolicyRefreshTracker(), budget,
+            NullLogger<IndexingCoordinator>.Instance);
+
+        await coordinator.StartAsync(cancellationToken);
+        try
+        {
+            await WaitUntilAsync(async () =>
+            {
+                var project = (await database.Store.ListProjectsAsync(cancellationToken))
+                    .Single(item => item.Id == projectId);
+                return project is { IndexedCount: 1, PendingCount: 0, ErrorCount: 1 };
+            }, cancellationToken);
+
+            var error = Assert.Single(await database.Store.ListProjectErrorsAsync(projectId, 10,
+                cancellationToken));
+            Assert.Equal("embedding_refresh_failed", error.Code);
+            Assert.True(error.Retryable);
+            Assert.Contains("being uninstalled", error.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            await coordinator.StopAsync(CancellationToken.None);
+        }
+    }
+
     private static Task WaitForCompletePolicyAsync(
         StorageTestDatabase database,
         Guid projectId,
@@ -221,24 +267,34 @@ public sealed class EmbeddingLifecycleRegressionTests
         private EmbeddingPolicy? _policy;
         private bool _available;
         private bool _failPassageEmbeddings;
+        private readonly string _failureCode;
+        private readonly string _failureMessage;
         private int _passageEmbeddingCallCount;
         private int _failedPassageEmbeddingCallCount;
 
         private MutableEmbeddingGenerator(
             EmbeddingPolicy? policy,
             bool available,
-            bool failPassageEmbeddings)
+            bool failPassageEmbeddings,
+            string failureCode,
+            string failureMessage)
         {
             _policy = policy;
             _available = available;
             _failPassageEmbeddings = failPassageEmbeddings;
+            _failureCode = failureCode;
+            _failureMessage = failureMessage;
         }
 
-        public static MutableEmbeddingGenerator Unavailable() => new(null, false, false);
+        public static MutableEmbeddingGenerator Unavailable() => new(null, false, false,
+            "model_output_invalid", "The test embedding model failed during inference.");
 
         public static MutableEmbeddingGenerator Available(
             EmbeddingPolicy policy,
-            bool failPassageEmbeddings = false) => new(policy, true, failPassageEmbeddings);
+            bool failPassageEmbeddings = false,
+            string failureCode = "model_output_invalid",
+            string failureMessage = "The test embedding model failed during inference.") =>
+            new(policy, true, failPassageEmbeddings, failureCode, failureMessage);
 
         public bool IsAvailable
         {
@@ -296,8 +352,7 @@ public sealed class EmbeddingLifecycleRegressionTests
                 if (_failPassageEmbeddings)
                 {
                     Interlocked.Increment(ref _failedPassageEmbeddingCallCount);
-                    throw new ContextMoleException("model_output_invalid",
-                        "The test embedding model failed during inference.");
+                    throw new ContextMoleException(_failureCode, _failureMessage);
                 }
                 policy = _policy;
             }

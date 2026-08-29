@@ -19,6 +19,11 @@ public sealed class ProjectErrorItemViewModel(ProjectErrorInfo source)
         ? "1 failed attempt"
         : $"{Source.Attempt} failed attempts";
     public bool HasFailedAttempts => Source.Attempt > 0;
-    public bool IsRetryable => Source.Retryable;
-    public bool IsPermanent => !Source.Retryable;
+    public bool IsRetryable => Source.Retryable || IsInterruptedUpdateEmbeddingFailure;
+    public bool IsPermanent => !IsRetryable;
+
+    private bool IsInterruptedUpdateEmbeddingFailure =>
+        string.Equals(Source.Code, "embedding_refresh_failed", StringComparison.Ordinal) &&
+        (Source.Message.Contains("being uninstalled", StringComparison.OrdinalIgnoreCase) ||
+         Source.Message.Contains("cleanup is in progress", StringComparison.OrdinalIgnoreCase));
 }

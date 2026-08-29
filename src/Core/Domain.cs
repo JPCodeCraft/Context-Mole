@@ -243,6 +243,8 @@ public sealed record FileObservation(
 
 public sealed record ObservationResult(Guid DocumentId, long ObservationEpoch, bool Queued);
 
+public sealed record RetryFailedFilesResult(int QueuedCount, int AlreadyPendingCount);
+
 public sealed record IndexJobLease(
     Guid JobId,
     Guid ProjectId,

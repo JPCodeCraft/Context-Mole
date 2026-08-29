@@ -137,8 +137,8 @@ public sealed class BrokerSearchRuntimeManager : IAsyncDisposable
     {
         var snapshot = _memorySnapshots.Capture();
         if (snapshot.TotalPhysicalBytes <= 0) return false;
-        var reserve = MemoryAdmissionController.CalculateSystemReserve(snapshot.TotalPhysicalBytes);
-        var processLimit = MemoryAdmissionController.CalculateProcessSoftLimit(snapshot.TotalPhysicalBytes);
+        var reserve = MemoryPressurePolicy.CalculateSystemReserve(snapshot.TotalPhysicalBytes);
+        var processLimit = MemoryPressurePolicy.CalculateProcessCleanupThreshold(snapshot.TotalPhysicalBytes);
         if (snapshot.AvailablePhysicalBytes >= reserve && snapshot.ProcessPrivateBytes < processLimit) return false;
 
         await _stateGate.WaitAsync(cancellationToken).ConfigureAwait(false);

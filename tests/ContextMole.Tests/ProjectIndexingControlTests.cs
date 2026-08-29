@@ -13,7 +13,6 @@ namespace ContextMole.Tests;
 public sealed class ProjectIndexingControlTests
 {
     [Theory]
-    [InlineData(BlockStage.Memory)]
     [InlineData(BlockStage.Cpu)]
     [InlineData(BlockStage.Extraction)]
     [InlineData(BlockStage.Embeddings)]
@@ -28,13 +27,12 @@ public sealed class ProjectIndexingControlTests
         var (projectId, _) = await database.CreateProjectAsync($"Pause {stage}", cancellationToken);
         var probe = new CancellationProbe();
         var writer = new ObservingIndexWriter(database.Writer);
-        var memory = new StageMemoryAdmissionController(stage, probe);
         var cpu = new StageCpuBudget(stage, probe);
         var extractor = new StageExtractor(stage, probe);
         var embeddings = new StageEmbeddings(stage, probe);
         var activities = new IndexingActivityTracker();
         using var coordinator = new IndexingCoordinator(writer, database.Store, database.Paths, extractor, embeddings,
-            activities, new EmbeddingPolicyRefreshTracker(), cpu, NullLogger<IndexingCoordinator>.Instance, memory);
+            activities, new EmbeddingPolicyRefreshTracker(), cpu, NullLogger<IndexingCoordinator>.Instance);
 
         await coordinator.StartAsync(cancellationToken);
         try
@@ -54,7 +52,6 @@ public sealed class ProjectIndexingControlTests
             Assert.Equal(0, summary.Work.ProcessingCount);
             Assert.True(summary.Work.QueuedCount > 0);
             Assert.Equal(0, summary.ErrorCount);
-            Assert.Equal(stage == BlockStage.Memory ? 0 : 1, memory.Disposals);
             Assert.Equal(stage is BlockStage.Extraction or BlockStage.Embeddings ? 1 : 0, cpu.Disposals);
         }
         finally
@@ -77,7 +74,7 @@ public sealed class ProjectIndexingControlTests
         var embeddings = new StorageUnavailableEmbeddings();
         using var coordinator = new IndexingCoordinator(writer, database.Store, database.Paths, extractor, embeddings,
             new IndexingActivityTracker(), new EmbeddingPolicyRefreshTracker(), new StageCpuBudget(),
-            NullLogger<IndexingCoordinator>.Instance, new StageMemoryAdmissionController());
+            NullLogger<IndexingCoordinator>.Instance);
 
         await coordinator.StartAsync(cancellationToken);
         try
@@ -117,7 +114,7 @@ public sealed class ProjectIndexingControlTests
         var embeddings = new StorageUnavailableEmbeddings();
         using var coordinator = new IndexingCoordinator(writer, database.Store, database.Paths, extractor, embeddings,
             new IndexingActivityTracker(), new EmbeddingPolicyRefreshTracker(), new StageCpuBudget(),
-            NullLogger<IndexingCoordinator>.Instance, new StageMemoryAdmissionController());
+            NullLogger<IndexingCoordinator>.Instance);
 
         await coordinator.StartAsync(cancellationToken);
         try
@@ -155,7 +152,7 @@ public sealed class ProjectIndexingControlTests
         var embeddings = new StorageUnavailableEmbeddings();
         using var coordinator = new IndexingCoordinator(writer, database.Store, database.Paths, extractor, embeddings,
             new IndexingActivityTracker(), new EmbeddingPolicyRefreshTracker(), new StageCpuBudget(),
-            NullLogger<IndexingCoordinator>.Instance, new StageMemoryAdmissionController());
+            NullLogger<IndexingCoordinator>.Instance);
 
         await coordinator.StartAsync(cancellationToken);
         try
@@ -220,8 +217,7 @@ public sealed class ProjectIndexingControlTests
         var embeddings = new StorageUnavailableEmbeddings();
         using var coordinator = new IndexingCoordinator(writer, database.Store, database.Paths, extractor, embeddings,
             new IndexingActivityTracker(), new EmbeddingPolicyRefreshTracker(),
-            new StageCpuBudget(maximumWorkerCount: 2), NullLogger<IndexingCoordinator>.Instance,
-            new StageMemoryAdmissionController());
+            new StageCpuBudget(maximumWorkerCount: 2), NullLogger<IndexingCoordinator>.Instance);
 
         coordinator.BeginPause(projectId);
         await coordinator.StartAsync(cancellationToken);
@@ -266,7 +262,7 @@ public sealed class ProjectIndexingControlTests
         var embeddings = new StorageUnavailableEmbeddings();
         using var coordinator = new IndexingCoordinator(writer, database.Store, database.Paths, extractor, embeddings,
             new IndexingActivityTracker(), new EmbeddingPolicyRefreshTracker(), new StageCpuBudget(),
-            NullLogger<IndexingCoordinator>.Instance, new StageMemoryAdmissionController());
+            NullLogger<IndexingCoordinator>.Instance);
 
         await coordinator.StartAsync(cancellationToken);
         try
@@ -321,7 +317,7 @@ public sealed class ProjectIndexingControlTests
         var activities = new IndexingActivityTracker();
         using var coordinator = new IndexingCoordinator(writer, database.Store, database.Paths, extractor, embeddings,
             activities, new EmbeddingPolicyRefreshTracker(), new StageCpuBudget(maximumWorkerCount: 2),
-            NullLogger<IndexingCoordinator>.Instance, new StageMemoryAdmissionController());
+            NullLogger<IndexingCoordinator>.Instance);
 
         await coordinator.StartAsync(cancellationToken);
         try
@@ -358,7 +354,6 @@ public sealed class ProjectIndexingControlTests
         services.AddSingleton<IDocumentExtractor>(new CountingExtractor());
         services.AddSingleton<IEmbeddingGenerator>(embeddings);
         services.AddSingleton<IGlobalCpuBudget>(new StageCpuBudget());
-        services.AddSingleton<IMemoryAdmissionController>(new StageMemoryAdmissionController());
         services.AddLogging();
         services.AddContextMoleIndexing();
         await using var provider = services.BuildServiceProvider();
@@ -382,7 +377,7 @@ public sealed class ProjectIndexingControlTests
         Assert.True(await condition(), "The expected indexing state was not reached before the timeout.");
     }
 
-    public enum BlockStage { Memory, Cpu, Extraction, Embeddings }
+    public enum BlockStage { Cpu, Extraction, Embeddings }
 
     private sealed class CancellationProbe
     {
@@ -402,44 +397,6 @@ public sealed class ProjectIndexingControlTests
             {
                 Canceled.TrySetResult();
                 throw;
-            }
-        }
-    }
-
-    private sealed class StageMemoryAdmissionController : IMemoryAdmissionController
-    {
-        private readonly BlockStage? _stage;
-        private readonly CancellationProbe? _probe;
-        private int _disposals;
-
-        public StageMemoryAdmissionController(BlockStage? stage = null, CancellationProbe? probe = null)
-        {
-            _stage = stage;
-            _probe = probe;
-        }
-
-        public int Disposals => Volatile.Read(ref _disposals);
-
-        public async ValueTask<IMemoryLease> AcquireAsync(MemoryWorkEstimate estimate,
-            CancellationToken cancellationToken = default)
-        {
-            if (_stage == BlockStage.Memory)
-                await _probe!.BlockAsync(cancellationToken);
-            cancellationToken.ThrowIfCancellationRequested();
-            return new Lease(estimate.EstimatedBytes, () => Interlocked.Increment(ref _disposals));
-        }
-
-        private sealed class Lease(long reservedBytes, Action onDispose) : IMemoryLease
-        {
-            private int _disposed;
-            public long ReservedBytes { get; } = reservedBytes;
-            public bool IsExclusive => false;
-            public SystemMemorySnapshot AdmissionSnapshot => default;
-            public long ProcessSoftLimitBytes => long.MaxValue;
-            public long SystemReserveBytes => 0;
-            public void Dispose()
-            {
-                if (Interlocked.Exchange(ref _disposed, 1) == 0) onDispose();
             }
         }
     }
@@ -662,7 +619,8 @@ public sealed class ProjectIndexingControlTests
         public Task RequestEmbeddingRefreshAsync(Guid projectId, EmbeddingPolicy targetPolicy, bool retryFailed,
             CancellationToken cancellationToken = default) =>
             inner.RequestEmbeddingRefreshAsync(projectId, targetPolicy, retryFailed, cancellationToken);
-        public Task<int> RetryFailedFilesAsync(Guid projectId, CancellationToken cancellationToken = default) =>
+        public Task<RetryFailedFilesResult> RetryFailedFilesAsync(Guid projectId,
+            CancellationToken cancellationToken = default) =>
             inner.RetryFailedFilesAsync(projectId, cancellationToken);
         public Task RemoveProjectAsync(Guid projectId, CancellationToken cancellationToken = default) =>
             inner.RemoveProjectAsync(projectId, cancellationToken);

@@ -15,8 +15,6 @@ public enum IndexingPipelineStage
     VerifyingSource = 6,
     WritingIndex = 7,
     RecordingError = 8,
-    WaitingForMemory = 9,
-    QueuedForAdmission = 10,
     WaitingForCpu = 11
 }
 
@@ -31,11 +29,8 @@ public sealed record IndexingActivitySnapshot(
     DateTimeOffset StartedUtc)
 {
     public int Attempt { get; init; }
-    public MemoryAdmissionWaitSnapshot? MemoryWait { get; init; }
-    public bool IsQueuedForAdmission => Stage == IndexingPipelineStage.QueuedForAdmission;
-    public bool IsWaitingForMemory => Stage == IndexingPipelineStage.WaitingForMemory;
     public bool IsWaitingForCpu => Stage == IndexingPipelineStage.WaitingForCpu;
-    public bool IsWaitingForResources => IsQueuedForAdmission || IsWaitingForMemory || IsWaitingForCpu;
+    public bool IsWaitingForResources => IsWaitingForCpu;
     public bool IsProcessing => !IsWaitingForResources;
     public bool IsRetrying => IsProcessing && Attempt > 0;
 }
@@ -47,8 +42,6 @@ public sealed record IndexingTimingSnapshot(
 {
     public int ProcessingCount => ActiveItems.Count(item => item.IsProcessing);
     public int RetryingCount => ActiveItems.Count(item => item.IsRetrying);
-    public int QueuedCount => ActiveItems.Count(item => item.IsQueuedForAdmission);
-    public int WaitingForMemoryCount => ActiveItems.Count(item => item.IsWaitingForMemory);
     public int WaitingForCpuCount => ActiveItems.Count(item => item.IsWaitingForCpu);
 }
 
@@ -57,16 +50,6 @@ public sealed class IndexingActivityTracker
     private readonly object _gate = new();
     private readonly Dictionary<Guid, ActiveActivity> _active = [];
     private readonly Dictionary<Guid, CompletedTiming> _completedByProject = [];
-    private readonly IMemoryAdmissionStatusStore _memoryStatuses;
-
-    public IndexingActivityTracker() : this(new MemoryAdmissionStatusStore())
-    {
-    }
-
-    public IndexingActivityTracker(IMemoryAdmissionStatusStore memoryStatuses)
-    {
-        _memoryStatuses = memoryStatuses ?? throw new ArgumentNullException(nameof(memoryStatuses));
-    }
 
     public bool HasActiveItems
     {
@@ -91,11 +74,10 @@ public sealed class IndexingActivityTracker
         lock (_gate)
         {
             var now = Stopwatch.GetTimestamp();
-            var nowUtc = DateTimeOffset.UtcNow;
             var items = _active.Values
                 .Where(item => item.ProjectId == projectId.Value)
                 .OrderBy(item => item.StartedTimestamp)
-                .Select(item => CreateSnapshot(item, now, nowUtc))
+                .Select(item => CreateSnapshot(item, now))
                 .ToArray();
             if (!_completedByProject.TryGetValue(projectId.Value, out var completed) || completed.Count == 0)
                 return new(items, null, 0);
@@ -103,33 +85,14 @@ public sealed class IndexingActivityTracker
         }
     }
 
-    private IndexingActivitySnapshot CreateSnapshot(ActiveActivity item, long now, DateTimeOffset nowUtc)
+    private static IndexingActivitySnapshot CreateSnapshot(ActiveActivity item, long now)
     {
-        MemoryAdmissionWaitSnapshot? memoryWait = null;
-        if (_memoryStatuses.TryGet(item.JobId, out var observed)) memoryWait = observed;
-
-        var stage = item.Stage;
-        if (memoryWait is not null)
-        {
-            stage = memoryWait.Reason is MemoryAdmissionWaitReason.SystemMemory or
-                MemoryAdmissionWaitReason.ProcessSoftLimit
-                ? IndexingPipelineStage.WaitingForMemory
-                : IndexingPipelineStage.QueuedForAdmission;
-        }
-
         var stageElapsed = Stopwatch.GetElapsedTime(item.StageStartedTimestamp, now);
-        if (memoryWait is not null)
-        {
-            var waitingSince = memoryWait.WaitingSinceUtc;
-            stageElapsed = waitingSince >= nowUtc ? TimeSpan.Zero : nowUtc - waitingSince;
-        }
-
         return new IndexingActivitySnapshot(item.JobId, item.ProjectId, item.DocumentId,
-            item.SourcePath, stage, Stopwatch.GetElapsedTime(item.StartedTimestamp, now),
+            item.SourcePath, item.Stage, Stopwatch.GetElapsedTime(item.StartedTimestamp, now),
             stageElapsed, item.StartedUtc)
         {
-            Attempt = item.Attempt,
-            MemoryWait = memoryWait
+            Attempt = item.Attempt
         };
     }
 

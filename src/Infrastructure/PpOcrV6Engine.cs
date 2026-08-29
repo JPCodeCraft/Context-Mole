@@ -26,7 +26,6 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
 {
     private const string ArenaShrinkageConfigKey = "memory.enable_memory_arena_shrinkage";
     private const string CpuArenaShrinkageConfigValue = "cpu:0";
-    public const long OcrMemoryTargetBytes = MemoryReservationTargets.OcrInferenceBytes;
     internal static readonly TimeSpan DefaultSessionIdleTimeout = TimeSpan.FromMinutes(5);
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -54,7 +53,6 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
     private readonly IAppPaths _paths;
     private readonly ICpuUsageSettings _cpuUsageSettings;
     private readonly IGlobalCpuBudget _cpuBudget;
-    private readonly IMemoryAdmissionController _memoryAdmission;
     private readonly IDisposable? _ownedCpuBudget;
     private readonly HttpClient _client;
     private readonly SemaphoreSlim _installGate = new(1, 1);
@@ -88,17 +86,7 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
     public PpOcrV6Engine(
         IAppPaths paths,
         ICpuUsageSettings cpuUsageSettings,
-        IGlobalCpuBudget cpuBudget) : this(paths, cpuUsageSettings, cpuBudget,
-        UnboundedMemoryAdmissionController.Instance, DefaultSessionIdleTimeout)
-    {
-    }
-
-    public PpOcrV6Engine(
-        IAppPaths paths,
-        ICpuUsageSettings cpuUsageSettings,
-        IGlobalCpuBudget cpuBudget,
-        IMemoryAdmissionController memoryAdmission) : this(paths, cpuUsageSettings, cpuBudget,
-        memoryAdmission, DefaultSessionIdleTimeout)
+        IGlobalCpuBudget cpuBudget) : this(paths, cpuUsageSettings, cpuBudget, DefaultSessionIdleTimeout)
     {
     }
 
@@ -106,16 +94,6 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
         IAppPaths paths,
         ICpuUsageSettings cpuUsageSettings,
         IGlobalCpuBudget cpuBudget,
-        TimeSpan sessionIdleTimeout) : this(paths, cpuUsageSettings, cpuBudget,
-        UnboundedMemoryAdmissionController.Instance, sessionIdleTimeout)
-    {
-    }
-
-    internal PpOcrV6Engine(
-        IAppPaths paths,
-        ICpuUsageSettings cpuUsageSettings,
-        IGlobalCpuBudget cpuBudget,
-        IMemoryAdmissionController memoryAdmission,
         TimeSpan sessionIdleTimeout)
     {
         if (sessionIdleTimeout <= TimeSpan.Zero || sessionIdleTimeout == Timeout.InfiniteTimeSpan)
@@ -123,7 +101,6 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
         _paths = paths;
         _cpuUsageSettings = cpuUsageSettings;
         _cpuBudget = cpuBudget;
-        _memoryAdmission = memoryAdmission ?? throw new ArgumentNullException(nameof(memoryAdmission));
         _sessionIdleTimeout = sessionIdleTimeout;
         _client = new HttpClient { Timeout = TimeSpan.FromHours(2) };
         _client.DefaultRequestHeaders.UserAgent.ParseAdd("ContextMole/1.0");
@@ -205,10 +182,6 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
         using var operation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _lifetime.Token);
         var operationToken = operation.Token;
         await PrepareAssetsAsync(operationToken).ConfigureAwait(false);
-        using var memory = await _memoryAdmission.AcquireAsync(
-            new MemoryWorkEstimate(OcrMemoryTargetBytes, "ocr-inference"),
-            operationToken).ConfigureAwait(false);
-        using var memoryActivation = memory.Activate();
         await EnsureSessionsAvailableAsync(operationToken).ConfigureAwait(false);
     }
 
@@ -250,16 +223,9 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
         try
         {
             await PrepareAssetsAsync(operationToken).ConfigureAwait(false);
-            // Take full CPU capacity first. An indexing worker lease is suspended while this
-            // waits, so every parser that reaches OCR can yield its worker before the selected
-            // parser asks to enlarge its memory reservation. This preserves one global resource
-            // order and prevents several OCR-capable parsers from holding CPU while waiting on
-            // one another's nested memory.
+            // Suspend the indexing worker lease and wait for full profile capacity so OCR uses
+            // every CPU thread allowed by the current profile without competing with parsers.
             using var cpuCapacity = await _cpuBudget.AcquireFullCapacityAsync(operationToken).ConfigureAwait(false);
-            using var memory = await _memoryAdmission.AcquireAsync(
-                new MemoryWorkEstimate(OcrMemoryTargetBytes, "ocr-inference"),
-                operationToken).ConfigureAwait(false);
-            using var memoryActivation = memory.Activate();
             await EnsureSessionsAvailableAsync(operationToken).ConfigureAwait(false);
             await _inferenceGate.WaitAsync(operationToken).ConfigureAwait(false);
             inferenceGateHeld = true;
@@ -1014,30 +980,6 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
     {
         var settings = new CpuUsageSettings(paths);
         return new StandaloneCpuDependencies(settings, new GlobalCpuBudget(settings));
-    }
-
-    private sealed class UnboundedMemoryAdmissionController : IMemoryAdmissionController
-    {
-        public static UnboundedMemoryAdmissionController Instance { get; } = new();
-
-        public ValueTask<IMemoryLease> AcquireAsync(MemoryWorkEstimate estimate,
-            CancellationToken cancellationToken = default)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            return ValueTask.FromResult<IMemoryLease>(new UnboundedMemoryLease(estimate.EstimatedBytes));
-        }
-    }
-
-    private sealed class UnboundedMemoryLease(long reservedBytes) : IMemoryLease
-    {
-        public long ReservedBytes { get; } = reservedBytes;
-        public bool IsExclusive => false;
-        public SystemMemorySnapshot AdmissionSnapshot => default;
-        public long ProcessSoftLimitBytes => long.MaxValue;
-        public long SystemReserveBytes => 0;
-        public void Dispose()
-        {
-        }
     }
 
     private sealed record DownloadAsset(string Name, string Url, string Target, string Sha256);

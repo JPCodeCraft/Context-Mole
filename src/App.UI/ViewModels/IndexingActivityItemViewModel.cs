@@ -1,4 +1,3 @@
-using ContextMole.Core;
 using ContextMole.Indexing;
 
 namespace ContextMole.App.UI.ViewModels;
@@ -54,9 +53,7 @@ public sealed class IndexingActivityItemViewModel : ViewModelBase
     private static string StageName(IndexingActivitySnapshot activity) => activity.Stage switch
     {
         IndexingPipelineStage.InspectingSource => "Checking file availability",
-        IndexingPipelineStage.QueuedForAdmission => QueueDescription(activity.MemoryWait),
-        IndexingPipelineStage.WaitingForMemory => MemoryWaitDescription(activity.MemoryWait),
-        IndexingPipelineStage.WaitingForCpu => "Memory reserved · waiting for processor capacity",
+        IndexingPipelineStage.WaitingForCpu => "Waiting for processor capacity",
         IndexingPipelineStage.Hashing => "Calculating fingerprint",
         IndexingPipelineStage.PreparingRevision => "Preparing index revision",
         IndexingPipelineStage.ExtractingContent => "Extracting content, attachments, or OCR",
@@ -68,48 +65,10 @@ public sealed class IndexingActivityItemViewModel : ViewModelBase
         _ => activity.Stage.ToString()
     };
 
-    private static string QueueDescription(MemoryAdmissionWaitSnapshot? wait)
-    {
-        if (wait is null) return "Queued for resource admission";
-        var estimate = FormatBytes(wait.RequestedBytes);
-        return wait.Reason switch
-        {
-            MemoryAdmissionWaitReason.NestedSerialization =>
-                $"Queued while another file uses OCR · position {wait.QueuePosition} · estimated {estimate}",
-            MemoryAdmissionWaitReason.Exclusive =>
-                $"Queued while another file runs exclusively · position {wait.QueuePosition} · estimated {estimate}",
-            _ => $"Queued for admission · position {wait.QueuePosition} · estimated {estimate}"
-        };
-    }
-
-    private static string MemoryWaitDescription(MemoryAdmissionWaitSnapshot? wait)
-    {
-        if (wait is null) return "Waiting for available memory";
-        if (wait.Reason == MemoryAdmissionWaitReason.ProcessSoftLimit)
-        {
-            return $"Would exceed Context Mole’s {FormatBytes(wait.ProcessSoftLimitBytes)} memory target · " +
-                   $"currently {FormatBytes(wait.ProcessPrivateBytes)} in use · estimated {FormatBytes(wait.RequestedBytes)}";
-        }
-
-        return $"Needs {FormatBytes(wait.RequiredAvailableBytes)} available · " +
-               $"{FormatBytes(wait.AvailablePhysicalBytes)} available · keeping {FormatBytes(wait.RequiredReserveBytes)} free";
-    }
-
-    private static string FormatBytes(long bytes)
-    {
-        const double mebibyte = 1024d * 1024d;
-        const double gibibyte = 1024d * mebibyte;
-        return bytes >= gibibyte
-            ? $"{bytes / gibibyte:0.00} GiB"
-            : $"{Math.Max(0, bytes) / mebibyte:0} MiB";
-    }
-
     private static double StagePosition(IndexingPipelineStage stage) => stage switch
     {
         IndexingPipelineStage.InspectingSource => 5,
-        IndexingPipelineStage.QueuedForAdmission => 8,
-        IndexingPipelineStage.WaitingForMemory => 10,
-        IndexingPipelineStage.WaitingForCpu => 12,
+        IndexingPipelineStage.WaitingForCpu => 10,
         IndexingPipelineStage.Hashing => 15,
         IndexingPipelineStage.PreparingRevision => 25,
         IndexingPipelineStage.ExtractingContent => 45,

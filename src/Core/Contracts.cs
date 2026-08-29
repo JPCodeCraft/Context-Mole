@@ -103,7 +103,8 @@ public interface IIndexWriter
     Task RequestReindexAsync(Guid projectId, CancellationToken cancellationToken = default);
     Task RequestEmbeddingRefreshAsync(Guid projectId, EmbeddingPolicy targetPolicy, bool retryFailed,
         CancellationToken cancellationToken = default);
-    Task<int> RetryFailedFilesAsync(Guid projectId, CancellationToken cancellationToken = default);
+    Task<RetryFailedFilesResult> RetryFailedFilesAsync(Guid projectId,
+        CancellationToken cancellationToken = default);
     Task RemoveProjectAsync(Guid projectId, CancellationToken cancellationToken = default);
     Task<ObservationResult> ObserveFileAsync(FileObservation observation, CancellationToken cancellationToken = default);
     Task HandleRenamedAsync(Guid projectId, Guid folderId, string oldPath, string newPath, CancellationToken cancellationToken = default);

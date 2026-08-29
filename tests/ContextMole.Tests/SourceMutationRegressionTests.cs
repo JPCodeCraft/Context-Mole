@@ -284,7 +284,8 @@ public sealed class SourceMutationRegressionTests
             CancellationToken cancellationToken = default) =>
             _inner.RequestEmbeddingRefreshAsync(projectId, targetPolicy, retryFailed, cancellationToken);
 
-        public Task<int> RetryFailedFilesAsync(Guid projectId, CancellationToken cancellationToken = default) =>
+        public Task<RetryFailedFilesResult> RetryFailedFilesAsync(Guid projectId,
+            CancellationToken cancellationToken = default) =>
             _inner.RetryFailedFilesAsync(projectId, cancellationToken);
 
         public Task RemoveProjectAsync(Guid projectId, CancellationToken cancellationToken = default) =>

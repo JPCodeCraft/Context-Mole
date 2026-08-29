@@ -596,6 +596,29 @@ public sealed class BrokerProtocolTests
     }
 
     [Fact]
+    public async Task MemoryPressureStillClearsTheDisposableVectorCache()
+    {
+        using var paths = new StorageTestPaths();
+        var cpuSettings = new SignalingCpuUsageSettings();
+        using var cpuBudget = new GlobalCpuBudget(cpuSettings);
+        var runtime = new TestBrokerSearchRuntime(blockDisposal: false);
+        runtime.SeedCache();
+        await using var manager = new BrokerSearchRuntimeManager(paths, cpuSettings,
+            new FixedEmbeddingModelSettings(), cpuBudget, null!,
+            new FixedMemorySnapshots(new SystemMemorySnapshot(
+                16L * 1024 * 1024 * 1024, 1L * 1024 * 1024 * 1024, 512L * 1024 * 1024)),
+            TimeProvider.System, () => runtime);
+
+        Assert.True(await manager.CountTokensAsync("load runtime", TestContext.Current.CancellationToken) > 0);
+        Assert.True(runtime.Cache.CurrentBytes > 0);
+
+        Assert.True(await manager.ClearVectorCacheUnderPressureAsync(
+            TestContext.Current.CancellationToken));
+        Assert.Equal(0, runtime.Cache.CurrentBytes);
+        Assert.Equal(0, runtime.Cache.Count);
+    }
+
+    [Fact]
     public async Task LocalEmbeddingMetadataReloadDoesNotResolveOrWakeBroker()
     {
         using var paths = new StorageTestPaths();
@@ -651,6 +674,50 @@ public sealed class BrokerProtocolTests
     }
 
     [Fact]
+    public void RepositoryBrokerBuildIsStagedAsImmutableContentSnapshot()
+    {
+        using var paths = new StorageTestPaths();
+        var repository = Path.Combine(paths.RootDirectory, "repository");
+        var brokerOutput = Path.Combine(repository, "src", "Broker", "bin", "Debug", "net10.0");
+        Directory.CreateDirectory(brokerOutput);
+        File.WriteAllText(Path.Combine(repository, "ContextMole.slnx"), "<Solution />");
+        var executableName = OperatingSystem.IsWindows() ? "ContextMole.Broker.exe" : "ContextMole.Broker";
+        var executable = Path.Combine(brokerOutput, executableName);
+        var dependency = Path.Combine(brokerOutput, "ContextMole.Core.dll");
+        File.WriteAllText(executable, "test broker apphost");
+        File.WriteAllText(dependency, "dependency revision one");
+        File.WriteAllText(Path.Combine(brokerOutput, "ContextMole.Core.pdb"), "debug symbols");
+        var incompatibleRid = OperatingSystem.IsWindows() ? "linux-x64" : "win-x64";
+        var incompatibleNativeDirectory = Path.Combine(brokerOutput, "runtimes", incompatibleRid, "native");
+        Directory.CreateDirectory(incompatibleNativeDirectory);
+        File.WriteAllText(Path.Combine(incompatibleNativeDirectory, "foreign-native-library"), "incompatible");
+        var endpoint = new BrokerEndpoint(paths.DataDirectory);
+        var sourceCommand = new BrokerLaunchCommand(executable, []);
+
+        var first = BrokerDevelopmentDeployment.StageIfRepositoryBuild(endpoint, sourceCommand);
+
+        Assert.NotEqual(Path.GetFullPath(executable), first.FileName);
+        AssertPathIsWithin(endpoint.BrokerDirectory, first.FileName);
+        var firstDirectory = Path.GetDirectoryName(first.FileName)!;
+        Assert.Equal("test broker apphost", File.ReadAllText(first.FileName));
+        Assert.Equal("dependency revision one", File.ReadAllText(Path.Combine(firstDirectory,
+            "ContextMole.Core.dll")));
+        Assert.False(File.Exists(Path.Combine(firstDirectory, "ContextMole.Core.pdb")));
+        Assert.False(Directory.Exists(Path.Combine(firstDirectory, "runtimes", incompatibleRid)));
+
+        File.WriteAllText(dependency, "dependency revision two");
+        var second = BrokerDevelopmentDeployment.StageIfRepositoryBuild(endpoint, sourceCommand);
+        var secondAgain = BrokerDevelopmentDeployment.StageIfRepositoryBuild(endpoint, sourceCommand);
+
+        Assert.NotEqual(first.FileName, second.FileName);
+        Assert.Equal(second.FileName, secondAgain.FileName);
+        Assert.Equal("dependency revision one", File.ReadAllText(Path.Combine(firstDirectory,
+            "ContextMole.Core.dll")));
+        Assert.Equal("dependency revision two", File.ReadAllText(Path.Combine(
+            Path.GetDirectoryName(second.FileName)!, "ContextMole.Core.dll")));
+    }
+
+    [Fact]
     public void DevelopmentRidOutputNeverSelectsACompetingBrokerRid()
     {
         using var paths = new StorageTestPaths();
@@ -685,8 +752,12 @@ public sealed class BrokerProtocolTests
         try
         {
             using var processLease = ContextMoleProcessCoordination.AcquireLease(paths.DataDirectory, "broker-test");
+            var sourceCommand = ResolveRepositoryBrokerLaunchCommand();
+            Assert.Contains($"{Path.DirectorySeparatorChar}src{Path.DirectorySeparatorChar}Broker" +
+                            $"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}",
+                sourceCommand.FileName, StringComparison.OrdinalIgnoreCase);
             var clients = Enumerable.Range(0, 2)
-                .Select(_ => new BrokerRpcClient(paths.DataDirectory, static () => BrokerLaunchCommand.Resolve()))
+                .Select(_ => new BrokerRpcClient(paths.DataDirectory, sourceCommand))
                 .ToArray();
             var launched = await clients[0].GetHealthAsync(TestContext.Current.CancellationToken);
             var health = await Task.WhenAll(clients.Select(client =>
@@ -696,6 +767,20 @@ public sealed class BrokerProtocolTests
             Assert.Equal(launched.ProcessId, brokerProcessId);
             Assert.NotEqual(Environment.ProcessId, brokerProcessId);
             Assert.All(health, item => Assert.Equal(launched.StartedUtc, item.StartedUtc));
+            var endpoint = new BrokerEndpoint(paths.DataDirectory);
+            var executableName = Path.GetFileName(sourceCommand.FileName);
+            var stagedExecutable = Assert.Single(Directory.EnumerateFiles(
+                Path.Combine(endpoint.BrokerDirectory, "deployments"), executableName,
+                SearchOption.AllDirectories));
+            Assert.NotEqual(Path.GetFullPath(sourceCommand.FileName), Path.GetFullPath(stagedExecutable));
+            if (OperatingSystem.IsWindows())
+            {
+                var mutableDependency = Path.Combine(Path.GetDirectoryName(sourceCommand.FileName)!,
+                    "ContextMole.Core.dll");
+                Assert.True(File.Exists(mutableDependency));
+                using var exclusive = new FileStream(mutableDependency, FileMode.Open, FileAccess.ReadWrite,
+                    FileShare.None);
+            }
             var tools = new BrokerMcpTools(clients[0], NullLogger<BrokerMcpTools>.Instance);
             var unavailable = Assert.IsType<ErrorEnvelope>(await tools.ListProjects(
                 TestContext.Current.CancellationToken));
@@ -712,6 +797,31 @@ public sealed class BrokerProtocolTests
                 await StopOwnedTestProcessAsync(processId);
             paths.Dispose();
         }
+    }
+
+    private static void AssertPathIsWithin(string root, string candidate)
+    {
+        var relative = Path.GetRelativePath(Path.GetFullPath(root), Path.GetFullPath(candidate));
+        Assert.False(Path.IsPathRooted(relative));
+        Assert.NotEqual("..", relative);
+        Assert.False(relative.StartsWith($"..{Path.DirectorySeparatorChar}", StringComparison.Ordinal));
+        Assert.False(relative.StartsWith($"..{Path.AltDirectorySeparatorChar}", StringComparison.Ordinal));
+    }
+
+    private static BrokerLaunchCommand ResolveRepositoryBrokerLaunchCommand()
+    {
+        DirectoryInfo? repository = new(AppContext.BaseDirectory);
+        while (repository is not null && !File.Exists(Path.Combine(repository.FullName, "ContextMole.slnx")))
+            repository = repository.Parent;
+        Assert.NotNull(repository);
+
+        DirectoryInfo? testOutput = new(AppContext.BaseDirectory);
+        while (testOutput is not null && !testOutput.Name.Equals("bin", StringComparison.OrdinalIgnoreCase))
+            testOutput = testOutput.Parent;
+        Assert.NotNull(testOutput);
+        var buildCoordinates = Path.GetRelativePath(testOutput.FullName, AppContext.BaseDirectory);
+        var brokerOutput = Path.Combine(repository.FullName, "src", "Broker", "bin", buildCoordinates);
+        return BrokerLaunchCommand.ResolveFromDirectory(brokerOutput);
     }
 
     private sealed class ManualTimeProvider(DateTimeOffset utcNow) : TimeProvider
@@ -807,6 +917,16 @@ public sealed class BrokerProtocolTests
         public VectorIndexCache Cache { get; } = new(1024);
         public Task DisposalStarted => _disposalStarted.Task;
 
+        public void SeedCache()
+        {
+            var policy = new EmbeddingPolicy("test", "1", "model", "tokenizer", "fp32",
+                384, 384, "cls", "l2");
+            var entry = new VectorEntry(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), "cached.txt", ".txt",
+                DateTimeOffset.UnixEpoch, false, new float[16]);
+            Cache.GetOrCreate(Guid.NewGuid(), new VectorSnapshot(1, policy, [entry]),
+                new FlatVectorIndexFactory());
+        }
+
         public void AllowDisposal() => _disposalAllowed.TrySetResult(true);
 
         public async ValueTask DisposeAsync()
@@ -824,6 +944,12 @@ public sealed class BrokerProtocolTests
         public event EventHandler? Changed { add { } remove { } }
         public void SetModel(EmbeddingModelChoice model) => throw new NotSupportedException();
         public bool RefreshFromDisk() => false;
+    }
+
+    private sealed class FixedMemorySnapshots(SystemMemorySnapshot snapshot)
+        : ISystemMemorySnapshotProvider
+    {
+        public SystemMemorySnapshot Capture() => snapshot;
     }
 
     private static async Task WaitForProcessExitAsync(int processId, CancellationToken cancellationToken)

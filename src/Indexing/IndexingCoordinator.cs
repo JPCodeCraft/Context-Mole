@@ -20,8 +20,7 @@ public sealed class IndexingCoordinator(
     IndexingActivityTracker activities,
     EmbeddingPolicyRefreshTracker policyRefreshes,
     IGlobalCpuBudget cpuBudget,
-    ILogger<IndexingCoordinator> logger,
-    IMemoryAdmissionController memoryAdmission) : BackgroundService, IProjectIndexingControl
+    ILogger<IndexingCoordinator> logger) : BackgroundService, IProjectIndexingControl
 {
     private static readonly TimeSpan ReconciliationInterval = TimeSpan.FromMinutes(15);
     private static readonly TimeSpan DebounceInterval = TimeSpan.FromSeconds(1);
@@ -37,7 +36,6 @@ public sealed class IndexingCoordinator(
     private readonly IndexingActivityTracker _activities = activities;
     private readonly EmbeddingPolicyRefreshTracker _policyRefreshes = policyRefreshes;
     private readonly IGlobalCpuBudget _cpuBudget = cpuBudget;
-    private readonly IMemoryAdmissionController _memoryAdmission = memoryAdmission;
     private readonly ILogger<IndexingCoordinator> _logger = logger;
     private readonly Channel<WatchChange> _watchChanges = Channel.CreateUnbounded<WatchChange>(
         new UnboundedChannelOptions { SingleReader = true, SingleWriter = false });
@@ -49,21 +47,6 @@ public sealed class IndexingCoordinator(
     private readonly Dictionary<Guid, ProjectPauseGate> _projectPauseGates = [];
     private readonly HashSet<LeaseClaim> _leaseClaims = [];
     private bool _stopping;
-
-    public IndexingCoordinator(
-        IIndexWriter writer,
-        ISearchStore searchStore,
-        IAppPaths paths,
-        IDocumentExtractor extractor,
-        IEmbeddingGenerator embeddings,
-        IndexingActivityTracker activities,
-        EmbeddingPolicyRefreshTracker policyRefreshes,
-        IGlobalCpuBudget cpuBudget,
-        ILogger<IndexingCoordinator> logger)
-        : this(writer, searchStore, paths, extractor, embeddings, activities, policyRefreshes, cpuBudget, logger,
-            UnboundedMemoryAdmissionController.Instance)
-    {
-    }
 
     public void BeginPause(Guid projectId)
     {
@@ -570,7 +553,6 @@ public sealed class IndexingCoordinator(
                 using (var activity = _activities.Start(job))
                 {
                     var jobCancellationToken = operation.CancellationToken;
-                    IMemoryLease? memory = null;
                     ICpuWorkerLease? capacity = null;
                     try
                     {
@@ -586,11 +568,8 @@ public sealed class IndexingCoordinator(
                             }
                         }
 
-                        memory = await AcquireMemoryAsync(job, source?.Length ?? TryGetSourceLength(job.SourcePath),
-                            activity, jobCancellationToken).ConfigureAwait(false);
                         activity.SetStage(IndexingPipelineStage.WaitingForCpu);
                         capacity = await _cpuBudget.AcquireWorkerAsync(jobCancellationToken).ConfigureAwait(false);
-                        using (memory.Activate())
                         using (capacity.Activate())
                         {
                             var indexed = await ProcessJobAsync(job, source, activity, jobCancellationToken)
@@ -610,8 +589,6 @@ public sealed class IndexingCoordinator(
 
                         capacity?.Dispose();
                         capacity = null;
-                        memory?.Dispose();
-                        memory = null;
                         activity.Complete(false);
                         try
                         {
@@ -650,7 +627,6 @@ public sealed class IndexingCoordinator(
                     finally
                     {
                         capacity?.Dispose();
-                        memory?.Dispose();
                     }
                 }
 
@@ -807,38 +783,6 @@ public sealed class IndexingCoordinator(
         return await _writer.CommitRevisionAsync(new IndexCommitRequest(job.JobId, job.ProjectId, job.DocumentId, begin.RevisionId.Value,
             job.ExpectedObservationEpoch, sha256, initialLength, initialModified, contentNodes, passages,
             vectors.Count == passageSeeds.Count ? embeddingPolicy : null, indexingErrors), cancellationToken).ConfigureAwait(false);
-    }
-
-    private async ValueTask<IMemoryLease> AcquireMemoryAsync(IndexJobLease job, long sourceBytes,
-        IndexingActivityHandle activity, CancellationToken cancellationToken)
-    {
-        var estimate = IndexingMemoryEstimator.Estimate(job, sourceBytes) with { CorrelationId = job.JobId };
-        activity.SetStage(IndexingPipelineStage.QueuedForAdmission);
-        var started = Stopwatch.GetTimestamp();
-        var lease = await _memoryAdmission.AcquireAsync(estimate, cancellationToken).ConfigureAwait(false);
-        var waited = Stopwatch.GetElapsedTime(started);
-        _logger.LogInformation(
-            "Memory admitted for {Workload}: reservation {ReservationBytes}, exclusive {Exclusive}, " +
-            "private {PrivateBytes}, available {AvailableBytes}, process target {ProcessLimitBytes}, " +
-            "system reserve {SystemReserveBytes}, waited {WaitMilliseconds} ms",
-            estimate.Workload, lease.ReservedBytes, lease.IsExclusive,
-            lease.AdmissionSnapshot.ProcessPrivateBytes, lease.AdmissionSnapshot.AvailablePhysicalBytes,
-            lease.ProcessSoftLimitBytes, lease.SystemReserveBytes, waited.TotalMilliseconds);
-        return lease;
-    }
-
-    private static long TryGetSourceLength(string path)
-    {
-        try
-        {
-            var info = new FileInfo(path);
-            return info.Exists ? info.Length : 0;
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or
-                                          ArgumentException or NotSupportedException)
-        {
-            return 0;
-        }
     }
 
     private async Task RequeueChangedSourceAsync(IndexJobLease job, CancellationToken cancellationToken)
@@ -1353,7 +1297,8 @@ public sealed class IndexingCoordinator(
     };
 
     private static bool IsTemporary(Exception exception) => exception is IOException or UnauthorizedAccessException ||
-        exception is ContextMoleException { Retryable: true };
+        exception is ContextMoleException { Retryable: true } ||
+        exception is ContextMoleException { Code: "application_shutting_down" };
     private static StringComparer PathComparer() => OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
         ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
     private static StringComparison PathComparison() => OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
@@ -1504,27 +1449,4 @@ public sealed class IndexingCoordinator(
         }
     }
 
-    private sealed class UnboundedMemoryAdmissionController : IMemoryAdmissionController
-    {
-        public static UnboundedMemoryAdmissionController Instance { get; } = new();
-
-        public ValueTask<IMemoryLease> AcquireAsync(MemoryWorkEstimate estimate,
-            CancellationToken cancellationToken = default)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            return ValueTask.FromResult<IMemoryLease>(new Lease(estimate.EstimatedBytes));
-        }
-
-        private sealed class Lease(long reservedBytes) : IMemoryLease
-        {
-            public long ReservedBytes { get; } = reservedBytes;
-            public bool IsExclusive => false;
-            public SystemMemorySnapshot AdmissionSnapshot => default;
-            public long ProcessSoftLimitBytes => long.MaxValue;
-            public long SystemReserveBytes => 0;
-            public void Dispose()
-            {
-            }
-        }
-    }
 }
