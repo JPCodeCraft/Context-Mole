@@ -236,7 +236,7 @@ public sealed class CoreAndInfrastructureTests
         Assert.Equal(4, detector.IntraOpNumThreads);
 
         Assert.True(recognizer.EnableCpuMemArena);
-        Assert.True(recognizer.EnableMemoryPattern);
+        Assert.False(recognizer.EnableMemoryPattern);
         Assert.Equal(4, recognizer.IntraOpNumThreads);
         Assert.Equal(TimeSpan.FromMinutes(5), PpOcrV6Engine.DefaultSessionIdleTimeout);
     }

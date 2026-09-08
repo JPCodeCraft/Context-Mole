@@ -97,6 +97,8 @@ public sealed class HybridSearchService(
                         if (!vectorMetadata.RequiresStreaming)
                             vectorIndex = await GetVectorIndexAsync(request.ProjectId, vectorMetadata,
                                 cancellationToken).ConfigureAwait(false);
+                        else
+                            _cache.Invalidate(request.ProjectId);
                         semanticCompleted = true;
                     }
                 }
@@ -723,13 +725,28 @@ public sealed class VectorIndexCache
         return false;
     }
 
+    public void Invalidate(Guid projectId)
+    {
+        lock (_gate)
+        {
+            foreach (var key in _entries.Keys.Where(key => key.ProjectId == projectId).ToArray())
+            {
+                _bytes -= _entries[key].Bytes;
+                _entries.Remove(key);
+            }
+        }
+    }
+
     public IVectorIndex GetOrCreate(Guid projectId, VectorSnapshot snapshot, IVectorIndexFactory factory)
     {
         var policy = snapshot.Policy?.Key ?? string.Empty;
         var key = (projectId, snapshot.SearchGeneration, policy);
         var bytes = EstimateBytes(snapshot, _byteBudget);
         if (bytes > _byteBudget)
+        {
+            Invalidate(projectId);
             return factory.Create(snapshot);
+        }
 
         lock (_gate)
         {

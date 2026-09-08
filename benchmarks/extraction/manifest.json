@@ -1,0 +1,60 @@
+{
+  "fixtures": [
+    {
+      "id": "native-pdf-two-columns",
+      "file": "reading-order.pdf",
+      "requiresOcr": false,
+      "minimumSections": 1,
+      "minimumCharacters": 1000,
+      "expectedText": ["Application for this and that", "Header One", "Another list", "Pellentesque sapien lacus"],
+      "sha256": "9a3a38c444fa165d2b33af41fb2c90502c52def5c560f5d543afe01d937d6e80",
+      "source": "https://www.w3.org/WAI/WCAG21/working-examples/pdf-reading-order/reading-order-2cols-word.pdf",
+      "license": "W3C-20230101"
+    },
+    {
+      "id": "native-docx-two-columns",
+      "file": "reading-order.docx",
+      "requiresOcr": false,
+      "minimumSections": 4,
+      "minimumCharacters": 1000,
+      "expectedText": ["Application for this and that", "Header One", "Another list", "Pellentesque sapien lacus"],
+      "sha256": "45a38ce2ec2965d8b2a7837d9addfb8b3b3ebb61fec73d629224c317b3dfdb83",
+      "source": "https://www.w3.org/WAI/WCAG21/working-examples/pdf-reading-order/reading-order-2cols-word.docx",
+      "license": "W3C-20230101"
+    },
+    {
+      "id": "ocr-pdf-illustrated-book",
+      "file": "huckleberry-finn-scan.pdf",
+      "requiresOcr": true,
+      "minimumSections": 1,
+      "minimumCharacters": 1400,
+      "expectedText": ["Miss Watson", "spiritual gifts", "hooks"],
+      "sha256": "c2ff83af7d028c95209cc7eebdf80fd5bb4cd292973ed6601e4bab7d1929f201",
+      "source": "https://raw.githubusercontent.com/ocrmypdf/OCRmyPDF/196072acef056aa11b63e60564d98762bd38f638/tests/resources/c03-29.pdf",
+      "license": "public-domain"
+    },
+    {
+      "id": "ocr-image-illustrated-book",
+      "file": "huckleberry-finn-scan.jpg",
+      "requiresOcr": true,
+      "minimumSections": 1,
+      "minimumCharacters": 1400,
+      "expectedText": ["Miss Watson", "spiritual gifts", "hooks"],
+      "sha256": "eb2ebbbf62db484299ace0209b31485128cf1e596ed7a830a281c1e37d5af15d",
+      "source": "https://raw.githubusercontent.com/ocrmypdf/OCRmyPDF/196072acef056aa11b63e60564d98762bd38f638/tests/resources/c03-29.pdf",
+      "license": "public-domain"
+    },
+    {
+      "id": "ocr-tiff-european-languages",
+      "file": "eurotext.tif",
+      "requiresOcr": true,
+      "minimumSections": 1,
+      "minimumCharacters": 350,
+      "expectedText": ["is spam", "braune Fuchs springt", "Le renard brun", "salta sobre el perro", "A raposa marrom rápida", "cão preguiçoso"],
+      "sha256": "7b9bd14aba7d5e30df686fbb6f71782a97f48f81b32dc201a1b75afe6de747d6",
+      "source": "https://raw.githubusercontent.com/tesseract-ocr/test/232ff181c66516116ec0e84c4963f70de15050fd/testing/eurotext.tif",
+      "groundTruth": "eurotext.txt",
+      "license": "Apache-2.0"
+    }
+  ]
+}

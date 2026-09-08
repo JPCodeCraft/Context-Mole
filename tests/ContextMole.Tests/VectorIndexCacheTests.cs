@@ -94,6 +94,42 @@ public sealed class VectorIndexCacheTests
     }
 
     [Fact]
+    public void GrowingBeyondBudgetReleasesThePreviousCachedGeneration()
+    {
+        var snapshot = Snapshot(1, "large.txt");
+        var cache = new VectorIndexCache(EstimateEntryBytes(snapshot.Entries[0]));
+        var projectId = Guid.NewGuid();
+        var factory = new RecordingFactory();
+        cache.GetOrCreate(projectId, snapshot, factory);
+        var larger = snapshot with { SearchGeneration = 2, Entries = [snapshot.Entries[0], snapshot.Entries[0]] };
+
+        cache.GetOrCreate(projectId, larger, factory);
+
+        Assert.Equal(0, cache.Count);
+        Assert.Equal(0, cache.CurrentBytes);
+        Assert.False(cache.TryGet(projectId, snapshot.SearchGeneration, Policy.Key, out _));
+    }
+
+    [Fact]
+    public void InvalidatingAProjectReleasesOnlyItsVectors()
+    {
+        var snapshot = Snapshot(1, "first.txt");
+        var cache = new VectorIndexCache();
+        var projectId = Guid.NewGuid();
+        var otherProjectId = Guid.NewGuid();
+        var factory = new RecordingFactory();
+        cache.GetOrCreate(projectId, snapshot, factory);
+        cache.GetOrCreate(otherProjectId, snapshot, factory);
+
+        cache.Invalidate(projectId);
+
+        Assert.Equal(1, cache.Count);
+        Assert.Equal(EstimateEntryBytes(snapshot.Entries[0]), cache.CurrentBytes);
+        Assert.False(cache.TryGet(projectId, snapshot.SearchGeneration, Policy.Key, out _));
+        Assert.True(cache.TryGet(otherProjectId, snapshot.SearchGeneration, Policy.Key, out _));
+    }
+
+    [Fact]
     public async Task ClearAndReadsAreSafeDuringConcurrentPressure()
     {
         var snapshot = Snapshot(1, "concurrent.txt");

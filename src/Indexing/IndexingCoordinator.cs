@@ -37,8 +37,13 @@ public sealed class IndexingCoordinator(
     private readonly EmbeddingPolicyRefreshTracker _policyRefreshes = policyRefreshes;
     private readonly IGlobalCpuBudget _cpuBudget = cpuBudget;
     private readonly ILogger<IndexingCoordinator> _logger = logger;
-    private readonly Channel<WatchChange> _watchChanges = Channel.CreateUnbounded<WatchChange>(
-        new UnboundedChannelOptions { SingleReader = true, SingleWriter = false });
+    private const int MaximumBufferedChanges = 4096;
+    private readonly Channel<WatchChange> _watchChanges = Channel.CreateBounded<WatchChange>(
+        new BoundedChannelOptions(MaximumBufferedChanges)
+        {
+            SingleReader = true, SingleWriter = false, FullMode = BoundedChannelFullMode.Wait
+        });
+    private readonly ConcurrentDictionary<Guid, WatchChange> _overflowFolders = new();
     private readonly object _watchersGate = new();
     private readonly object _projectWorkGate = new();
     private readonly SemaphoreSlim _reconciliationGate = new(1, 1);
@@ -131,12 +136,26 @@ public sealed class IndexingCoordinator(
         {
             await _writer.Ready.WaitAsync(stoppingToken).ConfigureAwait(false);
             await RefreshWatchersAsync(stoppingToken, queueReconciliation: false).ConfigureAwait(false);
-            await ReconcileAllAsync(stoppingToken).ConfigureAwait(false);
-            await QueueEmbeddingPolicyRefreshAsync(stoppingToken).ConfigureAwait(false);
-
             var watcherLoop = DrainWatcherChangesAsync(stoppingToken);
-            var refreshLoop = RefreshLoopAsync(stoppingToken);
             var reconciliationLoop = ReconciliationLoopAsync(stoppingToken);
+            try
+            {
+                // Discovery can run while model metadata loads, but chunking must use the selected
+                // tokenizer from the first file whenever it is available.
+                await _embeddings.ReloadAsync(stoppingToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                // Startup may be canceled before the normal worker join is reached. Discovery
+                // still owns cleanup and storage work that must finish before this service stops.
+                await Task.WhenAll(watcherLoop, reconciliationLoop).ConfigureAwait(false);
+                throw;
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                _logger.LogWarning(exception, "Embedding metadata could not load; the periodic refresh will retry");
+            }
+            var refreshLoop = RefreshLoopAsync(stoppingToken);
             var workers = Enumerable.Range(0, _cpuBudget.MaximumWorkerCount)
                 .Select(_ => IndexWorkerLoopAsync(stoppingToken)).ToArray();
             await Task.WhenAll(workers.Prepend(watcherLoop).Append(refreshLoop).Append(reconciliationLoop)).ConfigureAwait(false);
@@ -169,7 +188,7 @@ public sealed class IndexingCoordinator(
     private async Task RefreshLoopAsync(CancellationToken cancellationToken)
     {
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(5));
-        while (await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
+        do
         {
             try
             {
@@ -180,13 +199,13 @@ public sealed class IndexingCoordinator(
             {
                 _logger.LogWarning(exception, "Periodic project refresh failed; it will be retried");
             }
-        }
+        } while (await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false));
     }
 
     private async Task ReconciliationLoopAsync(CancellationToken cancellationToken)
     {
         using var timer = new PeriodicTimer(ReconciliationInterval);
-        while (await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
+        do
         {
             try
             {
@@ -196,7 +215,7 @@ public sealed class IndexingCoordinator(
             {
                 _logger.LogWarning(exception, "Periodic folder reconciliation failed; it will be retried");
             }
-        }
+        } while (await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false));
     }
 
     private async Task RefreshWatchersAsync(CancellationToken cancellationToken, bool queueReconciliation = true)
@@ -204,6 +223,7 @@ public sealed class IndexingCoordinator(
         var projects = await _searchStore.ListProjectsAsync(cancellationToken).ConfigureAwait(false);
         var desired = projects.SelectMany(project => project.Folders.Select(folder => (project.Id, Folder: folder)))
             .ToDictionary(item => item.Folder.Id);
+        _activities.RetainFolderIssues(desired.Keys.ToHashSet());
 
         Guid[] existingIds;
         lock (_watchersGate) existingIds = _watchers.Keys.ToArray();
@@ -221,13 +241,28 @@ public sealed class IndexingCoordinator(
             {
                 lock (_watchersGate) _watchers.Remove(item.Folder.Id, out existing);
                 existing?.Dispose();
+                _activities.ClearFolderIssue(item.Id, item.Folder.Id);
+                continue;
+            }
+            // Check accessibility before accepting an existing watcher. A disconnected drive can
+            // leave the watcher object alive even though it can no longer report file changes.
+            if (!Directory.Exists(item.Folder.Path))
+            {
+                _activities.SetFolderIssue(item.Id, item.Folder.Id, item.Folder.Path,
+                    "This folder is unavailable. Reconnect its drive or restore access to the folder.");
+                lock (_watchersGate) _watchers.Remove(item.Folder.Id, out existing);
+                existing?.Dispose();
                 continue;
             }
             lock (_watchersGate)
             {
                 if (_watchers.TryGetValue(item.Folder.Id, out existing) &&
                     string.Equals(existing.Path, item.Folder.Path, PathComparison()))
+                {
+                    if (queueReconciliation && _activities.HasFolderIssue(item.Id, item.Folder.Id))
+                        Queue(item.Id, item.Folder.Id, item.Folder.Path, WatchChangeKind.Reconcile);
                     continue;
+                }
                 _watchers.Remove(item.Folder.Id);
             }
             existing?.Dispose();
@@ -254,6 +289,8 @@ public sealed class IndexingCoordinator(
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             {
                 _logger.LogWarning(exception, "Unable to watch project folder {Folder}", item.Folder.Path);
+                _activities.SetFolderIssue(item.Id, item.Folder.Id, item.Folder.Path,
+                    "Changes in this folder could not be watched. Check folder permissions and drive availability.");
             }
         }
     }
@@ -280,7 +317,9 @@ public sealed class IndexingCoordinator(
     {
         if (kind != WatchChangeKind.Reconcile && IsAppDataPath(path) &&
             (kind != WatchChangeKind.Rename || oldPath is null || IsAppDataPath(oldPath))) return;
-        _watchChanges.Writer.TryWrite(new WatchChange(projectId, folderId, path, kind, oldPath, DateTimeOffset.UtcNow));
+        var change = new WatchChange(projectId, folderId, path, kind, oldPath, DateTimeOffset.UtcNow);
+        if (!_watchChanges.Writer.TryWrite(change))
+            _overflowFolders[folderId] = change with { Kind = WatchChangeKind.Reconcile, OldPath = null };
     }
 
     private async Task DrainWatcherChangesAsync(CancellationToken cancellationToken)
@@ -289,8 +328,20 @@ public sealed class IndexingCoordinator(
         using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(250));
         while (!cancellationToken.IsCancellationRequested)
         {
-            while (_watchChanges.Reader.TryRead(out var change))
-                pending[$"{change.ProjectId:N}|{change.Path}"] = change;
+            for (var drained = 0; drained < MaximumBufferedChanges && _watchChanges.Reader.TryRead(out var change); drained++)
+            {
+                var key = $"{change.ProjectId:N}|{change.Path}";
+                // A later Changed event must not erase the old path of a Rename event.
+                if (pending.TryGetValue(key, out var prior) && prior.Kind == WatchChangeKind.Rename)
+                    _overflowFolders[prior.FolderId] = prior with { Kind = WatchChangeKind.Reconcile, OldPath = null };
+                pending[key] = change;
+                if (pending.Count >= MaximumBufferedChanges)
+                {
+                    foreach (var item in pending.Values)
+                        _overflowFolders[item.FolderId] = item with { Kind = WatchChangeKind.Reconcile, OldPath = null };
+                    pending.Clear();
+                }
+            }
 
             var now = DateTimeOffset.UtcNow;
             foreach (var pair in pending.Where(pair => now - pair.Value.ObservedUtc >= DebounceInterval).ToArray())
@@ -303,6 +354,21 @@ public sealed class IndexingCoordinator(
                 catch (Exception exception) when (exception is not OperationCanceledException)
                 {
                     _logger.LogWarning(exception, "Unable to apply filesystem event for {Path}", pair.Value.Path);
+                    _overflowFolders[pair.Value.FolderId] = pair.Value with { Kind = WatchChangeKind.Reconcile, OldPath = null };
+                }
+            }
+
+            foreach (var folderId in _overflowFolders.Keys)
+            {
+                if (!_overflowFolders.TryRemove(folderId, out var change)) continue;
+                try
+                {
+                    await ApplyWatchChangeAsync(change, cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception exception) when (exception is not OperationCanceledException)
+                {
+                    _logger.LogWarning(exception, "Unable to reconcile buffered changes for {Path}", change.Path);
+                    // The periodic scan will retry; do not spin on a removed or inaccessible folder.
                 }
             }
 
@@ -341,6 +407,12 @@ public sealed class IndexingCoordinator(
                 if (File.Exists(change.Path) && SupportedContent.IsSupported(change.Path))
                     await ObservePathAsync(change.ProjectId, change.FolderId, change.Path, null, true,
                         cancellationToken).ConfigureAwait(false);
+                return;
+            }
+            if (Directory.Exists(change.Path))
+            {
+                await ReconcileFolderIfAvailableAsync(change.ProjectId, change.FolderId, cancellationToken)
+                    .ConfigureAwait(false);
                 return;
             }
             if (File.Exists(change.Path) && SupportedContent.IsSupported(change.Path))
@@ -389,6 +461,12 @@ public sealed class IndexingCoordinator(
             return;
         }
 
+        if (Directory.Exists(change.Path))
+        {
+            await ReconcileFolderIfAvailableAsync(change.ProjectId, change.FolderId, cancellationToken)
+                .ConfigureAwait(false);
+            return;
+        }
         if (!File.Exists(change.Path)) return;
 
         if (SupportedContent.IsSupported(change.Path))
@@ -453,11 +531,14 @@ public sealed class IndexingCoordinator(
     private async Task ReconcileFolderAsync(Guid projectId, Guid folderId, string root, CancellationToken cancellationToken)
     {
         await _reconciliationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        _activities.SetDiscovering(projectId, true);
         try
         {
             if (!Directory.Exists(root))
             {
                 _logger.LogInformation("Retaining index state because folder is unavailable: {Folder}", root);
+                _activities.SetFolderIssue(projectId, folderId, root,
+                    "This folder is unavailable. Reconnect its drive or restore access to the folder.");
                 return;
             }
 
@@ -476,17 +557,23 @@ public sealed class IndexingCoordinator(
                 if (!Directory.Exists(root))
                 {
                     _logger.LogInformation("Retaining index state because folder became unavailable: {Folder}", root);
+                    _activities.SetFolderIssue(projectId, folderId, root,
+                        "This folder became unavailable during a scan. Reconnect its drive or restore access.");
                     return;
                 }
                 await _writer.CompleteReconciliationAsync(projectId, folderId, token, cancellationToken).ConfigureAwait(false);
+                _activities.ClearFolderIssue(projectId, folderId);
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             {
                 _logger.LogWarning(exception, "Folder reconciliation was incomplete; no deletions were inferred for {Folder}", root);
+                _activities.SetFolderIssue(projectId, folderId, root,
+                    "Not all files in this folder could be checked. Check folder permissions and drive availability.");
             }
         }
         finally
         {
+            _activities.SetDiscovering(projectId, false);
             _reconciliationGate.Release();
         }
     }
@@ -499,7 +586,7 @@ public sealed class IndexingCoordinator(
         if (!info.Exists || IsFileSystemLink(info))
             return;
         await _writer.ObserveFileAsync(new FileObservation(projectId, folderId, info.FullName, info.Length,
-            new DateTimeOffset(info.LastWriteTimeUtc, TimeSpan.Zero), token, force), cancellationToken).ConfigureAwait(false);
+            new DateTimeOffset(info.LastWriteTimeUtc, TimeSpan.Zero), token, VerifyContent: force), cancellationToken).ConfigureAwait(false);
     }
 
     private async Task IndexWorkerLoopAsync(CancellationToken cancellationToken)
@@ -866,9 +953,7 @@ public sealed class IndexingCoordinator(
 
     private async Task<string?> GetFolderRootAsync(Guid projectId, Guid folderId,
         CancellationToken cancellationToken) =>
-        (await _searchStore.ListProjectsAsync(cancellationToken).ConfigureAwait(false))
-        .FirstOrDefault(project => project.Id == projectId)?.Folders
-        .FirstOrDefault(folder => folder.Id == folderId)?.Path;
+        await _searchStore.GetProjectFolderPathAsync(projectId, folderId, cancellationToken).ConfigureAwait(false);
 
     private async Task<bool> ProcessEmbeddingRefreshAsync(IndexJobLease job, IndexingActivityHandle activity,
         CancellationToken cancellationToken)

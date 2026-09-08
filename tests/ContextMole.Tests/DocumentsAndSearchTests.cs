@@ -955,7 +955,7 @@ public sealed class HybridSearchTests
         public Task<DocumentListResponse> ListDocumentsAsync(DocumentListRequest request,
             CancellationToken cancellationToken = default) => throw new NotSupportedException();
         public Task<IReadOnlyList<ProjectErrorInfo>> ListProjectErrorsAsync(Guid projectId, int limit,
-            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+            CancellationToken cancellationToken = default, int offset = 0) => throw new NotSupportedException();
         public Task<IReadOnlyList<PassageInfo>> ReadPassagesAsync(Guid projectId,
             IReadOnlyCollection<Guid> passageIds, int contextBefore, int contextAfter,
             CancellationToken cancellationToken = default) => throw new NotSupportedException();

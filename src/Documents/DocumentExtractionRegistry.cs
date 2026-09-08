@@ -37,6 +37,7 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
     private const int PdfOcrDpi = 300;
     private const int MinimumPdfOcrDpi = 72;
     private static readonly Encoding Windows1252;
+    private static readonly MarkdownPipeline PlainTextMarkdownPipeline = new MarkdownPipelineBuilder().DisableHtml().Build();
     private static readonly SemaphoreSlim PdfRenderGate = new(1, 1);
     private readonly IOcrEngine _ocrEngine = ocrEngine;
 
@@ -126,7 +127,7 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
                 ContentFormatKind.Mhtml => await MhtmlNodeAsync(bytes, name, mimeType, relationship, depth, context, cancellationToken),
                 ContentFormatKind.Msg => await MsgNodeAsync(bytes, name, mimeType, relationship, depth, context, cancellationToken),
                 ContentFormatKind.Archive => await ArchiveNodeAsync(bytes, name, mimeType, relationship, format.Extension, depth, context, cancellationToken),
-                ContentFormatKind.Image => await ImageNodeAsync(bytes, name, mimeType, relationship, format.Extension, cancellationToken),
+                ContentFormatKind.Image => await ImageNodeAsync(bytes, name, mimeType, relationship, format.Extension, context, cancellationToken),
                 _ => UnsupportedNode(name, mimeType, relationship, context,
                     SupportedContent.ExtensionForPath(name) ?? Path.GetExtension(name))
             };
@@ -151,6 +152,7 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
     {
         var sections = new List<ExtractedSection>();
         var attachments = new List<ExtractedNode>();
+        var ocrPages = new List<PdfOcrPage>();
         using var pdf = PdfDocument.Open(bytes, new ParsingOptions { SkipMissingFonts = true });
         var title = MetadataTitle(pdf.Information.Title);
         foreach (var page in pdf.GetPages())
@@ -176,46 +178,69 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
                 continue;
             }
 
-            byte[] renderedPage;
-            await PdfRenderGate.WaitAsync(cancellationToken);
+            ocrPages.Add(new PdfOcrPage(page.Number, text, renderDpi.Value));
+        }
+
+        // The lazy renderer keeps one PDFium document open for pages at the same resolution.
+        // Only one page raster is retained, and OCR still receives the original 300 DPI pixels
+        // (or the existing safety-limited DPI for unusually large pages).
+        foreach (var group in ocrPages.GroupBy(page => page.Dpi))
+        {
+            if (!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS())
+                throw new PlatformNotSupportedException("PDFium rendering is supported only on the desktop target platforms.");
+#pragma warning disable CA1416 // Guarded above; all supported desktop RIDs are supported by PDFtoImage.
+            using var input = new MemoryStream(bytes, writable: false);
+            var renderedPages = Conversion.ToImages(input, group.Select(page => page.Number - 1), leaveOpen: true,
+                password: null, options: new RenderOptions { Dpi = group.Key }).GetEnumerator();
+#pragma warning restore CA1416
             try
             {
-                if (!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS())
-                    throw new PlatformNotSupportedException("PDFium rendering is supported only on the desktop target platforms.");
-                await using var input = new MemoryStream(bytes, writable: false);
-                await using var png = new MemoryStream();
-#pragma warning disable CA1416 // Guarded above; all four supported desktop RIDs are supported by PDFtoImage.
-                Conversion.SavePng(png, input, page.Number - 1, leaveOpen: true, password: null,
-                    options: new RenderOptions { Dpi = renderDpi.Value });
-#pragma warning restore CA1416
-                renderedPage = png.ToArray();
+                foreach (var page in group)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    try
+                    {
+                        var ocr = await _ocrEngine.RecognizeAsync(async preparationToken =>
+                        {
+                            await PdfRenderGate.WaitAsync(preparationToken);
+                            try
+                            {
+                                preparationToken.ThrowIfCancellationRequested();
+                                if (!renderedPages.MoveNext()) throw new InvalidDataException("PDF rendering ended before the requested page.");
+                                using var rendered = renderedPages.Current;
+                                return RasterRequest(rendered);
+                            }
+                            finally { PdfRenderGate.Release(); }
+                        }, cancellationToken);
+                        if (!string.IsNullOrWhiteSpace(ocr.Text))
+                            sections.Add(new ExtractedSection(ocr.Text,
+                                new SourceLocation(LocationKind.Page, Page: page.Number), ExtractionMethod.Ocr, ocr.Confidence));
+                        else if (!string.IsNullOrWhiteSpace(page.Text))
+                            sections.Add(new ExtractedSection(page.Text,
+                                new SourceLocation(LocationKind.Page, Page: page.Number), ExtractionMethod.NativeText));
+                        if (ocr.TimedOut)
+                            context.Errors.Add(new ExtractionError("ocr_timeout", $"OCR timed out for PDF page {page.Number}.", true, name));
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        if (!string.IsNullOrWhiteSpace(page.Text))
+                            sections.Add(new ExtractedSection(page.Text,
+                                new SourceLocation(LocationKind.Page, Page: page.Number), ExtractionMethod.NativeText));
+                        context.Errors.Add(new ExtractionError(ErrorCode(ex),
+                            $"PDF page {page.Number} needs OCR. {SafeMessage(ex)}", IsTemporary(ex), name));
+                    }
+                }
             }
             finally
             {
-                PdfRenderGate.Release();
+                // PDFium document disposal uses the same serialization as rendering. Do not
+                // hold this gate across OCR: other workers must be able to reach CPU admission.
+                await PdfRenderGate.WaitAsync(CancellationToken.None);
+                try { renderedPages.Dispose(); }
+                finally { PdfRenderGate.Release(); }
             }
-
-            OcrResult ocr;
-            try
-            {
-                ocr = await _ocrEngine.RecognizeAsync(
-                    new OcrRequest(renderedPage, ".png", TimeSpan.FromSeconds(120)), cancellationToken);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                if (!string.IsNullOrWhiteSpace(text))
-                    sections.Add(new ExtractedSection(text,
-                        new SourceLocation(LocationKind.Page, Page: page.Number), ExtractionMethod.NativeText));
-                context.Errors.Add(new ExtractionError(ErrorCode(ex),
-                    $"PDF page {page.Number} needs OCR. {SafeMessage(ex)}", IsTemporary(ex), name));
-                continue;
-            }
-            if (!string.IsNullOrWhiteSpace(ocr.Text))
-                sections.Add(new ExtractedSection(ocr.Text,
-                    new SourceLocation(LocationKind.Page, Page: page.Number), ExtractionMethod.Ocr, ocr.Confidence));
-            else if (ocr.TimedOut)
-                context.Errors.Add(new ExtractionError("ocr_timeout", $"OCR timed out for PDF page {page.Number}.", true, name));
         }
+        sections.Sort((left, right) => Nullable.Compare(left.Location.Page, right.Location.Page));
 
         if (pdf.Advanced.TryGetEmbeddedFiles(out var embeddedFiles))
         {
@@ -234,6 +259,20 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
 
         return new ExtractedNode(name, mimeType, relationship, sections, attachments, Title: title);
     }
+
+    private static OcrRequest RasterRequest(SKBitmap bitmap)
+    {
+        if (bitmap.ColorType != SKColorType.Bgra8888)
+        {
+            using var converted = bitmap.Copy(SKColorType.Bgra8888)
+                ?? throw new InvalidDataException("The rendered image could not be converted to BGRA pixels.");
+            return RasterRequest(converted);
+        }
+        return new OcrRequest(bitmap.GetPixelSpan().ToArray(), ".bgra", TimeSpan.FromSeconds(120),
+            new OcrRasterInfo(bitmap.Width, bitmap.Height, bitmap.RowBytes, bitmap.AlphaType != SKAlphaType.Unpremul));
+    }
+
+    private sealed record PdfOcrPage(int Number, string Text, int Dpi);
 
     private static int? SafePdfRenderDpi(double widthPoints, double heightPoints)
     {
@@ -255,7 +294,7 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
     }
 
     private async Task<ExtractedNode> ImageNodeAsync(byte[] bytes, string name, string? mimeType, string relationship,
-        string extension, CancellationToken cancellationToken)
+        string extension, ExpansionContext context, CancellationToken cancellationToken)
     {
         if (extension is ".tif" or ".tiff")
         {
@@ -271,28 +310,47 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
                 var height = tiff.GetField(TiffTag.IMAGELENGTH)?[0].ToInt() ?? 0;
                 if (width <= 0 || height <= 0 || (long)width * height > MaxRasterPixels)
                     throw new InvalidDataException("TIFF frame dimensions are invalid or exceed the safety limit.");
-                var raster = new int[width * height];
-                if (!tiff.ReadRGBAImageOriented(width, height, raster, Orientation.TOPLEFT, stopOnError: true))
-                    throw new InvalidDataException($"Unable to decode TIFF frame {frame}.");
-                using var bitmap = new SKBitmap(width, height, SKColorType.Rgba8888, SKAlphaType.Unpremul);
-                for (var y = 0; y < height; y++)
-                    for (var x = 0; x < width; x++)
+                try
+                {
+                    var frameOcr = await _ocrEngine.RecognizeAsync(preparationToken =>
                     {
-                        var rgba = unchecked((uint)raster[(y * width) + x]);
-                        bitmap.SetPixel(x, y, new SKColor((byte)rgba, (byte)(rgba >> 8), (byte)(rgba >> 16), (byte)(rgba >> 24)));
-                    }
-                using var image = SKImage.FromBitmap(bitmap);
-                using var encoded = image.Encode(SKEncodedImageFormat.Png, 100);
-                var frameOcr = await _ocrEngine.RecognizeAsync(new OcrRequest(encoded.ToArray(), ".png", TimeSpan.FromSeconds(120)), cancellationToken);
-                if (!string.IsNullOrWhiteSpace(frameOcr.Text))
-                    tiffSections.Add(new ExtractedSection(frameOcr.Text,
-                        new SourceLocation(LocationKind.ImageFrame, Page: frame, ImageFrame: frame), ExtractionMethod.Ocr, frameOcr.Confidence));
+                        preparationToken.ThrowIfCancellationRequested();
+                        var raster = new int[width * height];
+                        if (!tiff.ReadRGBAImageOriented(width, height, raster, Orientation.TOPLEFT, stopOnError: true))
+                            throw new InvalidDataException($"Unable to decode TIFF frame {frame}.");
+                        var pixels = GC.AllocateUninitializedArray<byte>(checked(raster.Length * 4));
+                        for (var pixel = 0; pixel < raster.Length; pixel++)
+                        {
+                            if ((pixel & 0x7fff) == 0) preparationToken.ThrowIfCancellationRequested();
+                            var rgba = unchecked((uint)raster[pixel]);
+                            var offset = pixel * 4;
+                            pixels[offset] = (byte)(rgba >> 16);
+                            pixels[offset + 1] = (byte)(rgba >> 8);
+                            pixels[offset + 2] = (byte)rgba;
+                            pixels[offset + 3] = (byte)(rgba >> 24);
+                        }
+                        return Task.FromResult(new OcrRequest(pixels, ".bgra", TimeSpan.FromSeconds(120),
+                            new OcrRasterInfo(width, height, checked(width * 4), IsPremultiplied: false)));
+                    }, cancellationToken);
+                    if (!string.IsNullOrWhiteSpace(frameOcr.Text))
+                        tiffSections.Add(new ExtractedSection(frameOcr.Text,
+                            new SourceLocation(LocationKind.ImageFrame, Page: frame, ImageFrame: frame), ExtractionMethod.Ocr, frameOcr.Confidence));
+                    if (frameOcr.TimedOut)
+                        context.Errors.Add(new ExtractionError("ocr_timeout", $"OCR timed out for TIFF frame {frame}.", true, name));
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    context.Errors.Add(new ExtractionError(ErrorCode(ex),
+                        $"TIFF frame {frame} needs OCR. {SafeMessage(ex)}", IsTemporary(ex), name));
+                }
             } while (tiff.ReadDirectory());
             return new ExtractedNode(name, mimeType, relationship, tiffSections, []);
         }
 
         ValidateRasterImage(bytes);
         var ocr = await _ocrEngine.RecognizeAsync(new OcrRequest(bytes, extension, TimeSpan.FromSeconds(120)), cancellationToken);
+        if (ocr.TimedOut)
+            context.Errors.Add(new ExtractionError("ocr_timeout", "OCR timed out for this image.", true, name));
         var sections = string.IsNullOrWhiteSpace(ocr.Text)
             ? Array.Empty<ExtractedSection>()
             : [new ExtractedSection(ocr.Text, new SourceLocation(LocationKind.ImageFrame, Page: 1, ImageFrame: 1), ExtractionMethod.Ocr, ocr.Confidence)];
@@ -305,8 +363,7 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
 
     private static ExtractedNode MarkdownNode(string name, string? mimeType, string relationship, string markdown)
     {
-        var pipeline = new MarkdownPipelineBuilder().DisableHtml().Build();
-        var text = Markdown.ToPlainText(markdown, pipeline);
+        var text = Markdown.ToPlainText(markdown, PlainTextMarkdownPipeline);
         return TextNode(name, mimeType, relationship, text, ExtractionMethod.Markdown);
     }
 

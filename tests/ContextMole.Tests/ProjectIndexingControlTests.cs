@@ -12,6 +12,49 @@ namespace ContextMole.Tests;
 [Collection(nameof(SqliteIntegrationCollection))]
 public sealed class ProjectIndexingControlTests
 {
+    [Fact]
+    public async Task StoppingDuringModelStartupWaitsForDiscoveryCancellationCleanup()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var database = await StorageTestDatabase.CreateAsync(cancellationToken);
+        await File.WriteAllTextAsync(Path.Combine(database.Paths.SourceDirectory, "startup.txt"),
+            "Discovery is still unwinding when model startup is canceled.", cancellationToken);
+        var (projectId, _) = await database.CreateProjectAsync("Startup cancellation", cancellationToken);
+        var observation = new CancellationProbe();
+        var modelLoad = new CancellationProbe();
+        var cleanup = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var writer = new ObservingIndexWriter(database.Writer, observationProbe: observation,
+            observationCleanup: cleanup.Task);
+        await using var embeddings = new StageEmbeddings(BlockStage.Embeddings, modelLoad, blockReload: true);
+        var activities = new IndexingActivityTracker();
+        using var coordinator = new IndexingCoordinator(writer, database.Store, database.Paths,
+            new CountingExtractor(), embeddings, activities, new EmbeddingPolicyRefreshTracker(),
+            new StageCpuBudget(), NullLogger<IndexingCoordinator>.Instance);
+
+        await coordinator.StartAsync(cancellationToken);
+        try
+        {
+            await Task.WhenAll(observation.Entered.Task, modelLoad.Entered.Task)
+                .WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+            var stopping = coordinator.StopAsync(CancellationToken.None);
+            await Task.WhenAll(observation.Canceled.Task, modelLoad.Canceled.Task)
+                .WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+            await Task.Delay(100, cancellationToken);
+            Assert.False(stopping.IsCompleted);
+            Assert.True(activities.IsDiscovering(projectId));
+
+            cleanup.TrySetResult();
+            await stopping.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+            Assert.False(activities.IsDiscovering(projectId));
+            Assert.Empty(writer.Failures);
+        }
+        finally
+        {
+            cleanup.TrySetResult();
+            await coordinator.StopAsync(CancellationToken.None);
+        }
+    }
+
     [Theory]
     [InlineData(BlockStage.Cpu)]
     [InlineData(BlockStage.Extraction)]
@@ -560,7 +603,7 @@ public sealed class ProjectIndexingControlTests
         }
     }
 
-    private sealed class StageEmbeddings(BlockStage stage, CancellationProbe probe) : IEmbeddingGenerator
+    private sealed class StageEmbeddings(BlockStage stage, CancellationProbe probe, bool blockReload = false) : IEmbeddingGenerator
     {
         private static readonly EmbeddingPolicy TestPolicy =
             new("pause-test", "1", "model", "tokenizer", "fp32", 384, 384, "mean", "l2");
@@ -568,7 +611,8 @@ public sealed class ProjectIndexingControlTests
         public bool IsAvailable => stage == BlockStage.Embeddings;
         public string? UnavailableReason => IsAvailable ? null : "Disabled for this pipeline stage test.";
         public EmbeddingPolicy? Policy => IsAvailable ? TestPolicy : null;
-        public Task ReloadAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task ReloadAsync(CancellationToken cancellationToken = default) =>
+            blockReload ? probe.BlockAsync(cancellationToken) : Task.CompletedTask;
         public int CountTokens(string text) =>
             text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).Length;
 
@@ -587,7 +631,9 @@ public sealed class ProjectIndexingControlTests
     private sealed class ObservingIndexWriter(
         IIndexWriter inner,
         bool holdFirstLease = false,
-        bool failFirstPause = false) : IIndexWriter
+        bool failFirstPause = false,
+        CancellationProbe? observationProbe = null,
+        Task? observationCleanup = null) : IIndexWriter
     {
         private readonly TaskCompletionSource _leaseCaptured =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -624,8 +670,19 @@ public sealed class ProjectIndexingControlTests
             inner.RetryFailedFilesAsync(projectId, cancellationToken);
         public Task RemoveProjectAsync(Guid projectId, CancellationToken cancellationToken = default) =>
             inner.RemoveProjectAsync(projectId, cancellationToken);
-        public Task<ObservationResult> ObserveFileAsync(FileObservation observation,
-            CancellationToken cancellationToken = default) => inner.ObserveFileAsync(observation, cancellationToken);
+        public async Task<ObservationResult> ObserveFileAsync(FileObservation observation,
+            CancellationToken cancellationToken = default)
+        {
+            if (observationProbe is not null)
+            {
+                try { await observationProbe.BlockAsync(cancellationToken); }
+                finally
+                {
+                    if (observationCleanup is not null) await observationCleanup;
+                }
+            }
+            return await inner.ObserveFileAsync(observation, cancellationToken);
+        }
         public Task HandleRenamedAsync(Guid projectId, Guid folderId, string oldPath, string newPath,
             CancellationToken cancellationToken = default) =>
             inner.HandleRenamedAsync(projectId, folderId, oldPath, newPath, cancellationToken);

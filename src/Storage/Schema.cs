@@ -54,10 +54,22 @@ internal static class Schema
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         }
 
-        await ExecuteAsync(connection,
-            "UPDATE index_jobs SET state='queued',lease_until_utc=NULL,updated_utc=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE state='running';",
-            cancellationToken).ConfigureAwait(false);
-        await ExecuteAsync(connection, "DELETE FROM document_revisions WHERE status='staging';", cancellationToken).ConfigureAwait(false);
+        await RecoverInterruptedJobsAsync(connection, cancellationToken).ConfigureAwait(false);
+    }
+
+    internal static async Task RecoverInterruptedJobsAsync(SqliteConnection connection, CancellationToken cancellationToken)
+    {
+        using var transaction = connection.BeginTransaction();
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            UPDATE index_jobs SET state='queued',lease_until_utc=NULL,
+              updated_utc=$now WHERE state='running';
+            DELETE FROM document_revisions WHERE status='staging';
+            """;
+        command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private static int ParseVersion(string resourceName)

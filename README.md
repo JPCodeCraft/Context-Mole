@@ -34,6 +34,14 @@ The CPU and embedding-model choices apply globally across projects. **Light**, *
 
 Document parallelism follows the selected CPU profile and the machine's logical CPU count: Light uses 20%, Normal 40%, and Heavy 80%, with at least one worker. OCR temporarily borrows the full capacity allowed by that profile and remains serialized so it does not compete with document parsers. Per-operation resources are disposed promptly, OCR and embedding sessions unload after idle periods, and the broker still clears disposable vector caches under memory pressure.
 
+Projects show separate **Up to date**, **Processing**, **Queued**, and **Needs attention** file counts; together they account for the discovered files. Scheduled retries and files waiting for CPU capacity are part of the queue. The searchable count is separate because a previous successful revision remains available while a file is updated. Current issues can be collapsed and browsed in pages of 25; resolved failures disappear and large projects retain all current issues. Unavailable folders appear separately and clear after a successful rescan.
+
+Folder discovery and indexing run together. Large filesystem-event bursts use bounded buffers and trigger a folder rescan when needed. Ordinary change notifications verify content before repeating extraction; **Reindex** still forces a complete rebuild. Pause and shutdown preserve unfinished jobs, and startup discards partial revisions and resumes the durable queue while checking folders for changes made while the app was closed.
+
+PDF OCR reuses the renderer and passes full-resolution pixels directly to the OCR engine. Page images are only allocated after OCR obtains processing capacity. Long text lines now retain their proportions within a bounded recognition width instead of being squeezed into 320 pixels. Embeddings group similar-length passages in small windows to reduce padding for both FP32 and quantized models. The model, token limits, normalization and OCR resolution remain unchanged.
+
+Repeatable extraction and OCR performance checks, with checked-in public fixtures, source/license notes and quality checks, are documented in [benchmarks/extraction](benchmarks/extraction/README.md). The optional [embedding benchmark](tools/EmbeddingPerformanceBenchmark.cs) compares batching on the same installed model and reports throughput, vector differences and labeled retrieval relevance. See [benchmark results and commands](benchmarks/README.md).
+
 On Windows, start-at-sign-in is enabled on first launch and can be disabled in Settings. Sign-in launches start quietly in the system tray; clicking the tray icon or choosing **Show Context Mole** restores the window. Installed builds check GitHub Releases for updates and offer to restart when an update is ready and indexing is idle.
 
 ## AI Connections

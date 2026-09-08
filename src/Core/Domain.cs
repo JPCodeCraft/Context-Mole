@@ -169,6 +169,11 @@ public sealed record ProjectSummary(
     DateTimeOffset? LastCompletedUtc,
     string? CurrentFile = null)
 {
+    public int ReadyCount { get; init; } = Math.Max(0, DocumentCount - PendingCount - ErrorCount);
+    public int AttentionCount { get; init; } = ErrorCount;
+    public int ErrorFileCount { get; init; } = ErrorCount;
+    public int SearchableCount { get; init; } = IndexedCount;
+
     [JsonIgnore]
     public ProjectWorkSummary Work { get; init; } = new(
         Math.Max(0, PendingCount - (CurrentFile is null ? 0 : 1)),
@@ -239,7 +244,8 @@ public sealed record FileObservation(
     long Size,
     DateTimeOffset ModifiedUtc,
     string? ReconciliationToken = null,
-    bool Force = false);
+    bool Force = false,
+    bool VerifyContent = false);
 
 public sealed record ObservationResult(Guid DocumentId, long ObservationEpoch, bool Queued);
 
@@ -316,7 +322,14 @@ public sealed record ExtractionRequest(
 public sealed record OcrRequest(
     ReadOnlyMemory<byte> ImageBytes,
     string Extension,
-    TimeSpan Timeout);
+    TimeSpan Timeout,
+    OcrRasterInfo? Raster = null);
+
+/// <summary>
+/// An already rendered image in top-down BGRA8888 byte order. Passing its pixels directly
+/// avoids a lossless image encode/decode round trip for PDF pages and TIFF frames.
+/// </summary>
+public sealed record OcrRasterInfo(int Width, int Height, int RowBytes, bool IsPremultiplied = true);
 
 public sealed record OcrResult(string Text, double? Confidence, bool TimedOut = false);
 

@@ -114,10 +114,13 @@ public sealed partial class DocumentExtractionRegistry
             if (sheet.Id?.Value is not { } relationId || workbookPart.GetPartById(relationId) is not WorksheetPart worksheetPart)
                 continue;
             var sheetName = sheet.Name?.Value ?? $"Sheet{sheetNumber}";
-            var worksheet = worksheetPart.Worksheet ?? throw new InvalidDataException($"XLSX sheet {sheetName} has no worksheet XML.");
-            var rows = worksheet.Descendants<Row>().ToArray();
-            foreach (var row in rows)
+            // Read one row at a time so a large sheet does not also retain a complete XML DOM.
+            using var reader = OpenXmlReader.Create(worksheetPart);
+            while (reader.Read())
             {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (reader.ElementType != typeof(Row) || !reader.IsStartElement) continue;
+                var row = (Row)reader.LoadCurrentElement()!;
                 var values = new List<string>();
                 string? first = null;
                 string? last = null;
@@ -259,7 +262,7 @@ public sealed partial class DocumentExtractionRegistry
         CancellationToken cancellationToken)
     {
         using var input = new MemoryStream(bytes, writable: false);
-        var message = await MimeMessage.LoadAsync(input, cancellationToken);
+        using var message = await MimeMessage.LoadAsync(input, cancellationToken);
         var sections = new List<ExtractedSection>();
         if (!isWebArchive)
         {

@@ -66,6 +66,14 @@ public interface IOcrEngine
         EnsureAvailableAsync(cancellationToken);
     Task EnsureAvailableAsync(CancellationToken cancellationToken = default);
     Task<OcrResult> RecognizeAsync(OcrRequest request, CancellationToken cancellationToken);
+    /// <summary>
+    /// Prepares a rendered image only after OCR admission, so queued documents need not retain
+    /// full-resolution page rasters. Engines without admission can prepare it immediately.
+    /// </summary>
+    async Task<OcrResult> RecognizeAsync(Func<CancellationToken, Task<OcrRequest>> prepareRequest,
+        CancellationToken cancellationToken) =>
+        await RecognizeAsync(await prepareRequest(cancellationToken).ConfigureAwait(false), cancellationToken)
+            .ConfigureAwait(false);
 }
 
 public interface IEmbeddingGenerator : IAsyncDisposable
@@ -124,11 +132,16 @@ public interface ISearchStore
 {
     Task<bool> IsInitializedAsync(CancellationToken cancellationToken = default);
     Task<IReadOnlyList<ProjectSummary>> ListProjectsAsync(CancellationToken cancellationToken = default);
+    async Task<string?> GetProjectFolderPathAsync(Guid projectId, Guid folderId,
+        CancellationToken cancellationToken = default) =>
+        (await ListProjectsAsync(cancellationToken).ConfigureAwait(false))
+        .FirstOrDefault(project => project.Id == projectId)?.Folders
+        .FirstOrDefault(folder => folder.Id == folderId)?.Path;
     Task<IReadOnlyList<ProjectFileTypeCount>> ListProjectFileTypeCountsAsync(Guid projectId,
         CancellationToken cancellationToken = default);
     Task<DocumentListResponse> ListDocumentsAsync(DocumentListRequest request,
         CancellationToken cancellationToken = default);
-    Task<IReadOnlyList<ProjectErrorInfo>> ListProjectErrorsAsync(Guid projectId, int limit, CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<ProjectErrorInfo>> ListProjectErrorsAsync(Guid projectId, int limit, CancellationToken cancellationToken = default, int offset = 0);
     Task<KeywordSearchPage> KeywordSearchAsync(Guid projectId, string ftsQuery, int count, SearchFilters? filters, CancellationToken cancellationToken = default);
     Task<KeywordSearchPage> KeywordSearchAsync(Guid projectId, string ftsQuery, int count, SearchFilters? filters,
         SearchFieldWeights fieldWeights, CancellationToken cancellationToken = default) =>

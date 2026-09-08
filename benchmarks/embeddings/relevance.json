@@ -1,0 +1,95 @@
+{
+  "description": "Synthetic retrieval cases with explicit topic labels. Each topic has English, Portuguese and Spanish passages and queries. Other topics, including related financial, cancellation, access and operational topics, are distractors. Six passages per topic use controlled length augmentation to exercise padding; this is a bounded regression check, not a broad retrieval-quality benchmark.",
+  "topics": [
+    {
+      "id": "service-contract-termination",
+      "queries": ["Find the notice period and final handover obligations when ending a supplier consulting agreement.", "Qual é o aviso prévio e a entrega final ao encerrar o contrato de consultoria com um fornecedor?", "Busco el plazo de preaviso y la entrega final al terminar el contrato de consultoría de un proveedor."],
+      "passages": [
+        "The consulting service agreement may be terminated by either party with thirty days of written notice. The supplier must deliver completed work, return confidential documents and submit a final invoice for approved services. Breach of contract allows immediate termination after a failed cure period. These provisions govern the business relationship with the external consultant.",
+        "O contrato de prestação de serviços de consultoria pode ser encerrado por qualquer parte mediante aviso escrito com trinta dias de antecedência. O fornecedor deve entregar o trabalho concluído, devolver documentos confidenciais e emitir a fatura final dos serviços aprovados. A violação contratual permite rescisão imediata após o prazo de correção. As regras tratam da relação comercial com o consultor externo.",
+        "El contrato de servicios de consultoría puede terminarse con treinta días de aviso escrito. El proveedor debe entregar el trabajo realizado, devolver los documentos confidenciales y presentar la factura final de los servicios aprobados. Un incumplimiento permite la rescisión inmediata tras vencer el plazo de subsanación. Estas condiciones regulan la relación comercial con el consultor externo."
+      ]
+    },
+    {
+      "id": "software-subscription-cancellation",
+      "queries": ["How do I stop an online software subscription from renewing and retain access until the paid period ends?", "Como impedir a renovação da assinatura de software e manter acesso até o fim do período pago?", "¿Cómo cancelo la renovación de una suscripción de software conservando el acceso hasta terminar el período pagado?"],
+      "passages": [
+        "Customers can cancel automatic renewal of the online software subscription in account billing settings. Access remains available until the end of the current paid month. Cancellation does not erase stored data immediately; export tools remain available during the access period. Monthly subscription fees already paid are not refunded, and the next renewal invoice is suppressed.",
+        "O cliente pode cancelar a renovação automática da assinatura do software nas configurações de cobrança da conta. O acesso continua até o fim do mês já pago. O cancelamento não apaga imediatamente os dados armazenados; as ferramentas de exportação ficam disponíveis durante o período de acesso. A mensalidade já paga não é reembolsada e a próxima cobrança de renovação é suspensa.",
+        "El cliente puede cancelar la renovación automática de la suscripción del programa desde la configuración de facturación. El acceso continúa hasta finalizar el mes pagado. Cancelar no elimina inmediatamente los datos almacenados y las herramientas de exportación siguen disponibles durante ese período. No se devuelve la cuota mensual ya abonada y se anula la próxima factura de renovación."
+      ]
+    },
+    {
+      "id": "office-lease-termination",
+      "queries": ["What must a tenant do before vacating rented office premises and recovering the security deposit?", "O que o inquilino precisa fazer ao desocupar o escritório alugado para recuperar a caução?", "¿Qué debe hacer el inquilino al abandonar una oficina alquilada para recuperar la fianza?"],
+      "passages": [
+        "An office tenant must give the landlord ninety days of notice before ending the commercial property lease. The premises must be emptied, keys returned and a joint inspection completed. Outstanding rent and repair costs may be deducted from the security deposit. Utilities must be transferred and the tenant must provide a forwarding address for the deposit statement.",
+        "O inquilino deve avisar o proprietário com noventa dias de antecedência para encerrar a locação comercial do escritório. O imóvel precisa ser desocupado, as chaves devolvidas e a vistoria conjunta realizada. Aluguéis pendentes e reparos podem ser descontados da caução. Os serviços públicos devem ser transferidos e o inquilino deve informar o endereço para receber a prestação de contas.",
+        "El inquilino debe notificar al propietario con noventa días de antelación para terminar el arrendamiento comercial de la oficina. Debe vaciar el inmueble, devolver las llaves y completar una inspección conjunta. La renta pendiente y los costes de reparación pueden deducirse de la fianza. Los suministros deben transferirse y debe facilitarse una dirección para recibir la liquidación."
+      ]
+    },
+    {
+      "id": "supplier-invoice-payment",
+      "queries": ["What approvals and bank details are required to pay a vendor invoice that is due?", "Quais aprovações e dados bancários são necessários para pagar uma fatura de fornecedor vencendo?", "¿Qué autorizaciones y datos bancarios se necesitan para pagar una factura pendiente de un proveedor?"],
+      "passages": [
+        "Accounts payable schedules supplier invoices for payment after matching the purchase order, delivery receipt and invoice total. The department manager approves the expense and finance verifies the vendor bank account. Payment terms are thirty days after receipt. Duplicate invoice numbers are blocked, and the remittance advice identifies the invoice and bank transfer reference.",
+        "O setor de contas a pagar programa o pagamento de faturas de fornecedores após conferir o pedido de compra, o comprovante de entrega e o valor faturado. O gerente aprova a despesa e o financeiro verifica a conta bancária do fornecedor. O prazo é de trinta dias após o recebimento. Faturas duplicadas são bloqueadas e o comprovante identifica a fatura e a transferência.",
+        "Cuentas por pagar programa las facturas de proveedores después de conciliar el pedido de compra, el comprobante de entrega y el importe facturado. El responsable del departamento autoriza el gasto y finanzas verifica la cuenta bancaria del proveedor. El plazo de pago es de treinta días desde la recepción. Se bloquean facturas duplicadas y el aviso identifica la transferencia bancaria."
+      ]
+    },
+    {
+      "id": "employee-payroll",
+      "queries": ["Where are employee wages, overtime, tax withholding and net salary transfers calculated?", "Onde são calculados salários dos funcionários, horas extras, descontos de impostos e pagamentos líquidos?", "¿Dónde se calculan los sueldos de empleados, las horas extra, las retenciones fiscales y el salario neto?"],
+      "passages": [
+        "The monthly payroll process calculates employee gross wages from salary records and approved overtime. Statutory tax withholding, pension contributions and benefit deductions determine net pay. Human resources checks employee changes before finance sends salary transfers to staff bank accounts. Each employee receives a payslip detailing earnings and deductions for the pay period.",
+        "A folha de pagamento mensal calcula a remuneração bruta dos funcionários a partir dos salários cadastrados e das horas extras aprovadas. Impostos retidos, contribuições previdenciárias e descontos de benefícios determinam o salário líquido. Recursos humanos verifica as alterações dos empregados antes das transferências bancárias. Cada funcionário recebe um contracheque com rendimentos e descontos do período.",
+        "La nómina mensual calcula el salario bruto de los empleados a partir de sus sueldos y las horas extraordinarias autorizadas. Las retenciones fiscales, cotizaciones y deducciones de beneficios determinan el pago neto. Recursos humanos revisa los cambios del personal antes de enviar las transferencias salariales. Cada trabajador recibe un recibo con ingresos y descuentos del período."
+      ]
+    },
+    {
+      "id": "quarterly-revenue-report",
+      "queries": ["Find the quarterly report comparing recognized sales revenue and gross margin with last year.", "Encontre o relatório trimestral que compara receita de vendas reconhecida e margem bruta com o ano anterior.", "Busco el informe trimestral que compara los ingresos por ventas reconocidos y el margen bruto con el año anterior."],
+      "passages": [
+        "The quarterly revenue report compares recognized sales with the same quarter last year. It separates product and service revenue, calculates gross margin after cost of sales and explains changes by region. Finance reconciles deferred revenue before management reviews the results. This report measures business performance rather than scheduling individual supplier payments or employee wages.",
+        "O relatório trimestral de receitas compara as vendas reconhecidas com o mesmo trimestre do ano anterior. Ele separa receitas de produtos e serviços, calcula a margem bruta após o custo das vendas e explica variações por região. O financeiro concilia receitas diferidas antes da revisão pela administração. O relatório avalia o desempenho comercial, sem programar pagamentos individuais de fornecedores ou salários.",
+        "El informe trimestral de ingresos compara las ventas reconocidas con el mismo trimestre del año anterior. Separa ingresos por productos y servicios, calcula el margen bruto después del coste de ventas y explica variaciones regionales. Finanzas concilia ingresos diferidos antes de la revisión directiva. El informe evalúa el rendimiento del negocio, sin programar pagos individuales a proveedores ni sueldos."
+      ]
+    },
+    {
+      "id": "personal-data-erasure",
+      "queries": ["How does the privacy team handle a customer's request to delete personal records and apply retention exceptions?", "Como a equipe de privacidade atende um pedido de exclusão de dados pessoais e aplica exceções de retenção?", "¿Cómo gestiona privacidad una solicitud de eliminación de datos personales y las excepciones de conservación?"],
+      "passages": [
+        "The privacy procedure handles requests to erase customer personal data. Staff verify the requester's identity, identify records across systems and document any legal retention exception. Data that no longer needs to be retained is deleted and service providers receive matching deletion instructions. The customer receives confirmation describing completed erasure and records that must still be retained.",
+        "O procedimento de privacidade atende solicitações de exclusão de dados pessoais dos clientes. A equipe confirma a identidade do solicitante, localiza registros nos sistemas e documenta exceções legais de retenção. Dados sem necessidade de conservação são apagados e os prestadores recebem instruções equivalentes de exclusão. O cliente recebe confirmação com os registros eliminados e os que ainda precisam ser preservados.",
+        "El procedimiento de privacidad gestiona solicitudes de supresión de datos personales de clientes. El equipo verifica la identidad, localiza registros en los sistemas y documenta excepciones legales de conservación. Se eliminan los datos que ya no deben conservarse y se envían instrucciones a los proveedores. El cliente recibe una confirmación que distingue los registros borrados y los que deben mantenerse."
+      ]
+    },
+    {
+      "id": "password-access-recovery",
+      "queries": ["How can a locked-out employee reset a forgotten password and regain account access securely?", "Como um funcionário bloqueado pode redefinir a senha esquecida e recuperar o acesso à conta com segurança?", "¿Cómo puede un empleado bloqueado restablecer una contraseña olvidada y recuperar el acceso seguro a su cuenta?"],
+      "passages": [
+        "The account recovery guide helps employees who forgot their password or lost access. The help desk verifies identity through an approved second factor and issues a short-lived reset link. The employee chooses a new password, updates multifactor authentication and invalidates old sessions. Account recovery restores access without deleting the employee's stored work or personal profile records.",
+        "O guia de recuperação de conta auxilia funcionários que esqueceram a senha ou perderam o acesso. A central de suporte confirma a identidade por um segundo fator aprovado e fornece um link de redefinição com validade curta. O funcionário escolhe uma nova senha, atualiza a autenticação multifator e invalida sessões antigas. A recuperação restaura o acesso sem apagar documentos ou dados do perfil.",
+        "La guía de recuperación ayuda a empleados que olvidaron la contraseña o perdieron el acceso. Soporte verifica la identidad mediante un segundo factor autorizado y envía un enlace temporal de restablecimiento. El empleado elige una contraseña nueva, actualiza la autenticación multifactor y revoca sesiones antiguas. La recuperación devuelve el acceso sin eliminar documentos ni datos del perfil."
+      ]
+    },
+    {
+      "id": "database-backup-restore",
+      "queries": ["Which steps restore an accidentally deleted database table from a verified backup and transaction logs?", "Quais etapas recuperam uma tabela apagada por engano usando backup verificado e logs de transação?", "¿Qué pasos permiten restaurar una tabla borrada accidentalmente desde una copia verificada y registros de transacciones?"],
+      "passages": [
+        "The database restoration runbook recovers an accidentally deleted table from the latest verified backup. Administrators restore to an isolated database, replay transaction logs to the recovery point and validate row counts before copying data back. A recovery test confirms integrity and application queries. The procedure focuses on data restoration rather than public outage communications or service incident escalation.",
+        "O roteiro de restauração de banco de dados recupera uma tabela apagada por engano a partir do último backup verificado. Administradores restauram em uma base isolada, reaplicam os logs de transação até o ponto desejado e validam a contagem de registros antes de copiar os dados. Um teste confirma a integridade e as consultas da aplicação. O foco é recuperar dados, não comunicar indisponibilidade ou escalar incidentes.",
+        "El procedimiento de restauración recupera una tabla eliminada accidentalmente usando la última copia de seguridad verificada. Los administradores restauran una base aislada, reproducen registros de transacciones hasta el punto de recuperación y validan el número de filas antes de devolver los datos. Una prueba confirma integridad y consultas de la aplicación. El objetivo es recuperar datos, no comunicar interrupciones ni escalar incidentes."
+      ]
+    },
+    {
+      "id": "service-outage-response",
+      "queries": ["Who coordinates an ongoing service outage, updates customers and escalates response while engineers diagnose the failure?", "Quem coordena uma indisponibilidade do serviço, informa clientes e escala a resposta enquanto engenheiros investigam?", "¿Quién coordina una interrupción del servicio, informa a clientes y escala la respuesta mientras los ingenieros investigan?"],
+      "passages": [
+        "The service outage response plan assigns an incident commander, opens a coordination channel and pages the on-call engineers. The communications lead posts customer status updates every thirty minutes while responders diagnose the failure. Escalation depends on customer impact and duration. After service is restored, the team records a timeline and corrective actions; the plan does not specify database table restoration commands.",
+        "O plano de resposta à indisponibilidade designa um coordenador do incidente, abre um canal de comunicação e aciona os engenheiros de plantão. O responsável pela comunicação atualiza os clientes a cada trinta minutos enquanto a equipe investiga a falha. A escalada depende do impacto e da duração. Após o retorno do serviço, são registrados a cronologia e as ações corretivas; o plano não define comandos de restauração de tabelas.",
+        "El plan de respuesta a interrupciones asigna un coordinador del incidente, abre un canal de trabajo y avisa a los ingenieros de guardia. Comunicaciones actualiza a los clientes cada treinta minutos mientras se investiga el fallo. La escalada depende del impacto y la duración. Tras restablecer el servicio, se documentan la cronología y las medidas correctivas; el plan no detalla comandos para restaurar tablas."
+      ]
+    }
+  ]
+}

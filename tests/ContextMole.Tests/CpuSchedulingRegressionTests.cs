@@ -118,6 +118,45 @@ public sealed class CpuSchedulingRegressionTests
         Assert.Equal("ocr_image_invalid", exception.Code);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task QueuedOcrDoesNotRenderOrAllocatePagePixelsBeforeAdmission(bool cancelWhileQueued)
+    {
+        using var paths = new TemporaryAppPaths();
+        WriteIdentityOcrAssets(paths);
+        var cpuSettings = new FixedCpuUsageSettings(logicalProcessorCount: 8);
+        var cpuBudget = new BlockingCpuBudget(cpuSettings);
+        using var engine = new PpOcrV6Engine(paths, cpuSettings, cpuBudget);
+        engine.MarkAssetsPrepared();
+        await engine.EnsureAvailableAsync(TestContext.Current.CancellationToken);
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        var rendered = false;
+
+        var recognition = engine.RecognizeAsync(token =>
+        {
+            token.ThrowIfCancellationRequested();
+            rendered = true;
+            return Task.FromResult(new OcrRequest(ReadOnlyMemory<byte>.Empty, ".png", TimeSpan.FromSeconds(5)));
+        }, cancellation.Token);
+        await cpuBudget.AcquisitionStarted.WaitAsync(TestContext.Current.CancellationToken);
+        Assert.False(rendered);
+
+        if (cancelWhileQueued)
+        {
+            cancellation.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => recognition);
+            Assert.False(rendered);
+        }
+        else
+        {
+            cpuBudget.Release();
+            var error = await Assert.ThrowsAsync<ContextMoleException>(() => recognition);
+            Assert.Equal("ocr_image_invalid", error.Code);
+            Assert.True(rendered);
+        }
+    }
+
     private static void WriteIdentityOcrAssets(IAppPaths paths)
     {
         var modelDirectory = Path.Combine(paths.AssetsDirectory, "pp-ocrv6-medium",

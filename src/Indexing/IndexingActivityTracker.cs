@@ -45,11 +45,58 @@ public sealed record IndexingTimingSnapshot(
     public int WaitingForCpuCount => ActiveItems.Count(item => item.IsWaitingForCpu);
 }
 
+public sealed record ProjectFolderIssue(Guid FolderId, string Path, string Message);
+
 public sealed class IndexingActivityTracker
 {
     private readonly object _gate = new();
     private readonly Dictionary<Guid, ActiveActivity> _active = [];
     private readonly Dictionary<Guid, CompletedTiming> _completedByProject = [];
+    private readonly HashSet<Guid> _discovering = [];
+    private readonly Dictionary<(Guid ProjectId, Guid FolderId), ProjectFolderIssue> _folderIssues = [];
+
+    public IReadOnlyList<ProjectFolderIssue> GetFolderIssues(Guid projectId)
+    {
+        lock (_gate)
+            return _folderIssues.Where(item => item.Key.ProjectId == projectId)
+                .Select(item => item.Value).OrderBy(item => item.Path, StringComparer.OrdinalIgnoreCase).ToArray();
+    }
+
+    internal void SetFolderIssue(Guid projectId, Guid folderId, string path, string message)
+    {
+        lock (_gate) _folderIssues[(projectId, folderId)] = new ProjectFolderIssue(folderId, path, message);
+    }
+
+    internal void ClearFolderIssue(Guid projectId, Guid folderId)
+    {
+        lock (_gate) _folderIssues.Remove((projectId, folderId));
+    }
+
+    internal bool HasFolderIssue(Guid projectId, Guid folderId)
+    {
+        lock (_gate) return _folderIssues.ContainsKey((projectId, folderId));
+    }
+
+    internal void RetainFolderIssues(IReadOnlySet<Guid> folderIds)
+    {
+        lock (_gate)
+            foreach (var key in _folderIssues.Keys.Where(key => !folderIds.Contains(key.FolderId)).ToArray())
+                _folderIssues.Remove(key);
+    }
+
+    public bool IsDiscovering(Guid projectId)
+    {
+        lock (_gate) return _discovering.Contains(projectId);
+    }
+
+    internal void SetDiscovering(Guid projectId, bool discovering)
+    {
+        lock (_gate)
+        {
+            if (discovering) _discovering.Add(projectId);
+            else _discovering.Remove(projectId);
+        }
+    }
 
     public bool HasActiveItems
     {

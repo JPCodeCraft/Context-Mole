@@ -55,24 +55,42 @@ public sealed class SqliteSearchStore : ISearchStore
         await using var command = connection.CreateCommand();
         var now = DateTimeOffset.UtcNow.ToString("O");
         command.CommandText = """
+            WITH file_errors AS (
+              SELECT DISTINCT project_id,document_id FROM project_errors
+              WHERE document_id IS NOT NULL
+            ), file_totals AS (
+              SELECT d.project_id,COUNT(*) AS documents,
+                SUM(j.id IS NOT NULL) AS pending,
+                SUM(d.active_revision_id IS NOT NULL) AS searchable,
+                SUM(EXISTS(SELECT 1 FROM passages passage WHERE passage.revision_id=d.active_revision_id)) AS with_text,
+                SUM(j.id IS NULL AND d.active_revision_id IS NOT NULL AND e.document_id IS NULL) AS ready,
+                SUM(j.id IS NULL AND (d.active_revision_id IS NULL OR e.document_id IS NOT NULL)) AS attention,
+                SUM(e.document_id IS NOT NULL) AS error_files,
+                SUM(CASE WHEN j.state IN ('queued','retry_wait') THEN 1 ELSE 0 END) AS queued,
+                SUM(CASE WHEN j.state='retry_wait' AND j.not_before_utc>$now THEN 1 ELSE 0 END) AS retry_scheduled,
+                SUM(CASE WHEN j.state='running' THEN 1 ELSE 0 END) AS processing,
+                SUM(CASE WHEN j.state='running' AND j.attempt>0 THEN 1 ELSE 0 END) AS running_retry,
+                MIN(CASE WHEN j.state='retry_wait' AND j.not_before_utc>$now THEN j.not_before_utc END) AS next_retry
+              FROM documents d
+              LEFT JOIN index_jobs j ON j.document_id=d.id AND j.state IN ('queued','retry_wait','running')
+              LEFT JOIN file_errors e ON e.project_id=d.project_id AND e.document_id=d.id
+              WHERE d.tombstoned=0 GROUP BY d.project_id
+            )
             SELECT p.id,p.name,p.state,p.search_generation,
-              (SELECT COUNT(*) FROM documents d WHERE d.project_id=p.id AND d.tombstoned=0),
-              (SELECT COUNT(*) FROM index_jobs j WHERE j.project_id=p.id AND j.state IN ('queued','retry_wait','running')),
-              (SELECT COUNT(*) FROM documents d WHERE d.project_id=p.id AND d.tombstoned=0 AND d.active_revision_id IS NOT NULL),
+              COALESCE(f.documents,0),COALESCE(f.pending,0),COALESCE(f.searchable,0),
               (SELECT COUNT(*) FROM project_errors e WHERE e.project_id=p.id),
               (SELECT MAX(completed_utc) FROM index_runs r WHERE r.project_id=p.id AND r.state='completed'),
               (SELECT d.path FROM index_jobs j JOIN documents d ON d.id=j.document_id WHERE j.project_id=p.id AND j.state='running' ORDER BY j.updated_utc LIMIT 1),
-              (SELECT COUNT(*) FROM index_jobs j WHERE j.project_id=p.id AND j.state IN ('queued','retry_wait')),
-              (SELECT COUNT(*) FROM index_jobs j WHERE j.project_id=p.id AND j.state='retry_wait' AND j.not_before_utc>$now),
-              (SELECT COUNT(*) FROM index_jobs j WHERE j.project_id=p.id AND j.state='running'),
-              (SELECT COUNT(*) FROM index_jobs j WHERE j.project_id=p.id AND j.state='running' AND j.attempt>0),
-              (SELECT MIN(j.not_before_utc) FROM index_jobs j WHERE j.project_id=p.id AND j.state='retry_wait' AND j.not_before_utc>$now)
-            FROM projects p ORDER BY p.name_key;
+              COALESCE(f.queued,0),COALESCE(f.retry_scheduled,0),COALESCE(f.processing,0),
+              COALESCE(f.running_retry,0),f.next_retry,
+              COALESCE(f.ready,0),COALESCE(f.attention,0),COALESCE(f.error_files,0),COALESCE(f.with_text,0)
+            FROM projects p LEFT JOIN file_totals f ON f.project_id=p.id ORDER BY p.name_key;
             """;
         command.Parameters.AddWithValue("$now", now);
         var rows = new List<(Guid Id, string Name, ProjectState State, long Generation, int Documents,
             int Pending, int Indexed, int Errors, DateTimeOffset? Last, string? Current, int Queued,
-            int RetryScheduled, int Processing, int RunningRetry, DateTimeOffset? NextRetry)>();
+            int RetryScheduled, int Processing, int RunningRetry, DateTimeOffset? NextRetry,
+            int Ready, int Attention, int ErrorFiles, int Searchable)>();
         await using (var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
         {
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
@@ -82,7 +100,8 @@ public sealed class SqliteSearchStore : ISearchStore
                     reader.IsDBNull(8) ? null : DateTimeOffset.Parse(reader.GetString(8)),
                     reader.IsDBNull(9) ? null : reader.GetString(9), reader.GetInt32(10), reader.GetInt32(11),
                     reader.GetInt32(12), reader.GetInt32(13),
-                    reader.IsDBNull(14) ? null : DateTimeOffset.Parse(reader.GetString(14))));
+                    reader.IsDBNull(14) ? null : DateTimeOffset.Parse(reader.GetString(14)),
+                    reader.GetInt32(15), reader.GetInt32(16), reader.GetInt32(17), reader.GetInt32(18)));
             }
         }
 
@@ -93,12 +112,27 @@ public sealed class SqliteSearchStore : ISearchStore
             projects.Add(new ProjectSummary(row.Id, row.Name, row.State, folders, row.Generation, row.Documents,
                 row.Pending, row.Indexed, row.Errors, row.Last, row.Current)
             {
+                ReadyCount = row.Ready,
+                AttentionCount = row.Attention,
+                ErrorFileCount = row.ErrorFiles,
+                SearchableCount = row.Searchable,
                 Work = new ProjectWorkSummary(row.Queued, row.RetryScheduled, row.Processing, row.RunningRetry,
                     row.NextRetry)
             });
         }
 
         return projects;
+    }
+
+    public async Task<string?> GetProjectFolderPathAsync(Guid projectId, Guid folderId,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenRequiredAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT path FROM project_folders WHERE id=$folder AND project_id=$project;";
+        command.Parameters.AddWithValue("$folder", folderId.ToString());
+        command.Parameters.AddWithValue("$project", projectId.ToString());
+        return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) as string;
     }
 
     public async Task<IReadOnlyList<ProjectFileTypeCount>> ListProjectFileTypeCountsAsync(Guid projectId,
@@ -341,16 +375,17 @@ public sealed class SqliteSearchStore : ISearchStore
     }
 
     public async Task<IReadOnlyList<ProjectErrorInfo>> ListProjectErrorsAsync(Guid projectId, int limit,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default, int offset = 0)
     {
         await using var connection = await OpenRequiredAsync(cancellationToken).ConfigureAwait(false);
         await using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT id,project_id,document_id,code,message,retryable,attempt,created_utc,source_path
-            FROM project_errors WHERE project_id=$project ORDER BY id DESC LIMIT $limit;
+            FROM project_errors WHERE project_id=$project ORDER BY id DESC LIMIT $limit OFFSET $offset;
             """;
         command.Parameters.AddWithValue("$project", projectId.ToString());
         command.Parameters.AddWithValue("$limit", Math.Clamp(limit, 1, 1000));
+        command.Parameters.AddWithValue("$offset", Math.Max(0, offset));
         var errors = new List<ProjectErrorInfo>();
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
@@ -922,7 +957,7 @@ public sealed class SqliteSearchStore : ISearchStore
                 var available = reader.GetInt64(9) != 0 && File.Exists(path);
                 info = new DocumentInfo(Guid.Parse(reader.GetString(0)), Guid.Parse(reader.GetString(1)), path,
                     reader.GetString(3), reader.GetString(4), reader.GetInt64(5), DateTimeOffset.Parse(reader.GetString(6)),
-                    reader.IsDBNull(7) ? null : reader.GetString(7), !reader.IsDBNull(8), available,
+                    reader.IsDBNull(7) ? null : reader.GetString(7), !reader.IsDBNull(8) && reader.GetInt32(10) > 0, available,
                     reader.IsDBNull(8) ? null : Guid.Parse(reader.GetString(8)), reader.GetInt32(10), reader.GetInt32(11),
                     new Dictionary<ExtractionMethod, int>(), []);
             }

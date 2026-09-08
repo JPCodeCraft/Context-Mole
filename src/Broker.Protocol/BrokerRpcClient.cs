@@ -243,10 +243,39 @@ public sealed class BrokerRpcClient
         InvokeAsync<BrokerCountTokensRequest, BrokerCountTokensResponse>(BrokerProtocol.EmbeddingCountTokensMethod,
             new BrokerCountTokensRequest(text), cancellationToken);
 
-    public Task<EmbeddingBatch> EmbedPassagesAsync(IReadOnlyList<string> passages,
-        CancellationToken cancellationToken = default) =>
-        InvokeAsync<BrokerEmbedPassagesRequest, EmbeddingBatch>(BrokerProtocol.EmbeddingPassagesMethod,
-            new BrokerEmbedPassagesRequest(passages), cancellationToken);
+    public async Task<EmbeddingBatch> EmbedPassagesAsync(IReadOnlyList<string> passages,
+        CancellationToken cancellationToken = default)
+    {
+        // Bound JSON copies and give searches/cancellation a turn between portions of a large document.
+        // A window is a multiple of the inference batch size, preserving the normal batch boundaries.
+        const int windowSize = 64;
+        if (passages.Count <= windowSize)
+            return await InvokeAsync<BrokerEmbedPassagesRequest, EmbeddingBatch>(
+                BrokerProtocol.EmbeddingPassagesMethod, new BrokerEmbedPassagesRequest(passages), cancellationToken)
+                .ConfigureAwait(false);
+
+        var vectors = new float[passages.Count][];
+        EmbeddingPolicy? policy = null;
+        for (var offset = 0; offset < passages.Count; offset += windowSize)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var count = Math.Min(windowSize, passages.Count - offset);
+            var window = new string[count];
+            for (var index = 0; index < count; index++) window[index] = passages[offset + index];
+            var result = await InvokeAsync<BrokerEmbedPassagesRequest, EmbeddingBatch>(
+                BrokerProtocol.EmbeddingPassagesMethod, new BrokerEmbedPassagesRequest(window), cancellationToken)
+                .ConfigureAwait(false);
+            if (result.Vectors.Count != count)
+                throw new BrokerRpcException("embedding_response_invalid",
+                    "The embedding service returned an incomplete batch.", true);
+            if (policy is not null && !string.Equals(policy.Key, result.Policy.Key, StringComparison.Ordinal))
+                throw new BrokerRpcException("embedding_policy_changed",
+                    "The embedding model changed while processing this document. Its embeddings will be retried.", true);
+            policy = result.Policy;
+            for (var index = 0; index < count; index++) vectors[offset + index] = result.Vectors[index];
+        }
+        return new EmbeddingBatch(vectors, policy!);
+    }
 
     public Task<QueryEmbedding> EmbedQueryAsync(string query, CancellationToken cancellationToken = default) =>
         InvokeAsync<BrokerEmbedQueryRequest, QueryEmbedding>(BrokerProtocol.EmbeddingQueryMethod,

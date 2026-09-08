@@ -1,4 +1,3 @@
-using System.Buffers;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Headers;
@@ -49,6 +48,7 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
     private const float DetectionUnclipRatio = 1.4f;
     private const int RecognitionHeight = 48;
     private const int RecognitionWidth = 320;
+    private const int MaximumRecognitionWidth = 4096;
 
     private readonly IAppPaths _paths;
     private readonly ICpuUsageSettings _cpuUsageSettings;
@@ -211,7 +211,11 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
         }
     }
 
-    public async Task<OcrResult> RecognizeAsync(OcrRequest request, CancellationToken cancellationToken)
+    public Task<OcrResult> RecognizeAsync(OcrRequest request, CancellationToken cancellationToken) =>
+        RecognizeAsync(_ => Task.FromResult(request), cancellationToken);
+
+    public async Task<OcrResult> RecognizeAsync(Func<CancellationToken, Task<OcrRequest>> prepareRequest,
+        CancellationToken cancellationToken)
     {
         using var operation = CancellationTokenSource.CreateLinkedTokenSource(
             cancellationToken, _lifetime.Token);
@@ -233,12 +237,16 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
             if (!IsAvailable || _configuredThreadCount != cpuCapacity.ThreadCount)
                 LoadCore(cpuCapacity.ThreadCount);
 
+            // Render only the admitted page. Other OCR requests retain their compressed source
+            // documents while queued, instead of each retaining a potentially 100 MB raster.
+            var request = await prepareRequest(operationToken).ConfigureAwait(false);
+
             // Admission, serialized OCR queueing, and lazy session setup are not OCR work. Start
             // the caller's deadline only once this request can immediately execute inference.
             deadline = new CancellationTokenSource(request.Timeout);
             inferenceOperation = CancellationTokenSource.CreateLinkedTokenSource(
                 operationToken, deadline.Token);
-            return RecognizeCore(request.ImageBytes.Span, inferenceOperation.Token);
+            return RecognizeCore(request, inferenceOperation.Token);
         }
         catch (OperationCanceledException) when (deadline?.IsCancellationRequested == true &&
                                                  !cancellationToken.IsCancellationRequested &&
@@ -262,7 +270,7 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
         }
     }
 
-    private OcrResult RecognizeCore(ReadOnlySpan<byte> imageBytes, CancellationToken cancellationToken)
+    private OcrResult RecognizeCore(OcrRequest request, CancellationToken cancellationToken)
     {
         InferenceSession detector;
         InferenceSession recognizer;
@@ -278,18 +286,28 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
             recognizerInputName = _recognizerInputName!;
         }
 
-        using var source = DecodeImage(imageBytes);
+        using var source = DecodeImage(request);
         cancellationToken.ThrowIfCancellationRequested();
 
         var boxes = DetectText(source, detector, detectorInputName, cancellationToken);
         if (boxes.Count == 0) return new OcrResult(string.Empty, null);
 
         var lines = new List<RecognizedLine>(boxes.Count);
-        foreach (var box in boxes)
+        // The pinned recognizer supports dynamic widths. Preserve long-line character shapes
+        // instead of squeezing long lines into 320 pixels. Reuse one page-sized buffer
+        // and release excess inference arena memory on the last line.
+        var maximumWidth = boxes.Max(box => GetRecognitionWidth(box.Right - box.Left, box.Bottom - box.Top));
+        var recognitionBuffer = new float[3 * RecognitionHeight * maximumWidth];
+        for (var index = 0; index < boxes.Count; index++)
         {
+            var box = boxes[index];
             cancellationToken.ThrowIfCancellationRequested();
             using var crop = Crop(source, box);
-            var recognized = RecognizeLine(crop, recognizer, recognizerInputName, characters, cancellationToken);
+            var inputWidth = GetRecognitionWidth(crop.Width, crop.Height);
+            var recognitionInput = new DenseTensor<float>(
+                recognitionBuffer.AsMemory(0, 3 * RecognitionHeight * inputWidth), [1, 3, RecognitionHeight, inputWidth]);
+            var recognized = RecognizeLine(crop, recognizer, recognizerInputName, characters,
+                recognitionInput, shrinkCpuArena: index == boxes.Count - 1, cancellationToken);
             if (!string.IsNullOrWhiteSpace(recognized.Text))
             {
                 lines.Add(new RecognizedLine(box, recognized.Text.Trim(), recognized.Confidence));
@@ -312,11 +330,12 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
             confidenceWeight == 0 ? null : weightedConfidence / confidenceWeight);
     }
 
-    private static SKBitmap DecodeImage(ReadOnlySpan<byte> imageBytes)
+    internal static SKBitmap DecodeImage(OcrRequest request)
     {
         try
         {
-            return SKBitmap.Decode(imageBytes.ToArray())
+            if (request.Raster is { } raster) return OpenRaster(request.ImageBytes, raster);
+            return SKBitmap.Decode(request.ImageBytes.Span)
                 ?? throw new ContextMoleException("ocr_image_invalid", "The image could not be decoded.");
         }
         catch (ContextMoleException)
@@ -332,6 +351,35 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
         }
     }
 
+    private static SKBitmap OpenRaster(ReadOnlyMemory<byte> pixels, OcrRasterInfo raster)
+    {
+        if (raster.Width <= 0 || raster.Height <= 0 || (long)raster.Width * raster.Height > 25_000_000 ||
+            raster.RowBytes < (long)raster.Width * 4 || (long)raster.RowBytes * raster.Height > pixels.Length)
+            throw new ContextMoleException("ocr_image_invalid", "The rendered image dimensions or pixel buffer are invalid.");
+
+        // The request owns the pixels until inference finishes. Pin its existing array instead
+        // of allocating a second full-resolution bitmap, and release the pin with the bitmap.
+        if (!MemoryMarshal.TryGetArray(pixels, out ArraySegment<byte> segment))
+            segment = new ArraySegment<byte>(pixels.ToArray());
+        var pinned = GCHandle.Alloc(segment.Array!, GCHandleType.Pinned);
+        var bitmap = new SKBitmap();
+        try
+        {
+            var info = new SKImageInfo(raster.Width, raster.Height, SKColorType.Bgra8888,
+                raster.IsPremultiplied ? SKAlphaType.Premul : SKAlphaType.Unpremul);
+            if (!bitmap.InstallPixels(info, pinned.AddrOfPinnedObject() + segment.Offset, raster.RowBytes,
+                    (_, _) => { if (pinned.IsAllocated) pinned.Free(); }))
+                throw new ContextMoleException("ocr_image_invalid", "The rendered image pixels could not be opened.");
+            return bitmap;
+        }
+        catch
+        {
+            bitmap.Dispose();
+            if (pinned.IsAllocated) pinned.Free();
+            throw;
+        }
+    }
+
     private static List<TextBox> DetectText(
         SKBitmap source,
         InferenceSession session,
@@ -344,21 +392,22 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
         FillDetectionTensor(resized, input);
         cancellationToken.ThrowIfCancellationRequested();
 
-        using var output = RunWithCancellation(session,
-            [NamedOnnxValue.CreateFromTensor(inputName, input)], shrinkCpuArena: false, cancellationToken);
-        var map = output.First().AsTensor<float>();
-        var dimensions = map.Dimensions.ToArray();
+        using var inputValue = OrtValue.CreateTensorValueFromMemory(OrtMemoryInfo.DefaultInstance,
+            input.Buffer, [1, 3, height, width]);
+        using var output = RunWithCancellation(session, inputName, inputValue, shrinkCpuArena: false, cancellationToken);
+        var map = output[0];
+        var dimensions = map.GetTensorTypeAndShape().Shape;
         int mapHeight;
         int mapWidth;
         if (dimensions.Length == 4 && dimensions[0] == 1 && dimensions[1] == 1)
         {
-            mapHeight = dimensions[2];
-            mapWidth = dimensions[3];
+            mapHeight = checked((int)dimensions[2]);
+            mapWidth = checked((int)dimensions[3]);
         }
         else if (dimensions.Length == 3 && dimensions[0] == 1)
         {
-            mapHeight = dimensions[1];
-            mapWidth = dimensions[2];
+            mapHeight = checked((int)dimensions[1]);
+            mapWidth = checked((int)dimensions[2]);
         }
         else
         {
@@ -366,12 +415,12 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
                 $"Expected PP-OCRv6 detector output [1,1,h,w], received [{string.Join(',', dimensions)}].");
         }
 
-        var probabilities = map.ToArray();
-        return ExtractConnectedTextBoxes(probabilities, mapWidth, mapHeight, source.Width, source.Height, cancellationToken);
+        return ExtractConnectedTextBoxes(map.GetTensorDataAsSpan<float>(), mapWidth, mapHeight,
+            source.Width, source.Height, cancellationToken);
     }
 
     private static List<TextBox> ExtractConnectedTextBoxes(
-        float[] probabilities,
+        ReadOnlySpan<float> probabilities,
         int width,
         int height,
         int sourceWidth,
@@ -379,81 +428,73 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
         CancellationToken cancellationToken)
     {
         var visited = new bool[checked(width * height)];
-        var queue = ArrayPool<int>.Shared.Rent(visited.Length);
+        // Only the current breadth-first frontier is needed. A full-image integer buffer
+        // retained tens of MB even when the page contained only a few small text components.
+        var queue = new Queue<int>();
         var boxes = new List<TextBox>();
-        try
+        for (var start = 0; start < visited.Length; start++)
         {
-            for (var start = 0; start < visited.Length; start++)
+            if ((start & 0x7fff) == 0) cancellationToken.ThrowIfCancellationRequested();
+            if (visited[start] || probabilities[start] <= DetectionThreshold) continue;
+
+            queue.Enqueue(start);
+            visited[start] = true;
+            var minX = width;
+            var minY = height;
+            var maxX = 0;
+            var maxY = 0;
+            var componentPixels = 0;
+
+            while (queue.TryDequeue(out var position))
             {
-                if ((start & 0x7fff) == 0) cancellationToken.ThrowIfCancellationRequested();
-                if (visited[start] || probabilities[start] <= DetectionThreshold) continue;
+                if ((componentPixels & 0x7fff) == 0) cancellationToken.ThrowIfCancellationRequested();
+                var y = position / width;
+                var x = position - y * width;
+                minX = Math.Min(minX, x);
+                minY = Math.Min(minY, y);
+                maxX = Math.Max(maxX, x);
+                maxY = Math.Max(maxY, y);
+                componentPixels++;
 
-                var head = 0;
-                var tail = 0;
-                queue[tail++] = start;
-                visited[start] = true;
-                var minX = width;
-                var minY = height;
-                var maxX = 0;
-                var maxY = 0;
-                var componentPixels = 0;
-
-                while (head < tail)
-                {
-                    var position = queue[head++];
-                    var y = position / width;
-                    var x = position - y * width;
-                    minX = Math.Min(minX, x);
-                    minY = Math.Min(minY, y);
-                    maxX = Math.Max(maxX, x);
-                    maxY = Math.Max(maxY, y);
-                    componentPixels++;
-
-                    for (var dy = -1; dy <= 1; dy++)
-                        for (var dx = -1; dx <= 1; dx++)
-                        {
-                            if (dx == 0 && dy == 0) continue;
-                            var nx = x + dx;
-                            var ny = y + dy;
-                            if ((uint)nx >= (uint)width || (uint)ny >= (uint)height) continue;
-                            var neighbor = ny * width + nx;
-                            if (visited[neighbor] || probabilities[neighbor] <= DetectionThreshold) continue;
-                            visited[neighbor] = true;
-                            queue[tail++] = neighbor;
-                        }
-                }
-
-                var boxWidth = maxX - minX + 1;
-                var boxHeight = maxY - minY + 1;
-                if (componentPixels < 3 || Math.Min(boxWidth, boxHeight) < 3) continue;
-
-                double score = 0;
-                for (var y = minY; y <= maxY; y++)
-                    for (var x = minX; x <= maxX; x++)
-                        score += probabilities[y * width + x];
-                score /= boxWidth * boxHeight;
-                if (score < DetectionBoxThreshold) continue;
-
-                var perimeter = 2d * (boxWidth + boxHeight);
-                var expansion = perimeter <= 0 ? 0 : boxWidth * boxHeight * DetectionUnclipRatio / perimeter;
-                minX = Math.Max(0, (int)Math.Floor(minX - expansion));
-                minY = Math.Max(0, (int)Math.Floor(minY - expansion));
-                maxX = Math.Min(width - 1, (int)Math.Ceiling(maxX + expansion));
-                maxY = Math.Min(height - 1, (int)Math.Ceiling(maxY + expansion));
-
-                var left = Math.Clamp((int)Math.Floor((double)minX / width * sourceWidth), 0, sourceWidth - 1);
-                var top = Math.Clamp((int)Math.Floor((double)minY / height * sourceHeight), 0, sourceHeight - 1);
-                var right = Math.Clamp((int)Math.Ceiling((double)(maxX + 1) / width * sourceWidth), left + 1, sourceWidth);
-                var bottom = Math.Clamp((int)Math.Ceiling((double)(maxY + 1) / height * sourceHeight), top + 1, sourceHeight);
-                if (right - left >= 3 && bottom - top >= 3)
-                    boxes.Add(new TextBox(left, top, right, bottom));
+                for (var dy = -1; dy <= 1; dy++)
+                    for (var dx = -1; dx <= 1; dx++)
+                    {
+                        if (dx == 0 && dy == 0) continue;
+                        var nx = x + dx;
+                        var ny = y + dy;
+                        if ((uint)nx >= (uint)width || (uint)ny >= (uint)height) continue;
+                        var neighbor = ny * width + nx;
+                        if (visited[neighbor] || probabilities[neighbor] <= DetectionThreshold) continue;
+                        visited[neighbor] = true;
+                        queue.Enqueue(neighbor);
+                    }
             }
-        }
-        finally
-        {
-            ArrayPool<int>.Shared.Return(queue);
-        }
 
+            var boxWidth = maxX - minX + 1;
+            var boxHeight = maxY - minY + 1;
+            if (componentPixels < 3 || Math.Min(boxWidth, boxHeight) < 3) continue;
+
+            double score = 0;
+            for (var y = minY; y <= maxY; y++)
+                for (var x = minX; x <= maxX; x++)
+                    score += probabilities[y * width + x];
+            score /= boxWidth * boxHeight;
+            if (score < DetectionBoxThreshold) continue;
+
+            var perimeter = 2d * (boxWidth + boxHeight);
+            var expansion = perimeter <= 0 ? 0 : boxWidth * boxHeight * DetectionUnclipRatio / perimeter;
+            minX = Math.Max(0, (int)Math.Floor(minX - expansion));
+            minY = Math.Max(0, (int)Math.Floor(minY - expansion));
+            maxX = Math.Min(width - 1, (int)Math.Ceiling(maxX + expansion));
+            maxY = Math.Min(height - 1, (int)Math.Ceiling(maxY + expansion));
+
+            var left = Math.Clamp((int)Math.Floor((double)minX / width * sourceWidth), 0, sourceWidth - 1);
+            var top = Math.Clamp((int)Math.Floor((double)minY / height * sourceHeight), 0, sourceHeight - 1);
+            var right = Math.Clamp((int)Math.Ceiling((double)(maxX + 1) / width * sourceWidth), left + 1, sourceWidth);
+            var bottom = Math.Clamp((int)Math.Ceiling((double)(maxY + 1) / height * sourceHeight), top + 1, sourceHeight);
+            if (right - left >= 3 && bottom - top >= 3)
+                boxes.Add(new TextBox(left, top, right, bottom));
+        }
         return boxes;
     }
 
@@ -462,30 +503,38 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
         InferenceSession session,
         string inputName,
         IReadOnlyList<string> characters,
+        DenseTensor<float> input,
+        bool shrinkCpuArena,
         CancellationToken cancellationToken)
     {
-        var input = new DenseTensor<float>([1, 3, RecognitionHeight, RecognitionWidth]);
         FillRecognitionTensor(crop, input);
         cancellationToken.ThrowIfCancellationRequested();
-        using var output = RunWithCancellation(session,
-            [NamedOnnxValue.CreateFromTensor(inputName, input)], shrinkCpuArena: true, cancellationToken);
-        var probabilities = output.First().AsTensor<float>();
-        var dimensions = probabilities.Dimensions.ToArray();
+        using var inputValue = OrtValue.CreateTensorValueFromMemory(OrtMemoryInfo.DefaultInstance,
+            input.Buffer, [1, 3, RecognitionHeight, input.Dimensions[3]]);
+        using var output = RunWithCancellation(session, inputName, inputValue, shrinkCpuArena, cancellationToken);
+        var probabilities = output[0];
+        var dimensions = probabilities.GetTensorTypeAndShape().Shape;
         if (dimensions.Length != 3 || dimensions[0] != 1)
         {
             throw new ContextMoleException("ocr_model_output_invalid",
                 $"Expected PP-OCRv6 recognizer output [1,time,classes], received [{string.Join(',', dimensions)}].");
         }
 
-        var steps = dimensions[1];
-        var classCount = dimensions[2];
+        var steps = checked((int)dimensions[1]);
+        var classCount = checked((int)dimensions[2]);
         if (characters.Count != classCount)
         {
             throw new ContextMoleException("ocr_model_output_invalid",
                 $"PP-OCRv6 recognizer exposes {classCount} classes, but its pinned dictionary contains {characters.Count} entries.");
         }
 
-        var values = probabilities.ToArray();
+        return DecodeRecognition(probabilities.GetTensorDataAsSpan<float>(), steps, characters);
+    }
+
+    internal static (string Text, double Confidence) DecodeRecognition(
+        ReadOnlySpan<float> values, int steps, IReadOnlyList<string> characters)
+    {
+        var classCount = characters.Count;
         var builder = new StringBuilder();
         double confidence = 0;
         var selected = 0;
@@ -515,9 +564,10 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
         return (builder.ToString(), selected == 0 ? 0 : confidence / selected * 100d);
     }
 
-    private static IDisposableReadOnlyCollection<DisposableNamedOnnxValue> RunWithCancellation(
+    private static IDisposableReadOnlyCollection<OrtValue> RunWithCancellation(
         InferenceSession session,
-        IReadOnlyCollection<NamedOnnxValue> inputs,
+        string inputName,
+        OrtValue input,
         bool shrinkCpuArena,
         CancellationToken cancellationToken)
     {
@@ -529,7 +579,7 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
             static state => ((RunOptions)state!).Terminate = true, runOptions);
         try
         {
-            return session.Run(inputs, session.OutputMetadata.Keys.ToArray(), runOptions);
+            return session.Run(runOptions, [inputName], [input], session.OutputNames);
         }
         catch (OnnxRuntimeException) when (cancellationToken.IsCancellationRequested)
         {
@@ -539,7 +589,7 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
 
     private static void FillDetectionTensor(SKBitmap image, DenseTensor<float> tensor)
     {
-        var pixels = image.Pixels;
+        var pixels = MemoryMarshal.Cast<byte, SKColor>(image.GetPixelSpan());
         var plane = checked(image.Width * image.Height);
         var buffer = tensor.Buffer.Span;
         for (var index = 0; index < pixels.Length; index++)
@@ -551,23 +601,28 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
         }
     }
 
-    private static void FillRecognitionTensor(SKBitmap image, DenseTensor<float> tensor)
+    internal static void FillRecognitionTensor(SKBitmap image, DenseTensor<float> tensor)
     {
-        var resizedWidth = Math.Clamp((int)Math.Ceiling(RecognitionHeight * (double)image.Width / image.Height), 1, RecognitionWidth);
+        var inputWidth = tensor.Dimensions[3];
+        var resizedWidth = Math.Clamp((int)Math.Ceiling(RecognitionHeight * (double)image.Width / image.Height), 1, inputWidth);
         using var resized = Resize(image, resizedWidth, RecognitionHeight);
-        var pixels = resized.Pixels;
-        var plane = RecognitionHeight * RecognitionWidth;
+        var pixels = MemoryMarshal.Cast<byte, SKColor>(resized.GetPixelSpan());
+        var plane = RecognitionHeight * inputWidth;
         var buffer = tensor.Buffer.Span;
+        buffer.Clear();
         for (var y = 0; y < RecognitionHeight; y++)
             for (var x = 0; x < resizedWidth; x++)
             {
                 var pixel = pixels[y * resizedWidth + x];
-                var index = y * RecognitionWidth + x;
+                var index = y * inputWidth + x;
                 buffer[index] = pixel.Blue / 127.5f - 1f;
                 buffer[plane + index] = pixel.Green / 127.5f - 1f;
                 buffer[2 * plane + index] = pixel.Red / 127.5f - 1f;
             }
     }
+
+    internal static int GetRecognitionWidth(int width, int height) =>
+        (int)Math.Clamp(Math.Ceiling(RecognitionHeight * (double)width / height), RecognitionWidth, MaximumRecognitionWidth);
 
     private static (int Width, int Height) GetDetectionSize(int width, int height)
     {
@@ -685,7 +740,9 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
         ExecutionMode = ExecutionMode.ORT_SEQUENTIAL,
         InterOpNumThreads = 1,
         IntraOpNumThreads = threadCount,
-        GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL
+        GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL,
+        // Width varies with the text line. Avoid accumulating a memory pattern per input shape.
+        EnableMemoryPattern = false
     };
 
     private void ReplaceResources(

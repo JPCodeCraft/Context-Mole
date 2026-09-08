@@ -219,7 +219,7 @@ public sealed class GraniteEmbeddingGenerator : IEmbeddingGenerator
             return new EmbeddingBatch([], emptyPolicy);
         }
 
-        var all = new List<float[]>(texts.Count);
+        var all = new float[texts.Count][];
         using var cpuCapacity = await _cpuBudget.AcquireFullCapacityAsync(cancellationToken).ConfigureAwait(false);
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -246,37 +246,31 @@ public sealed class GraniteEmbeddingGenerator : IEmbeddingGenerator
 
             try
             {
-                for (var offset = 0; offset < texts.Count; offset += 8)
+                var batchSize = 8;
+                const int windowSize = 64;
+                for (var offset = 0; offset < texts.Count; offset += windowSize)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    var count = Math.Min(8, texts.Count - offset);
-                    var encoded = new List<long[]>(count);
+                    var count = Math.Min(windowSize, texts.Count - offset);
+                    var encoded = new long[count][];
                     lock (tokenizer)
                     {
                         for (var index = 0; index < count; index++)
                         {
-                            var ids = new[] { selectedModel.BosTokenId }.Concat(tokenizer.Encode(texts[offset + index], false).First().Ids
-                                .Take(maximumTokens - 1)
-                                .Select(value => (long)value)
-                                ).ToArray();
-                            encoded.Add(ids);
+                            cancellationToken.ThrowIfCancellationRequested();
+                            var tokens = tokenizer.Encode(texts[offset + index], false).First().Ids;
+                            var tokenCount = Math.Min(tokens.Count, maximumTokens - 1);
+                            var ids = new long[tokenCount + 1];
+                            ids[0] = selectedModel.BosTokenId;
+                            for (var token = 0; token < tokenCount; token++) ids[token + 1] = tokens[token];
+                            encoded[index] = ids;
                         }
                     }
 
-                    try
-                    {
-                        all.AddRange(RunBatch(session, encoded, selectedModel.SourceDimensions, selectedModel.Dimensions,
-                            cancellationToken));
-                    }
-                    catch (Exception exception) when (count > 1 && IsMemoryPressure(exception))
-                    {
-                        foreach (var item in encoded)
-                        {
-                            cancellationToken.ThrowIfCancellationRequested();
-                            all.Add(RunBatch(session, [item], selectedModel.SourceDimensions, selectedModel.Dimensions,
-                                cancellationToken)[0]);
-                        }
-                    }
+                    var vectors = RunBatches(encoded,
+                        batch => RunBatch(session, batch, selectedModel.SourceDimensions, selectedModel.Dimensions,
+                            cancellationToken), ref batchSize, cancellationToken);
+                    for (var index = 0; index < count; index++) all[offset + index] = vectors[index];
                 }
             }
             catch (Exception exception) when (IsPermanentInferenceFailure(exception))
@@ -300,6 +294,38 @@ public sealed class GraniteEmbeddingGenerator : IEmbeddingGenerator
         {
             _gate.Release();
         }
+    }
+
+    internal static IReadOnlyList<float[]> RunBatches(
+        IReadOnlyList<long[]> encoded,
+        Func<IReadOnlyList<long[]>, IReadOnlyList<float[]>> runBatch,
+        ref int batchSize,
+        CancellationToken cancellationToken)
+    {
+        // Nearby lengths avoid making every short passage pay for the longest passage's padding.
+        // Only a small window is tokenized at once; vectors are restored to their original passage order.
+        // Stable sorting keeps equal-length passages in a deterministic order for quantized batches too.
+        var order = Enumerable.Range(0, encoded.Count).OrderBy(index => encoded[index].Length).ToArray();
+        var vectors = new float[encoded.Count][];
+        for (var offset = 0; offset < order.Length;)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var count = Math.Min(batchSize, order.Length - offset);
+            var batch = new long[count][];
+            for (var index = 0; index < count; index++) batch[index] = encoded[order[offset + index]];
+            try
+            {
+                var result = runBatch(batch);
+                for (var index = 0; index < count; index++) vectors[order[offset + index]] = result[index];
+                offset += count;
+            }
+            catch (Exception exception) when (count > 1 && IsMemoryPressure(exception))
+            {
+                // Keep a working batch size for the rest of this request instead of repeatedly exhausting memory.
+                batchSize = Math.Max(1, count / 2);
+            }
+        }
+        return vectors;
     }
 
     private static IReadOnlyList<float[]> RunBatch(

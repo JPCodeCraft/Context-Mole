@@ -36,6 +36,7 @@ internal partial class MainViewModel : ViewModelBase
     private readonly Dictionary<string, int> _aiConnectionCatalogOrder = new(StringComparer.Ordinal);
     private readonly Dictionary<Guid, Task> _projectPauseDrains = [];
     private readonly SemaphoreSlim _refreshGate = new(1, 1);
+    private readonly SemaphoreSlim _errorRefreshGate = new(1, 1);
     private CancellationTokenSource? _polling;
     private Task? _pollingTask;
     private bool? _reportedOcrAvailable;
@@ -45,8 +46,8 @@ internal partial class MainViewModel : ViewModelBase
     private Guid? _fileTypeCountsProjectId;
     private long _fileTypeCountsGeneration = -1;
     private int _fileTypeCountsDocumentCount = -1;
+    private DateTimeOffset _nextFileTypeRefreshUtc = DateTimeOffset.MinValue;
     private Guid? _semanticStatusProjectId;
-    private long _semanticStatusGeneration = -1;
     private string? _semanticStatusPolicyKey;
     private bool _semanticStatusModelAvailable;
     private DateTimeOffset _nextSemanticStatusRefreshUtc = DateTimeOffset.MinValue;
@@ -477,10 +478,10 @@ internal partial class MainViewModel : ViewModelBase
         StatusMessage = result switch
         {
             { QueuedCount: 0, AlreadyPendingCount: 1 } =>
-                "The failed file is already queued or being processed. Its error will clear after a successful retry.",
+                "The file is already queued or being processed. Its status updates as the retry runs.",
             { QueuedCount: 0, AlreadyPendingCount: > 1 } =>
-                $"All {result.AlreadyPendingCount} failed files are already queued or being processed. " +
-                "Their errors will clear after successful retries.",
+                $"All {result.AlreadyPendingCount} files are already queued or being processed. " +
+                "Their status updates as retries run.",
             { QueuedCount: 0 } => "No file-specific failures are currently available to retry.",
             { QueuedCount: 1, AlreadyPendingCount: 0 } => "Queued 1 failed file for retry.",
             { AlreadyPendingCount: 0 } => $"Queued {result.QueuedCount} failed files for retry.",
@@ -657,9 +658,11 @@ internal partial class MainViewModel : ViewModelBase
                 await _store.ListProjectsAsync(cancellationToken).ConfigureAwait(false));
             (Guid Id, long Generation, int DocumentCount)? fileTypeRefresh = null;
             (Guid Id, long Generation)? semanticRefresh = null;
+            Guid? errorsProjectId = null;
             var semanticPolicyKey = _embeddingGenerator.Policy?.Key;
             var semanticModelAvailable = _embeddingGenerator.IsAvailable && semanticPolicyKey is not null;
             var semanticStatusRefreshDue = DateTimeOffset.UtcNow >= _nextSemanticStatusRefreshUtc;
+            var fileTypeRefreshDue = DateTimeOffset.UtcNow >= _nextFileTypeRefreshUtc;
             await Dispatcher.UIThread.InvokeAsync(() =>
             {
                 var selectedId = preferredProjectId ?? SelectedProject?.Id;
@@ -671,6 +674,7 @@ internal partial class MainViewModel : ViewModelBase
                     ? Projects.FirstOrDefault()
                     : Projects.FirstOrDefault(project => project.Id == selectedId) ?? Projects.FirstOrDefault();
                 ReconcileIndexingActivities(_indexingActivities.GetSnapshot(SelectedProject?.Id));
+                errorsProjectId = SelectedProject?.Id;
                 if (_lastProjectCount != Projects.Count)
                 {
                     _lastProjectCount = Projects.Count;
@@ -681,14 +685,13 @@ internal partial class MainViewModel : ViewModelBase
 
                 if (SelectedProject is { } selected &&
                     (_fileTypeCountsProjectId != selected.Id ||
-                     _fileTypeCountsGeneration != selected.SearchGeneration ||
-                     _fileTypeCountsDocumentCount != selected.DocumentCount))
+                     (fileTypeRefreshDue && (_fileTypeCountsGeneration != selected.SearchGeneration ||
+                      _fileTypeCountsDocumentCount != selected.DocumentCount))))
                 {
                     fileTypeRefresh = (selected.Id, selected.SearchGeneration, selected.DocumentCount);
                 }
                 if (SelectedProject is { } semanticProject &&
                     (_semanticStatusProjectId != semanticProject.Id ||
-                     _semanticStatusGeneration != semanticProject.SearchGeneration ||
                      !string.Equals(_semanticStatusPolicyKey, semanticPolicyKey, StringComparison.Ordinal) ||
                      _semanticStatusModelAvailable != semanticModelAvailable || semanticStatusRefreshDue))
                 {
@@ -696,6 +699,8 @@ internal partial class MainViewModel : ViewModelBase
                 }
             });
 
+            if (errorsProjectId is { } errorsId)
+                await RefreshErrorsAsync(errorsId, cancellationToken).ConfigureAwait(false);
             if (fileTypeRefresh is { } refresh)
                 await RefreshFileTypeCountsAsync(refresh, cancellationToken).ConfigureAwait(false);
             if (semanticRefresh is { } statusRefresh)
@@ -733,10 +738,6 @@ internal partial class MainViewModel : ViewModelBase
 
                     await RefreshAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
                     await Dispatcher.UIThread.InvokeAsync(RefreshAssetAvailability);
-                    Guid? selectedId = null;
-                    await Dispatcher.UIThread.InvokeAsync(() => selectedId = SelectedProject?.Id);
-                    if (selectedId is { } id)
-                        await RefreshErrorsAsync(id, cancellationToken).ConfigureAwait(false);
                 }
                 catch (Exception exception) when (exception is not OperationCanceledException)
                 {
@@ -920,19 +921,52 @@ internal partial class MainViewModel : ViewModelBase
             _fileTypeCountsProjectId = refresh.Id;
             _fileTypeCountsGeneration = refresh.Generation;
             _fileTypeCountsDocumentCount = refresh.DocumentCount;
+            _nextFileTypeRefreshUtc = DateTimeOffset.UtcNow.AddSeconds(10);
         });
     }
 
     private async Task RefreshErrorsAsync(Guid projectId, CancellationToken cancellationToken = default)
     {
-        var errors = await _store.ListProjectErrorsAsync(projectId, 12, cancellationToken).ConfigureAwait(false);
-        await Dispatcher.UIThread.InvokeAsync(() =>
+        // Selection changes, paging, and the poller can all request details. Serialize these reads
+        // so an older result cannot restore an obsolete page after a newer one has been displayed.
+        await _errorRefreshGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        ProjectItemViewModel? requestedProject = null;
+        var offset = 0;
+        var expectedErrorCount = 0;
+        try
         {
-            if (SelectedProject is { Id: var selectedId } selected && selectedId == projectId)
+            await Dispatcher.UIThread.InvokeAsync(() =>
             {
-                selected.UpdateErrors(errors);
-            }
-        });
+                if (SelectedProject is not { } selected || selected.Id != projectId ||
+                    !selected.HasErrors || !selected.IsErrorsExpanded) return;
+                requestedProject = selected;
+                offset = selected.ErrorPageOffset;
+                expectedErrorCount = selected.ErrorCount;
+                selected.IsErrorsLoading = true;
+            });
+            if (requestedProject is null) return;
+            var errors = await _store.ListProjectErrorsAsync(projectId, ProjectItemViewModel.ErrorPageSize,
+                cancellationToken, offset).ConfigureAwait(false);
+            await Dispatcher.UIThread.InvokeAsync(() =>
+            {
+                if (ReferenceEquals(SelectedProject, requestedProject) && requestedProject.HasErrors &&
+                    requestedProject.ErrorPageOffset == offset && requestedProject.ErrorCount == expectedErrorCount)
+                    requestedProject.UpdateErrors(errors);
+            });
+        }
+        finally
+        {
+            if (requestedProject is not null)
+                await Dispatcher.UIThread.InvokeAsync(() => requestedProject.IsErrorsLoading = false);
+            _errorRefreshGate.Release();
+        }
+    }
+
+    public async Task MoveErrorPageAsync(int direction)
+    {
+        if (SelectedProject is not { } selected || selected.IsErrorsLoading) return;
+        selected.MoveErrorPage(direction);
+        await RefreshErrorsAsync(selected.Id);
     }
 
     private async Task RefreshSemanticIndexAsync(Guid projectId, long generation,
@@ -944,7 +978,6 @@ internal partial class MainViewModel : ViewModelBase
             ? await _store.LoadVectorSnapshotMetadataAsync(projectId, policy!, cancellationToken).ConfigureAwait(false)
             : null;
         _semanticStatusProjectId = projectId;
-        _semanticStatusGeneration = metadata?.SearchGeneration ?? generation;
         _semanticStatusPolicyKey = policy?.Key;
         _semanticStatusModelAvailable = modelAvailable;
         _nextSemanticStatusRefreshUtc = DateTimeOffset.UtcNow.AddSeconds(10);
@@ -987,12 +1020,17 @@ internal partial class MainViewModel : ViewModelBase
         while (Projects.Count > projects.Count) Projects.RemoveAt(Projects.Count - 1);
 
         foreach (var project in Projects)
-            project.UpdateRuntime(_indexingActivities.GetSnapshot(project.Id));
+        {
+            project.UpdateRuntime(_indexingActivities.GetSnapshot(project.Id),
+                _indexingActivities.IsDiscovering(project.Id));
+            project.UpdateFolderIssues(_indexingActivities.GetFolderIssues(project.Id));
+        }
     }
 
     private void ReconcileIndexingActivities(IndexingTimingSnapshot snapshot)
     {
-        SelectedProject?.UpdateRuntime(snapshot);
+        if (SelectedProject is { } selected)
+            selected.UpdateRuntime(snapshot, _indexingActivities.IsDiscovering(selected.Id));
         var hasAnyActiveIndexingItems = _indexingActivities.HasActiveItems;
         if (_hasAnyActiveIndexingItems != hasAnyActiveIndexingItems)
         {

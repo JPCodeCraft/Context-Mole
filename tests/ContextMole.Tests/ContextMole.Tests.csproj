@@ -15,10 +15,16 @@
   </ItemGroup>
 
   <ItemGroup>
+    <None Include="../../benchmarks/extraction/**/*" LinkBase="benchmarks/extraction"
+          CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="xunit.v3" />
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\src\App.UI\ContextMole.App.UI.csproj" />
     <ProjectReference Include="..\..\src\Broker\ContextMole.Broker.csproj" />
     <ProjectReference Include="..\..\src\Broker.Protocol\ContextMole.Broker.Protocol.csproj" />
     <ProjectReference Include="..\..\src\Core\ContextMole.Core.csproj" />

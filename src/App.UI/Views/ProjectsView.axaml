@@ -2,6 +2,7 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:vm="using:ContextMole.App.UI.ViewModels"
              xmlns:core="using:ContextMole.Core"
+             xmlns:indexing="using:ContextMole.Indexing"
              x:Class="ContextMole.App.UI.Views.ProjectsView"
              x:DataType="vm:MainViewModel">
   <ScrollViewer>
@@ -40,7 +41,8 @@
                                  FontSize="11" FontWeight="SemiBold" />
                     </Border>
                   </Grid>
-                  <TextBlock Text="{Binding ProjectDetailsDisplay}" Classes="muted" />
+                  <TextBlock Text="{Binding ProjectDetailsDisplay}" Classes="muted" TextWrapping="Wrap" />
+                  <TextBlock Text="{Binding PhaseDetails}" Classes="quiet" TextWrapping="Wrap" />
                 </StackPanel>
                 <WrapPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right"
                            VerticalAlignment="Center">
@@ -55,51 +57,70 @@
               <UniformGrid Columns="5">
                 <Border Classes="metricCard" Margin="0,0,9,0">
                   <StackPanel Spacing="5">
-                    <TextBlock Text="TOTAL FILES" Classes="eyebrow" />
-                    <TextBlock Text="{Binding DocumentCount}" Classes="metricValue"
+                    <TextBlock Text="TOTAL FILES" Classes="eyebrow" TextWrapping="Wrap" MinHeight="26" />
+                    <TextBlock Text="{Binding DocumentCount, StringFormat={}{0:N0}}" Classes="metricValue"
                                ToolTip.Tip="Unique files currently discovered across this project's folders." />
                   </StackPanel>
                 </Border>
                 <Border Classes="metricCard" Margin="0,0,9,0">
                   <StackPanel Spacing="5">
-                    <TextBlock Text="SEARCHABLE NOW" Classes="eyebrow" />
-                    <TextBlock Text="{Binding IndexedCount}" Classes="metricValue"
-                               ToolTip.Tip="Files with a successful indexed version. A searchable file can also be queued or processing while its index is updated." />
+                    <TextBlock Text="UP TO DATE" Classes="eyebrow" TextWrapping="Wrap" MinHeight="26" />
+                    <TextBlock Text="{Binding ReadyCount, StringFormat={}{0:N0}}" Classes="metricValue"
+                               ToolTip.Tip="Files successfully indexed with no pending updates or current issues." />
                   </StackPanel>
                 </Border>
                 <Border Classes="metricCard" Margin="0,0,9,0">
                   <StackPanel Spacing="5">
-                    <TextBlock Text="PROCESSING" Classes="eyebrow" />
-                    <TextBlock Text="{Binding ProcessingCount}" Classes="metricValue"
-                               ToolTip.Tip="Files actively using processor capacity. A previous indexed version may remain searchable." />
+                    <TextBlock Text="PROCESSING" Classes="eyebrow" TextWrapping="Wrap" MinHeight="26" />
+                    <TextBlock Text="{Binding ProcessingCount, StringFormat={}{0:N0}}" Classes="metricValue"
+                               ToolTip.Tip="Files currently being processed. Files waiting for processor capacity are counted in Queued." />
                   </StackPanel>
                 </Border>
                 <Border Classes="metricCard" Margin="0,0,9,0">
                   <StackPanel Spacing="5">
-                    <TextBlock Text="QUEUED" Classes="eyebrow" />
-                    <TextBlock Text="{Binding QueuedCount}" Classes="metricValue"
+                    <TextBlock Text="QUEUED" Classes="eyebrow" TextWrapping="Wrap" MinHeight="26" />
+                    <TextBlock Text="{Binding QueuedCount, StringFormat={}{0:N0}}" Classes="metricValue"
                                ToolTip.Tip="Files waiting for processing, including scheduled retries. A previous indexed version may remain searchable." />
                     <TextBlock IsVisible="{Binding HasQueueBreakdown}"
-                               Text="{Binding QueuedBreakdownDisplay}" Classes="quiet" FontSize="10" />
+                               Text="{Binding QueuedBreakdownDisplay}" Classes="quiet" FontSize="10" TextWrapping="Wrap" />
                   </StackPanel>
                 </Border>
-                <Border Classes="metricCard" Classes.hasErrors="{Binding HasErrors}">
+                <Border Classes="metricCard" Classes.hasErrors="{Binding HasAttentionFiles}">
                   <StackPanel Spacing="5">
-                    <TextBlock Text="UNRESOLVED ISSUES" Classes="eyebrow" />
-                    <TextBlock Text="{Binding ErrorCount}" Classes="metricValue"
-                               Classes.hasErrors="{Binding HasErrors}"
-                               ToolTip.Tip="Unresolved error records, not unique files. One file can have more than one issue." />
+                    <TextBlock Text="NEEDS ATTENTION" Classes="eyebrow" TextWrapping="Wrap" MinHeight="26" />
+                    <TextBlock Text="{Binding AttentionCount, StringFormat={}{0:N0}}" Classes="metricValue"
+                               Classes.hasErrors="{Binding HasAttentionFiles}"
+                               ToolTip.Tip="Files with current issues and no retry queued or running. Review the issues below, then retry when the problem is fixed." />
                   </StackPanel>
                 </Border>
               </UniformGrid>
-              <TextBlock Text="Total files is the unique file count. Processing + Queued is the pending workload. Searchable can overlap that work while a last good index remains available; unresolved issues are error records, and one file can have more than one."
+              <TextBlock Text="{Binding SearchableSummary}"
                          Classes="quiet" FontSize="11" TextWrapping="Wrap" />
+
+              <Border IsVisible="{Binding HasFolderIssues}" Classes="card semanticCoverageWarning">
+                <StackPanel Spacing="9">
+                  <TextBlock Text="Folder access needs attention" Classes="sectionTitle" />
+                  <TextBlock Text="Some folders cannot be checked for changes. Previously indexed files remain searchable."
+                             Classes="muted" TextWrapping="Wrap" />
+                  <ItemsControl ItemsSource="{Binding FolderIssues}">
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate x:DataType="indexing:ProjectFolderIssue">
+                        <StackPanel Spacing="3" Margin="0,4">
+                          <TextBlock Text="{Binding Path}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"
+                                     ToolTip.Tip="{Binding Path}" />
+                          <TextBlock Text="{Binding Message}" Classes="quiet" TextWrapping="Wrap" />
+                        </StackPanel>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                </StackPanel>
+              </Border>
 
               <Border IsVisible="{Binding HasMixedSemanticIndex}" Classes="card semanticCoverageWarning">
                 <Grid ColumnDefinitions="*,Auto" ColumnSpacing="18">
                   <StackPanel Spacing="6">
                     <StackPanel Orientation="Horizontal" Spacing="10">
-                      <TextBlock Text="Mixed semantic index" Classes="sectionTitle" />
+                      <TextBlock Text="Meaning-based search coverage" Classes="sectionTitle" />
                       <Border Background="{DynamicResource WarningSubtleBrush}" CornerRadius="8" Padding="8,2">
                         <TextBlock Text="{Binding SemanticIndexStatusLabel}"
                                    Foreground="{DynamicResource WarningBrush}" FontSize="10"
@@ -110,7 +131,7 @@
                                TextWrapping="Wrap" MaxWidth="720" />
                   </StackPanel>
                   <Button Grid.Column="1" IsVisible="{Binding ShowSemanticRepairButton}"
-                          Content="Repair semantic index" Click="RepairSemanticIndex"
+                          Content="Complete search coverage" Click="RepairSemanticIndex"
                           IsEnabled="{Binding CanRepairSemanticIndex}"
                           ToolTip.Tip="{Binding RepairSemanticIndexToolTip}"
                           VerticalAlignment="Center" />
@@ -228,21 +249,29 @@
                 </Border>
               </Grid>
 
-              <Border Classes="card" IsVisible="{Binding HasRecentErrors}">
+              <Border Classes="card issuesCard" IsVisible="{Binding HasErrors}">
                 <StackPanel Spacing="13">
                   <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
-                    <StackPanel Spacing="3">
-                      <TextBlock Text="Recent errors" Classes="sectionTitle" />
-                      <StackPanel Orientation="Horizontal" Spacing="5">
-                        <TextBlock Text="{Binding RecentErrorsSummary}" Classes="quiet" FontSize="12" />
-                      </StackPanel>
-                    </StackPanel>
+                    <ToggleButton Classes="sectionToggle" IsChecked="{Binding IsErrorsExpanded, Mode=TwoWay}"
+                                  AutomationProperties.Name="Expand or collapse current issues">
+                      <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
+                        <StackPanel Spacing="3">
+                          <TextBlock Text="Current issues" Classes="sectionTitle" />
+                          <TextBlock Text="{Binding RecentErrorsSummary}" Classes="quiet" FontSize="12" TextWrapping="Wrap" />
+                        </StackPanel>
+                        <TextBlock Grid.Column="1" Text="⌃" RenderTransform="rotate(180deg)"
+                                   RenderTransformOrigin="50%,50%" IsVisible="{Binding IsErrorsCollapsed}"
+                                   Classes="muted" FontSize="18" VerticalAlignment="Center" />
+                        <TextBlock Grid.Column="1" Text="⌃" IsVisible="{Binding IsErrorsExpanded}"
+                                   Classes="muted" FontSize="18" VerticalAlignment="Center" />
+                      </Grid>
+                    </ToggleButton>
                     <Button Grid.Column="1" Content="Retry failed files" Click="RetryFailedFiles"
                             IsEnabled="{Binding CanRetryFailedFiles}"
                             ToolTip.Tip="{Binding RetryFailedFilesToolTip}" VerticalAlignment="Center" />
                   </Grid>
 
-                  <ItemsControl ItemsSource="{Binding RecentErrors}">
+                  <ItemsControl ItemsSource="{Binding RecentErrors}" IsVisible="{Binding IsErrorsExpanded}">
                     <ItemsControl.ItemTemplate>
                       <DataTemplate x:DataType="vm:ProjectErrorItemViewModel">
                         <Border Classes="errorRow" Margin="0,3">
@@ -250,15 +279,15 @@
                             <Border Background="{DynamicResource DangerBrush}" CornerRadius="2" />
                             <StackPanel Grid.Column="1" Spacing="8">
                               <Grid ColumnDefinitions="*,Auto" ColumnSpacing="14">
-                                <StackPanel Orientation="Horizontal" Spacing="9">
+                                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="9">
                                   <TextBlock Text="{Binding FileName}" FontWeight="SemiBold"
                                              TextTrimming="CharacterEllipsis" MaxWidth="440"
                                              ToolTip.Tip="{Binding SourcePath}" />
-                                  <Border Background="{DynamicResource DangerSubtleBrush}" CornerRadius="8" Padding="8,2">
+                                  <Border Grid.Column="1" Background="{DynamicResource DangerSubtleBrush}" CornerRadius="8" Padding="8,2">
                                     <TextBlock Text="{Binding CodeDisplay}" Foreground="{DynamicResource DangerBrush}"
                                                FontSize="10" FontWeight="SemiBold" />
                                   </Border>
-                                </StackPanel>
+                                </Grid>
                                 <TextBlock Grid.Column="1" Text="{Binding CreatedDisplay}" Classes="quiet"
                                            FontSize="12" VerticalAlignment="Center" />
                               </Grid>
@@ -268,12 +297,12 @@
                               <StackPanel Orientation="Horizontal" Spacing="8">
                                 <Border IsVisible="{Binding IsRetryable}" Background="{DynamicResource WarningSubtleBrush}"
                                         CornerRadius="8" Padding="8,2">
-                                  <TextBlock Text="Retryable" Foreground="{DynamicResource WarningBrush}"
+                                  <TextBlock Text="Can retry" Foreground="{DynamicResource WarningBrush}"
                                              FontSize="10" FontWeight="SemiBold" />
                                 </Border>
                                 <Border IsVisible="{Binding IsPermanent}" Background="{DynamicResource SurfaceRaisedBrush}"
                                         CornerRadius="8" Padding="8,2">
-                                  <TextBlock Text="Manual review" Classes="muted" FontSize="10" FontWeight="SemiBold" />
+                                  <TextBlock Text="Review file" Classes="muted" FontSize="10" FontWeight="SemiBold" />
                                 </Border>
                                 <TextBlock IsVisible="{Binding HasFailedAttempts}" Text="{Binding AttemptDisplay}" Classes="quiet" FontSize="11"
                                            VerticalAlignment="Center" />
@@ -284,6 +313,15 @@
                       </DataTemplate>
                     </ItemsControl.ItemTemplate>
                   </ItemsControl>
+                  <Grid IsVisible="{Binding IsErrorsExpanded}" ColumnDefinitions="*,Auto,Auto" ColumnSpacing="8">
+                    <TextBlock Text="{Binding ErrorPageDisplay}" Classes="quiet" FontSize="12" VerticalAlignment="Center" />
+                    <Button Grid.Column="1" Content="Previous" Click="PreviousErrorPage"
+                            IsVisible="{Binding HasErrorPages}" IsEnabled="{Binding CanGoToPreviousErrorPage}"
+                            AutomationProperties.Name="Previous page of current issues" />
+                    <Button Grid.Column="2" Content="Next" Click="NextErrorPage"
+                            IsVisible="{Binding HasErrorPages}" IsEnabled="{Binding CanGoToNextErrorPage}"
+                            AutomationProperties.Name="Next page of current issues" />
+                  </Grid>
                 </StackPanel>
               </Border>
             </StackPanel>

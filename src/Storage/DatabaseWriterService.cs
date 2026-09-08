@@ -44,6 +44,8 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                 await command(connection).ConfigureAwait(false);
             }
 
+            // Indexing stops before the writer; requeue interrupted work after accepted commands drain.
+            await Schema.RecoverInterruptedJobsAsync(connection, CancellationToken.None).ConfigureAwait(false);
             await using var checkpoint = connection.CreateCommand();
             checkpoint.CommandText = "PRAGMA wal_checkpoint(TRUNCATE);";
             await checkpoint.ExecuteNonQueryAsync(CancellationToken.None).ConfigureAwait(false);
@@ -429,7 +431,8 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                 }
             }
 
-            var changed = observation.Force || tombstoned || epoch == 0 || priorSize != observation.Size || priorModified != observation.ModifiedUtc;
+            var changed = observation.Force || observation.VerifyContent || tombstoned || epoch == 0 ||
+                priorSize != observation.Size || priorModified != observation.ModifiedUtc;
             if (epoch == 0)
             {
                 epoch = 1;
@@ -643,6 +646,8 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                 await ExecuteAsync(connection, transaction,
                     "UPDATE index_jobs SET state='running',lease_until_utc=$lease,updated_utc=$now WHERE id=$id;",
                     [new("$lease", now.Add(leaseDuration).ToString("O")), new("$now", now.ToString("O")), new("$id", lease.JobId.ToString())], token).ConfigureAwait(false);
+                await ClearPriorJobErrorsAsync(connection, transaction, lease.ProjectId, lease.DocumentId, token)
+                    .ConfigureAwait(false);
             }
 
             await transaction.CommitAsync(token).ConfigureAwait(false);
@@ -796,6 +801,8 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                     [new("$size", size), new("$modified", modifiedUtc.ToString("O")), new("$now", now), new("$id", job.DocumentId.ToString())], token).ConfigureAwait(false);
                 await ExecuteAsync(connection, transaction, "UPDATE index_jobs SET state='completed',lease_until_utc=NULL,updated_utc=$now WHERE id=$id;",
                     [new("$now", now), new("$id", job.JobId.ToString())], token).ConfigureAwait(false);
+                await ClearPriorJobErrorsAsync(connection, transaction, job.ProjectId, job.DocumentId, token)
+                    .ConfigureAwait(false);
                 await transaction.CommitAsync(token).ConfigureAwait(false);
                 return new BeginRevisionResult(false, false, null, "The SHA-256 fingerprint is unchanged.");
             }
@@ -964,7 +971,6 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                     error.ItemName is null ? error.Message : $"{error.ItemName}: {error.Message}", error.Retryable, 0, sourcePath, token).ConfigureAwait(false);
             }
 
-            await TrimErrorsAsync(connection, transaction, request.ProjectId, token).ConfigureAwait(false);
             await transaction.CommitAsync(token).ConfigureAwait(false);
             return true;
         }, cancellationToken);
@@ -1128,6 +1134,8 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                 "DELETE FROM project_errors WHERE project_id=$project AND document_id=$document AND code='embedding_refresh_failed';",
                 [new("$project", request.ProjectId.ToString()), new("$document", request.DocumentId.ToString())], token)
                 .ConfigureAwait(false);
+            await ClearPriorJobErrorsAsync(connection, transaction, request.ProjectId, request.DocumentId, token)
+                .ConfigureAwait(false);
             await transaction.CommitAsync(token).ConfigureAwait(false);
             return true;
         }, cancellationToken);
@@ -1186,7 +1194,6 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
             await ClearPriorJobErrorsAsync(connection, transaction, job.ProjectId, job.DocumentId, token).ConfigureAwait(false);
             await InsertErrorAsync(connection, transaction, job.ProjectId, job.DocumentId, code, message, retryable,
                 attempt, job.SourcePath, token).ConfigureAwait(false);
-            await TrimErrorsAsync(connection, transaction, job.ProjectId, token).ConfigureAwait(false);
             await transaction.CommitAsync(token).ConfigureAwait(false);
             return null;
         }, cancellationToken);
@@ -1451,11 +1458,6 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
         Guid projectId, Guid documentId, CancellationToken cancellationToken) => ExecuteAsync(connection, transaction,
         "DELETE FROM project_errors WHERE project_id=$project AND document_id=$document AND attempt>0;",
         [new("$project", projectId.ToString()), new("$document", documentId.ToString())], cancellationToken);
-
-    private static Task<int> TrimErrorsAsync(SqliteConnection connection, SqliteTransaction transaction, Guid projectId,
-        CancellationToken cancellationToken) => ExecuteAsync(connection, transaction,
-        "DELETE FROM project_errors WHERE project_id=$project AND id NOT IN (SELECT id FROM project_errors WHERE project_id=$project ORDER BY id DESC LIMIT 1000);",
-        [new("$project", projectId.ToString())], cancellationToken);
 
     private static async Task<int> ExecuteAsync(SqliteConnection connection, SqliteTransaction? transaction, string sql,
         IReadOnlyList<SqliteParameter> parameters, CancellationToken cancellationToken)

@@ -1,5 +1,7 @@
+using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
+using Avalonia.VisualTree;
 
 using ContextMole.App.UI.ViewModels;
 
@@ -44,6 +46,20 @@ public partial class ProjectsView : UserControl
         if (!await ConfirmWindow.AskAsync(Owner, "Retry failed files?",
                 "Only documents currently marked with errors will be queued again. Successfully indexed files will not be touched.")) return;
         await RunUiActionAsync(sender as Control, ViewModel.RetryFailedFilesAsync);
+    }
+
+    private async void PreviousErrorPage(object? sender, RoutedEventArgs args) =>
+        await MoveErrorPageAsync(sender as Control, -1);
+
+    private async void NextErrorPage(object? sender, RoutedEventArgs args) =>
+        await MoveErrorPageAsync(sender as Control, 1);
+
+    private async Task MoveErrorPageAsync(Control? source, int direction)
+    {
+        var section = source?.GetVisualAncestors().OfType<Border>()
+            .FirstOrDefault(border => border.Classes.Contains("issuesCard"));
+        await RunUiActionAsync(source, () => ViewModel.MoveErrorPageAsync(direction));
+        section?.BringIntoView(new Rect(0, 0, section.Bounds.Width, 1));
     }
 
     private async void RepairSemanticIndex(object? sender, RoutedEventArgs args)
