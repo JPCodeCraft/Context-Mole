@@ -15,6 +15,7 @@
 
 ## Windows x64
 
+- Launch the MCP from an MSIX-packaged client with a stale private AppData index and a current desktop index. Confirm stderr identifies the redirected physical path and the desktop relaunch, then reports the canonical physical path. Verify `list_projects`, `list_documents`, keyword search, and passage reads use the desktop index. Keep a legacy v1 broker running during the test and confirm it cannot intercept the new connection. Repeat with a custom data directory and a normal unpackaged client; preserve environment overrides, keep protocol stdout free of logs, and confirm disconnect/shutdown releases the worker's lifecycle lease. Do not migrate or delete either database.
 - Check PDF native text and PDFium-rendered scanned OCR pages.
 - Check DOCX/XLSX/PPTX, all raster formats, EML/MSG, and nested attachments.
 - Exercise a OneDrive placeholder that is not resident and verify it is retained/retried without hydration.

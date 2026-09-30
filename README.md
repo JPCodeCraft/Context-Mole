@@ -495,6 +495,8 @@ The desktop app finishes database migrations and interrupted-job recovery before
 
 Daily `ui-YYYYMMDD.log` and `broker-YYYYMMDD.log` files live in the data directory's `logs` folder, with 14 files retained for each. The UI logs the application version, resolved paths, initial and expected schema versions, each migration's outcome and duration, and final database readiness. Database errors include their underlying exception and SQLite codes. MCP schema errors include actual/expected versions; access, locking, and corruption errors are reported separately as `index_unavailable`.
 
+On Windows, an MSIX-packaged AI client can redirect its child processes' AppData access into a private cache. The MCP adapter detects that redirection before opening the index or creating broker/lifecycle files, then automatically launches its server in the same user's desktop runtime. The client keeps its normal stdio connection through private named pipes. MCP stderr logs include the requested and physical data directories and the running version. Existing indexes, settings, and models stay in their current data directory; no reindex or configuration change is required. Reload the AI client's MCP connection after updating.
+
 Document processing timers begin after processor capacity is acquired. Availability checks and queue waits are excluded, waiting items show no running timer, and the completed average includes only successful attempts' processing time for the current session.
 
 Context Mole never modifies indexed source files. When an AI client explicitly requests attachment materialization, the MCP server may create a controlled temporary copy inside the Context Mole data directory.

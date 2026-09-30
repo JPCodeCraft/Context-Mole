@@ -18,7 +18,20 @@ internal static class Program
         "Semantic confidence is permissive by default: inspect raw semantic scores and low_confidence rather than assuming borderline leads were removed. Use strict_semantic_threshold only when false positives cost more than recall. A semantic_partial_coverage warning means the semantic branch searched only documents compatible with the active embedding policy while keyword retrieval continued to cover the full searchable index. If hybrid reports fallback_keyword, no compatible semantic branch completed; continue with keyword results or retry semantic later. Semantic mode intentionally returns no results with a structured semantic_unavailable warning rather than silently changing modes. Results are grouped by stable content_id. candidate_match_count is the unique evaluated match count; inspected_candidate_depths reports keyword, optional boost, and semantic branch depths separately because branches can overlap. Inspect candidate_limit_reached before treating candidate, collapsed, or suppressed counts as exhaustive; when it is true, raise the group limits or focus a later search_project call with filters.content_ids. Use read_passages with returned passage IDs for stored neighboring text. Use materialize_content when original-file verification, formatting, tables, images, attachments, archive entries, or document structure may affect the answer.\n\n" +
         "Use list_documents for inventories, filtering, and indexing status; get_document_info for one document's metadata, revision, extraction counts, and errors; list_attachments to discover content IDs; and resolve_local_file when the existing root document or container path is sufficient. Search excerpts are evidence leads, not complete documents: read enough context before summarizing or comparing. Base claims and citations only on exact returned provenance; never infer or normalize source paths, attachment chains, typed locations, contents, or citations. If a source changed after indexing, do not claim it matches the indexed version. This server does not render, open, reindex, modify, or delete source files.";
 
-    public static async Task Main(string[] args)
+    public static async Task<int> Main(string[] args)
+    {
+        try
+        {
+            return await WindowsMcpDesktopTransport.RunAsync(args, RunServerAsync).ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            await Console.Error.WriteLineAsync($"Context Mole MCP startup failed: {exception}").ConfigureAwait(false);
+            return 1;
+        }
+    }
+
+    private static async Task RunServerAsync(string[] args, Stream? input, Stream? output)
     {
         var builder = Host.CreateApplicationBuilder(args);
         builder.Logging.ClearProviders();
@@ -36,13 +49,23 @@ internal static class Program
             TypeInfoResolver = new DefaultJsonTypeInfoResolver()
         };
         serializerOptions.Converters.Add(new JsonStringEnumConverter(JsonNamingPolicy.SnakeCaseLower));
-        builder.Services.AddMcpServer(options =>
+        var server = builder.Services.AddMcpServer(options =>
             {
                 options.ServerInstructions = ServerInstructions;
-            })
-            .WithStdioServerTransport()
-            .WithTools<BrokerMcpTools>(serializerOptions);
+            });
+        if (input is not null && output is not null)
+            server.WithStreamServerTransport(input, output);
+        else
+            server.WithStdioServerTransport();
+        server.WithTools<BrokerMcpTools>(serializerOptions);
 
-        await builder.Build().RunAsync().ConfigureAwait(false);
+        using var host = builder.Build();
+        var paths = host.Services.GetRequiredService<IAppPaths>();
+        host.Services.GetRequiredService<ILoggerFactory>().CreateLogger("ContextMole.Mcp.Startup")
+            .LogInformation("MCP {Version} starting. Data directory: {DataDirectory}. Database: {DatabasePath}",
+                typeof(Program).Assembly.GetCustomAttributes(false)
+                    .OfType<System.Reflection.AssemblyInformationalVersionAttribute>().FirstOrDefault()?.InformationalVersion,
+                paths.DataDirectory, paths.DatabasePath);
+        await host.RunAsync().ConfigureAwait(false);
     }
 }

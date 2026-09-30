@@ -8,7 +8,9 @@ namespace ContextMole.Broker.Protocol;
 
 public static class BrokerProtocol
 {
-    public const int MajorVersion = 1;
+    // Isolate the shared desktop runtime from legacy brokers that may still run
+    // against an MSIX-private database and authentication token after an update.
+    public const int MajorVersion = 2;
     public const int MinorVersion = 0;
     public const int MaximumFrameBytes = 32 * 1024 * 1024;
     public static readonly TimeSpan DefaultStartupTimeout = TimeSpan.FromSeconds(10);
