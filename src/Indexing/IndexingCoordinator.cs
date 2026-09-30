@@ -659,6 +659,8 @@ public sealed class IndexingCoordinator(
                         capacity = await _cpuBudget.AcquireWorkerAsync(jobCancellationToken).ConfigureAwait(false);
                         using (capacity.Activate())
                         {
+                            activity.StartProcessing(job.Kind == IndexJobKind.EmbeddingRefresh
+                                ? IndexingPipelineStage.PreparingRevision : IndexingPipelineStage.Hashing);
                             var indexed = await ProcessJobAsync(job, source, activity, jobCancellationToken)
                                 .ConfigureAwait(false);
                             activity.Complete(indexed);

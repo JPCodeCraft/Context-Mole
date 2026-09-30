@@ -685,7 +685,8 @@ public sealed record KeywordSearchPage(long SearchGeneration, IReadOnlyList<Sear
 
 public sealed record VectorMatch(Guid PassageId, double Score, int Rank);
 
-public sealed class ContextMoleException(string code, string message, bool retryable = false) : Exception(message)
+public sealed class ContextMoleException(string code, string message, bool retryable = false,
+    Exception? innerException = null) : Exception(message, innerException)
 {
     public string Code { get; } = code;
     public bool Retryable { get; } = retryable;

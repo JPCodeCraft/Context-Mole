@@ -491,6 +491,12 @@ Application data is stored in:
 
 Set `CONTEXTMOLE_DATA_DIR` to choose another location. `CONTEXTMOLE_MCP_PATH` can point development builds at a specific MCP executable, and `CONTEXTMOLE_MATERIALIZE_MAX_BYTES` controls the maximum size of materialized attachment content.
 
+The desktop app finishes database migrations and interrupted-job recovery before opening its normal interface. It refuses databases from newer versions or with invalid migration history; a failed migration rolls back its own transaction and can be retried on the next launch. Startup failures show the database path and log location without recreating the index.
+
+Daily `ui-YYYYMMDD.log` and `broker-YYYYMMDD.log` files live in the data directory's `logs` folder, with 14 files retained for each. The UI logs the application version, resolved paths, initial and expected schema versions, each migration's outcome and duration, and final database readiness. Database errors include their underlying exception and SQLite codes. MCP schema errors include actual/expected versions; access, locking, and corruption errors are reported separately as `index_unavailable`.
+
+Document processing timers begin after processor capacity is acquired. Availability checks and queue waits are excluded, waiting items show no running timer, and the completed average includes only successful attempts' processing time for the current session.
+
 Context Mole never modifies indexed source files. When an AI client explicitly requests attachment materialization, the MCP server may create a controlled temporary copy inside the Context Mole data directory.
 
 ### Windows uninstall and local data

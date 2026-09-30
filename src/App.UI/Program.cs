@@ -25,6 +25,7 @@ internal static class Program
 
     public static IServiceProvider Services => _host?.Services ?? throw new InvalidOperationException("The application host has not started.");
     public static bool LaunchInBackground { get; private set; }
+    public static string? StartupFailureMessage { get; private set; }
 
     [STAThread]
     public static void Main(string[] args)
@@ -33,45 +34,39 @@ internal static class Program
         LaunchInBackground = args.Any(argument =>
             string.Equals(argument, WindowsStartupRegistration.BackgroundArgument, StringComparison.OrdinalIgnoreCase));
 
+        IAppPaths? paths = null;
         try
         {
-            var paths = new AppPaths();
-            _instanceLock = SingleInstanceLock.Acquire(paths);
-            var builder = Host.CreateApplicationBuilder(args);
-            builder.Logging.ClearProviders();
-            Log.Logger = new LoggerConfiguration()
-                .MinimumLevel.Information()
-                .Enrich.FromLogContext()
-                .WriteTo.File(Path.Combine(paths.LogsDirectory, "ui-.log"), rollingInterval: RollingInterval.Day,
-                    retainedFileCountLimit: 14, shared: true)
-                .CreateLogger();
-            builder.Services.AddSerilog(dispose: true);
-            builder.Services.AddSingleton<IAppPaths>(paths);
-            builder.Services.AddContextMoleInfrastructure(includeOcr: true);
-            builder.Services.AddSingleton(_ => new BrokerRpcClient(paths.DataDirectory,
-                static () => BrokerLaunchCommand.Resolve()));
-            builder.Services.Replace(ServiceDescriptor.Singleton<IEmbeddingGenerator, BrokerEmbeddingGenerator>());
-            // The UI initiates and drains its own uninstall. It holds a lease, while only MCP
-            // sidecars need the marker monitor that stops a host started by an AI client.
-            builder.Services.AddContextMoleProcessLifetime("ui", stopOnShutdownRequest: false);
-            builder.Services.AddSingleton<McpServerDeploymentService>();
-            builder.Services.AddSingleton<AiConnectionsService>();
-            builder.Services.AddContextMoleDocuments();
-            builder.Services.AddWritableContextMoleStorage();
-            builder.Services.AddContextMoleIndexing();
-            builder.Services.AddSingleton<ApplicationUpdateService>();
-            builder.Services.AddSingleton<WindowsStartupService>();
-            builder.Services.AddSingleton<WindowsUninstallService>();
-            builder.Services.AddSingleton<ProjectOrderService>();
-            builder.Services.AddSingleton<ViewModels.MainViewModel>();
-            _host = builder.Build();
-            _host.StartAsync().GetAwaiter().GetResult();
+            try
+            {
+                paths = new AppPaths();
+                StartHost(args, paths);
+            }
+            catch (OperationCanceledException)
+            {
+                Log.Information("Application startup canceled");
+                Environment.ExitCode = 1;
+                return;
+            }
+            catch (Exception exception)
+            {
+                Console.Error.WriteLine($"Context Mole could not start: {exception.Message}");
+                Log.Fatal(exception, "Application startup failed at {DatabasePath}; logs {LogsDirectory}",
+                    paths?.DatabasePath, paths?.LogsDirectory);
+                StartupFailureMessage = $"Context Mole could not initialize.\n\n{exception.Message}\n\n" +
+                    $"Database: {paths?.DatabasePath ?? "Unavailable"}\n" +
+                    $"Logs: {paths?.LogsDirectory ?? "Logging could not be initialized"}\n\n" +
+                    "Close the app and retry after resolving the error. The database has not been recreated.";
+                Environment.ExitCode = 1;
+                ShutdownHostAsync(closeLog: false).GetAwaiter().GetResult();
+            }
             BuildAvaloniaApp().StartWithClassicDesktopLifetime(args, Avalonia.Controls.ShutdownMode.OnExplicitShutdown);
         }
         catch (Exception exception)
         {
             Console.Error.WriteLine($"Context Mole could not start: {exception.Message}");
-            Log.Fatal(exception, "Application startup failed");
+            Log.Fatal(exception, "Application stopped unexpectedly");
+            Environment.ExitCode = 1;
         }
         finally
         {
@@ -79,7 +74,44 @@ internal static class Program
         }
     }
 
-    public static async Task ShutdownHostAsync()
+    private static void StartHost(string[] args, IAppPaths paths)
+    {
+        _instanceLock = SingleInstanceLock.Acquire(paths);
+        var builder = Host.CreateApplicationBuilder(args);
+        builder.Logging.ClearProviders();
+        Log.Logger = new LoggerConfiguration()
+            .MinimumLevel.Information()
+            .Enrich.FromLogContext()
+            .WriteTo.File(Path.Combine(paths.LogsDirectory, "ui-.log"), rollingInterval: RollingInterval.Day,
+                retainedFileCountLimit: 14, shared: true)
+            .CreateLogger();
+        // Keep the logger alive if host startup fails so error-window failures are also recorded.
+        builder.Services.AddSerilog(dispose: false);
+        Log.Information("Starting Context Mole {ApplicationVersion}; data directory {DataDirectory}, database {DatabasePath}, logs {LogsDirectory}",
+            typeof(Program).Assembly.GetName().Version, paths.DataDirectory, paths.DatabasePath, paths.LogsDirectory);
+        builder.Services.AddSingleton<IAppPaths>(paths);
+        builder.Services.AddContextMoleInfrastructure(includeOcr: true);
+        builder.Services.AddSingleton(_ => new BrokerRpcClient(paths.DataDirectory,
+            static () => BrokerLaunchCommand.Resolve()));
+        builder.Services.Replace(ServiceDescriptor.Singleton<IEmbeddingGenerator, BrokerEmbeddingGenerator>());
+        // The UI initiates and drains its own uninstall. It holds a lease, while only MCP
+        // sidecars need the marker monitor that stops a host started by an AI client.
+        builder.Services.AddContextMoleProcessLifetime("ui", stopOnShutdownRequest: false);
+        builder.Services.AddSingleton<McpServerDeploymentService>();
+        builder.Services.AddSingleton<AiConnectionsService>();
+        builder.Services.AddContextMoleDocuments();
+        builder.Services.AddWritableContextMoleStorage();
+        builder.Services.AddContextMoleIndexing();
+        builder.Services.AddSingleton<ApplicationUpdateService>();
+        builder.Services.AddSingleton<WindowsStartupService>();
+        builder.Services.AddSingleton<WindowsUninstallService>();
+        builder.Services.AddSingleton<ProjectOrderService>();
+        builder.Services.AddSingleton<ViewModels.MainViewModel>();
+        _host = builder.Build();
+        _host.StartAsync().GetAwaiter().GetResult();
+    }
+
+    public static async Task ShutdownHostAsync(bool closeLog = true)
     {
         var host = Interlocked.Exchange(ref _host, null);
         try
@@ -123,7 +155,7 @@ internal static class Program
             }
             finally
             {
-                Log.CloseAndFlush();
+                if (closeLog) Log.CloseAndFlush();
             }
         }
     }

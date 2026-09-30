@@ -130,6 +130,7 @@ public interface IIndexWriter
 
 public interface ISearchStore
 {
+    /// <summary>Returns false only when the database is absent; incompatible or unreadable indexes throw.</summary>
     Task<bool> IsInitializedAsync(CancellationToken cancellationToken = default);
     Task<IReadOnlyList<ProjectSummary>> ListProjectsAsync(CancellationToken cancellationToken = default);
     async Task<string?> GetProjectFolderPathAsync(Guid projectId, Guid folderId,

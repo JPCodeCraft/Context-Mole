@@ -171,7 +171,8 @@
                           <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto,Auto,Auto">
                             <TextBlock Text="{Binding FileName}" FontWeight="SemiBold"
                                        TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding SourcePath}" />
-                            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="13" Margin="16,0,0,0">
+                            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="13" Margin="16,0,0,0"
+                                        IsVisible="{Binding ShowTimers}">
                               <TextBlock Text="{Binding ElapsedDisplay}" Classes="muted" FontFamily="Consolas" FontSize="12" />
                               <TextBlock Text="{Binding StageElapsedDisplay}" Classes="quiet" FontFamily="Consolas" FontSize="12" />
                             </StackPanel>

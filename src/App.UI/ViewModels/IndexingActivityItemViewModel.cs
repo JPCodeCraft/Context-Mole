@@ -11,6 +11,7 @@ public sealed class IndexingActivityItemViewModel : ViewModelBase
     private string _stageElapsedDisplay = string.Empty;
     private double _pipelinePosition;
     private bool _isProgressIndeterminate;
+    private bool _showTimers;
 
     public IndexingActivityItemViewModel(IndexingActivitySnapshot activity)
     {
@@ -25,6 +26,7 @@ public sealed class IndexingActivityItemViewModel : ViewModelBase
     public string ElapsedDisplay { get => _elapsedDisplay; private set => SetProperty(ref _elapsedDisplay, value); }
     public string StageElapsedDisplay { get => _stageElapsedDisplay; private set => SetProperty(ref _stageElapsedDisplay, value); }
     public double PipelinePosition { get => _pipelinePosition; private set => SetProperty(ref _pipelinePosition, value); }
+    public bool ShowTimers { get => _showTimers; private set => SetProperty(ref _showTimers, value); }
     public bool IsProgressIndeterminate
     {
         get => _isProgressIndeterminate;
@@ -37,10 +39,11 @@ public sealed class IndexingActivityItemViewModel : ViewModelBase
         SourcePath = activity.SourcePath;
         FileName = Path.GetFileName(activity.SourcePath);
         StageDisplay = StageName(activity);
-        ElapsedDisplay = $"Total {FormatDuration(activity.Elapsed)}";
+        ElapsedDisplay = $"Processing {FormatDuration(activity.Elapsed)}";
         StageElapsedDisplay = $"This stage {FormatDuration(activity.StageElapsed)}";
         PipelinePosition = StagePosition(activity.Stage);
         IsProgressIndeterminate = activity.IsWaitingForResources;
+        ShowTimers = activity.IsProcessing;
     }
 
     public static string FormatDuration(TimeSpan duration)

@@ -7,6 +7,8 @@ using ContextMole.Core;
 
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace ContextMole.Storage;
 
@@ -17,6 +19,7 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
         TypeInfoResolver = new DefaultJsonTypeInfoResolver()
     };
     private readonly IAppPaths _paths;
+    private readonly ILogger<DatabaseWriterService> _logger;
     private readonly Channel<Func<SqliteConnection, Task>> _commands = Channel.CreateBounded<Func<SqliteConnection, Task>>(
         new BoundedChannelOptions(256)
         {
@@ -25,18 +28,42 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
             SingleWriter = false
         });
     private readonly TaskCompletionSource _ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private CancellationToken _startupCancellationToken;
 
-    public DatabaseWriterService(IAppPaths paths) => _paths = paths;
+    public DatabaseWriterService(IAppPaths paths, ILogger<DatabaseWriterService>? logger = null)
+    {
+        _paths = paths;
+        _logger = logger ?? NullLogger<DatabaseWriterService>.Instance;
+    }
 
     public Task Ready => _ready.Task;
+
+    public override async Task StartAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        _startupCancellationToken = cancellationToken;
+        await base.StartAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await Ready.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            await StopAsync(CancellationToken.None).ConfigureAwait(false);
+            throw;
+        }
+    }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         try
         {
+            _logger.LogInformation("Initializing database at {DatabasePath} in {DataDirectory}; expected schema {SchemaVersion}",
+                _paths.DatabasePath, _paths.DataDirectory, Schema.CurrentVersion);
             await using var connection = CreateConnection();
             await connection.OpenAsync(stoppingToken).ConfigureAwait(false);
-            await Schema.MigrateAsync(connection, stoppingToken).ConfigureAwait(false);
+            await Schema.MigrateAsync(connection, _logger, stoppingToken).ConfigureAwait(false);
+            _logger.LogInformation("Database ready at {DatabasePath}, schema version {SchemaVersion}", _paths.DatabasePath, Schema.CurrentVersion);
             _ready.TrySetResult();
 
             await foreach (var command in _commands.Reader.ReadAllAsync(CancellationToken.None).ConfigureAwait(false))
@@ -50,8 +77,17 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
             checkpoint.CommandText = "PRAGMA wal_checkpoint(TRUNCATE);";
             await checkpoint.ExecuteNonQueryAsync(CancellationToken.None).ConfigureAwait(false);
         }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested || _startupCancellationToken.IsCancellationRequested)
+        {
+            _ready.TrySetCanceled(stoppingToken.IsCancellationRequested ? stoppingToken : _startupCancellationToken);
+            _logger.LogInformation("Database initialization or shutdown canceled at {DatabasePath}", _paths.DatabasePath);
+        }
         catch (Exception exception)
         {
+            _logger.LogError(exception,
+                "Database writer failed at {DatabasePath}; SQLite code {SqliteCode}, extended code {SqliteExtendedCode}",
+                _paths.DatabasePath, (exception as SqliteException)?.SqliteErrorCode,
+                (exception as SqliteException)?.SqliteExtendedErrorCode);
             _ready.TrySetException(exception);
             throw;
         }

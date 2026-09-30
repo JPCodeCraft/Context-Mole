@@ -122,19 +122,12 @@ public sealed class BrokerRequestDispatcher(
     private async Task<DocumentListResponse> ListDocumentsAsync(BrokerListDocumentsRequest request,
         CancellationToken cancellationToken)
     {
-        try
-        {
-            return await _store.ListDocumentsAsync(new DocumentListRequest(request.ProjectId,
-                ParseDocumentStatus(request.Status), request.Extensions, request.PathPrefixes, request.NameQuery,
-                request.ModifiedFromUtc, request.ModifiedToUtc, ParseDocumentSortField(request.SortBy),
-                ParseDocumentSortDirection(request.SortDirection), request.Limit, request.Cursor), cancellationToken)
-                .ConfigureAwait(false);
-        }
-        catch (ContextMoleException exception) when (exception.Code is "not_initialized" or "schema_incompatible")
-        {
-            throw new ContextMoleException("index_unavailable",
-                "The local document index is unavailable or incompatible.", true);
-        }
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+        return await _store.ListDocumentsAsync(new DocumentListRequest(request.ProjectId,
+            ParseDocumentStatus(request.Status), request.Extensions, request.PathPrefixes, request.NameQuery,
+            request.ModifiedFromUtc, request.ModifiedToUtc, ParseDocumentSortField(request.SortBy),
+            ParseDocumentSortDirection(request.SortDirection), request.Limit, request.Cursor), cancellationToken)
+            .ConfigureAwait(false);
     }
 
     private async Task<AttachmentPage> ListAttachmentsAsync(BrokerListAttachmentsRequest request,
@@ -187,11 +180,8 @@ public sealed class BrokerRequestDispatcher(
     private async Task EnsureInitializedAsync(CancellationToken cancellationToken)
     {
         if (!await _store.IsInitializedAsync(cancellationToken).ConfigureAwait(false))
-            throw File.Exists(_paths.DatabasePath)
-                ? new ContextMoleException("schema_incompatible",
-                    "The local index database schema is incompatible with this MCP server.")
-                : new ContextMoleException("not_initialized",
-                    "The local index database has not been initialized by the desktop application.");
+            throw new ContextMoleException("not_initialized",
+                "The local index database has not been initialized by the desktop application.");
     }
 
     private async Task StopAfterResponseAsync()

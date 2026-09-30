@@ -23,6 +23,14 @@ public partial class App : Application
     {
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
+            if (Program.StartupFailureMessage is { } startupFailure)
+            {
+                var errorWindow = ConfirmWindow.CreateStartupError(startupFailure);
+                desktop.MainWindow = errorWindow;
+                errorWindow.Closed += (_, _) => desktop.Shutdown(1);
+                base.OnFrameworkInitializationCompleted();
+                return;
+            }
             var viewModel = Program.Services.GetRequiredService<MainViewModel>();
             var window = new MainWindow { DataContext = viewModel };
             if (Program.LaunchInBackground)

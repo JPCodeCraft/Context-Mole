@@ -8,6 +8,8 @@ using System.Text.Json.Serialization.Metadata;
 using ContextMole.Core;
 
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace ContextMole.Storage;
 
@@ -20,28 +22,19 @@ public sealed class SqliteSearchStore : ISearchStore
         TypeInfoResolver = new DefaultJsonTypeInfoResolver()
     };
     private readonly IAppPaths _paths;
+    private readonly ILogger<SqliteSearchStore> _logger;
 
-    public SqliteSearchStore(IAppPaths paths) => _paths = paths;
+    public SqliteSearchStore(IAppPaths paths, ILogger<SqliteSearchStore>? logger = null)
+    {
+        _paths = paths;
+        _logger = logger ?? NullLogger<SqliteSearchStore>.Instance;
+    }
 
     public async Task<bool> IsInitializedAsync(CancellationToken cancellationToken = default)
     {
-        if (!File.Exists(_paths.DatabasePath))
-        {
-            return false;
-        }
-
-        try
-        {
-            await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
-            await using var command = connection.CreateCommand();
-            command.CommandText = "SELECT MAX(version) FROM schema_migrations;";
-            var version = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
-            return version is not null and not DBNull && Convert.ToInt32(version) == Schema.CurrentVersion;
-        }
-        catch (SqliteException)
-        {
-            return false;
-        }
+        if (!DatabaseExists()) return false;
+        await using var connection = await OpenRequiredAsync(cancellationToken).ConfigureAwait(false);
+        return true;
     }
 
     public async Task<IReadOnlyList<ProjectSummary>> ListProjectsAsync(CancellationToken cancellationToken = default)
@@ -370,7 +363,7 @@ public sealed class SqliteSearchStore : ISearchStore
         }
         catch (SqliteException exception)
         {
-            throw new ContextMoleException("index_unavailable", $"The document index is unavailable: {exception.Message}", true);
+            throw Unavailable(exception);
         }
     }
 
@@ -1305,30 +1298,64 @@ public sealed class SqliteSearchStore : ISearchStore
 
     private async Task<SqliteConnection> OpenRequiredAsync(CancellationToken cancellationToken)
     {
-        if (!File.Exists(_paths.DatabasePath))
+        if (!DatabaseExists())
         {
             throw new ContextMoleException("not_initialized", "The index database does not exist. Start the desktop application first.");
         }
 
-        var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
-        await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT MAX(version) FROM schema_migrations;";
+        SqliteConnection? connection = null;
         try
         {
-            var value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
-            if (value is null or DBNull || Convert.ToInt32(value) != Schema.CurrentVersion)
-            {
-                await connection.DisposeAsync().ConfigureAwait(false);
-                throw new ContextMoleException("schema_incompatible", "The index schema is missing or incompatible. Start the desktop application to migrate it.");
-            }
-
+            connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+            await Schema.ValidateAsync(connection, cancellationToken).ConfigureAwait(false);
             return connection;
+        }
+        catch (ContextMoleException exception) when (exception.Code == "schema_incompatible")
+        {
+            if (connection is not null) await connection.DisposeAsync().ConfigureAwait(false);
+            _logger.LogWarning(exception, "Index schema validation failed at {DatabasePath}; expected schema {SchemaVersion}",
+                _paths.DatabasePath, Schema.CurrentVersion);
+            throw;
+        }
+        catch (Exception exception) when (exception is SqliteException or IOException or UnauthorizedAccessException)
+        {
+            if (connection is not null) await connection.DisposeAsync().ConfigureAwait(false);
+            throw Unavailable(exception);
         }
         catch
         {
-            await connection.DisposeAsync().ConfigureAwait(false);
+            if (connection is not null) await connection.DisposeAsync().ConfigureAwait(false);
             throw;
         }
+    }
+
+    private bool DatabaseExists()
+    {
+        try
+        {
+            return (File.GetAttributes(_paths.DatabasePath) & FileAttributes.Directory) == 0
+                ? true
+                : throw new IOException("The configured database path is a directory.");
+        }
+        catch (Exception exception) when (exception is FileNotFoundException or DirectoryNotFoundException)
+        {
+            return false;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            throw Unavailable(exception);
+        }
+    }
+
+    private ContextMoleException Unavailable(Exception exception)
+    {
+        var sqlite = exception as SqliteException;
+        _logger.LogError(exception,
+            "Index database unavailable at {DatabasePath}; SQLite code {SqliteCode}, extended code {SqliteExtendedCode}",
+            _paths.DatabasePath, sqlite?.SqliteErrorCode, sqlite?.SqliteExtendedErrorCode);
+        return new ContextMoleException("index_unavailable",
+            $"The index database is unavailable: {exception.Message}", sqlite?.SqliteErrorCode is 5 or 6,
+            exception);
     }
 
     private async Task<SqliteConnection> OpenAsync(CancellationToken cancellationToken)
@@ -1341,11 +1368,19 @@ public sealed class SqliteSearchStore : ISearchStore
             Pooling = true
         };
         var connection = new SqliteConnection(builder.ToString());
-        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-        await using var command = connection.CreateCommand();
-        command.CommandText = "PRAGMA busy_timeout=5000; PRAGMA temp_store=MEMORY; PRAGMA query_only=ON;";
-        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-        return connection;
+        try
+        {
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            await using var command = connection.CreateCommand();
+            command.CommandText = "PRAGMA busy_timeout=5000; PRAGMA temp_store=MEMORY; PRAGMA query_only=ON;";
+            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            return connection;
+        }
+        catch
+        {
+            await connection.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
     }
 
     private static async Task<long> ReadGenerationAsync(SqliteConnection connection, SqliteTransaction transaction,

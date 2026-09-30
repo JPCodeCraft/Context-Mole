@@ -1076,8 +1076,8 @@ internal partial class MainViewModel : ViewModelBase
 
         var activeText = workParts.Count == 0 ? "No files active" : string.Join(" · ", workParts);
         var completedText = snapshot.AverageCompletedDuration is { } average
-            ? $"completed average {IndexingActivityItemViewModel.FormatDuration(average)} ({snapshot.CompletedSampleCount} this session)"
-            : "completed average —";
+            ? $"completed processing average {IndexingActivityItemViewModel.FormatDuration(average)} ({snapshot.CompletedSampleCount} this session)"
+            : "completed processing average —";
         IndexingTimingSummary = $"{activeText} · {completedText}";
         OnPropertyChanged(nameof(HasActiveIndexingItems));
     }

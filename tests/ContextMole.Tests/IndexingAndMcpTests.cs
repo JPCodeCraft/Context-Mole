@@ -661,7 +661,7 @@ public sealed class IndexingStateTests
         var first = NewJob(projectId, "first.txt");
         using (var activity = tracker.Start(first))
         {
-            activity.SetStage(IndexingPipelineStage.GeneratingEmbeddings);
+            activity.StartProcessing(IndexingPipelineStage.GeneratingEmbeddings);
             var active = Assert.Single(tracker.GetSnapshot(projectId).ActiveItems);
             Assert.Equal(IndexingPipelineStage.GeneratingEmbeddings, active.Stage);
             activity.Complete(includeInAverage: true);

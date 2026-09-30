@@ -32,6 +32,8 @@ public static class BrokerProgram
                 rollingInterval: RollingInterval.Day, retainedFileCountLimit: 14, shared: true)
             .CreateLogger();
         builder.Services.AddSerilog(dispose: true);
+        Log.Information("Starting Context Mole broker {ApplicationVersion}; data directory {DataDirectory}, database {DatabasePath}, logs {LogsDirectory}",
+            typeof(BrokerProgram).Assembly.GetName().Version, paths.DataDirectory, paths.DatabasePath, paths.LogsDirectory);
         builder.Services.AddSingleton<IAppPaths>(paths);
         builder.Services.AddSingleton(TimeProvider.System);
         builder.Services.AddContextMoleInfrastructure(includeOcr: false);

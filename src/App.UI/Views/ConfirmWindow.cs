@@ -119,4 +119,13 @@ public sealed class ConfirmWindow : Window
 
     public static Task<bool> ShowMessageAsync(Window owner, string title, string message) =>
         new ConfirmWindow(title, message, true, "OK", false).ShowDialog<bool>(owner);
+
+    public static ConfirmWindow CreateStartupError(string message) =>
+        new("Context Mole could not start", message, true, "Close", false, isError: true)
+        {
+            Width = 600,
+            WindowStartupLocation = WindowStartupLocation.CenterScreen,
+            ShowInTaskbar = true,
+            ShowActivated = true,
+        };
 }

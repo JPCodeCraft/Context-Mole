@@ -27,7 +27,7 @@ public sealed class IndexingCpuOrderingTests
         Assert.Equal(0, waiting.ProcessingCount);
         Assert.Equal(0, waiting.RetryingCount);
 
-        activity.SetStage(IndexingPipelineStage.Hashing);
+        activity.StartProcessing(IndexingPipelineStage.Hashing);
         var processing = tracker.GetSnapshot(projectId);
         Assert.Equal(1, processing.ProcessingCount);
         Assert.Equal(1, processing.RetryingCount);
@@ -95,6 +95,11 @@ public sealed class IndexingCpuOrderingTests
             Assert.Equal(1, waiting.WaitingForCpuCount);
             Assert.Equal(0, waiting.ProcessingCount);
             Assert.Equal(IndexingPipelineStage.WaitingForCpu, Assert.Single(waiting.ActiveItems).Stage);
+            var item = Assert.Single(waiting.ActiveItems);
+            Assert.False(item.HasStartedProcessing);
+            Assert.Null(item.StartedUtc);
+            Assert.Equal(TimeSpan.Zero, item.Elapsed);
+            Assert.Equal(TimeSpan.Zero, item.StageElapsed);
 
             await coordinator.StopAsync(CancellationToken.None);
             stopped = true;
