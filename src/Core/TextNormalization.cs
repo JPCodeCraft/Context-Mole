@@ -48,8 +48,8 @@ public static partial class TextNormalization
 
     public static string QuoteFtsTerms(string query)
     {
-        var terms = WordTokens().Matches(ForSearch(query))
-            .Select(match => match.Value.Replace("\"", "\"\"", StringComparison.Ordinal))
+        var terms = LexicalText.Tokens(query)
+            .Select(token => token.Replace("\"", "\"\"", StringComparison.Ordinal))
             .Where(term => term.Length > 0)
             .Take(64)
             .Select(term => $"\"{term}\"")
@@ -67,6 +67,4 @@ public static partial class TextNormalization
     [GeneratedRegex(@"([\p{L}\p{M}])-\s*\n\s*([\p{Ll}])")]
     private static partial Regex LineBreakHyphen();
 
-    [GeneratedRegex(@"[\p{L}\p{M}\p{N}_]+")]
-    private static partial Regex WordTokens();
 }

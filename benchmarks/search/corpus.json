@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "description": "Synthetic, repository-authored structural retrieval cases. Labels refer to content or persisted section identities, never heading strings.",
+  "documents": [
+    { "id": "restore", "title": "Database recovery procedure", "sections": [
+      { "id": "schedule", "heading": "Operations", "passages": ["Backups run every night at 02:00. The recovery archive is encrypted.", "Restore the database from the latest verified snapshot and validate the recovered records."] },
+      { "id": "retention", "heading": "Operations", "passages": ["Audit logs remain available for ninety days. Archive retention does not define the restore schedule."] }
+    ] },
+    { "id": "payroll", "title": "Payroll processing", "sections": [
+      { "id": "payments", "heading": "Payments", "passages": ["Employee salary payments are approved by human resources on the last business day of each month.", "Payroll withholding includes income tax and pension contributions."] }
+    ] },
+    { "id": "supplier", "title": "Supplier invoice payment", "sections": [
+      { "id": "payments", "heading": "Payments", "passages": ["Supplier invoices are paid thirty days after approval. A purchase order is required before payment.", "Vendor bank-account changes require independent verification by finance."] }
+    ] },
+    { "id": "lease", "title": "Commercial lease agreement", "sections": [
+      { "id": "termination", "heading": "Termination", "passages": ["The tenant must give ninety days of written notice before terminating the commercial lease.", "Termination of the lease requires inspection of the premises and return of the keys."] }
+    ] },
+    { "id": "subscription", "title": "Software subscription terms", "sections": [
+      { "id": "termination", "heading": "Termination", "passages": ["Cancel the software subscription before the renewal date. Cancellation takes effect at the end of the billing period."] }
+    ] },
+    { "id": "international", "title": "Contratação internacional", "sections": [
+      { "id": "conditions", "heading": "Condições", "passages": ["A contratação internacional exige análise de proteção de dados e autorização do responsável.", "La renovación del servicio requiere autorización por escrito y un plazo de treinta días."] }
+    ] },
+    { "id": "technical", "title": "API field conventions", "sections": [
+      { "id": "identifiers", "heading": "Fields", "passages": ["The field passage_id identifies the exact stored passage. search_generation guards the evidence revision.", "The separate words passage id do not name the underscore-delimited field."] },
+      { "id": "fractions", "heading": "Measurements", "passages": ["The requested amount is ½ cup. Compatibility characters must have the same lexical representation during indexing and query evaluation."] }
+    ] },
+    { "id": "late", "title": "Long incident notes", "sections": [
+      { "id": "incident", "heading": "Incident", "prefix_repeat": 150, "passages": ["The distinctive evidence is zephyr rollback. It appears near the end of this passage and needs a centered excerpt."] }
+    ] },
+    { "id": "excluded", "title": "Unapproved draft", "sections": [
+      { "id": "draft", "heading": "Operations", "passages": ["Backups run nightly and restore the database from a snapshot.", "This entire procedure is forbidden for production because it is an obsolete draft."] }
+    ] },
+    { "id": "email", "title": "Launch decision email", "sections": [
+      { "id": "decision", "heading": "Email body", "passages": ["The release launch is scheduled for Friday. Deployment requires approval by the operations lead.\n-- \nDatabase restore consulting and payroll payment services. Contact the signature owner for subscription and lease offers."] },
+      { "id": "footer", "heading": "Footer", "boilerplate": true, "passages": ["This email and any attachments are confidential. Database backups, supplier payments, commercial leases and software cancellation are unrelated footer terms."] }
+    ] }
+  ],
+  "queries": [
+    { "id": "distributed-must", "scope": "section", "semantic_query": "Nightly database backups and the procedure to restore a verified snapshot", "clauses": [{ "id": "nightly", "text": "every night", "occur": "must", "match": "phrase", "fields": ["body"] }, { "id": "restore", "text": "restore", "occur": "must", "fields": ["body"] }], "relevant": ["restore/schedule"] },
+    { "id": "section-exclusion", "scope": "section", "semantic_query": "Production database backup and recovery procedure", "clauses": [{ "id": "backup", "text": "backups", "occur": "must", "fields": ["body"] }, { "id": "restore", "text": "restore", "occur": "must", "fields": ["body"] }, { "id": "exclude", "text": "forbidden", "occur": "must_not", "fields": ["body"] }], "relevant": ["restore/schedule"] },
+    { "id": "salary", "scope": "passage", "semantic_query": "When are employee salaries paid and who approves payroll?", "clauses": [{ "id": "salary", "text": "salary", "occur": "must", "fields": ["body"] }], "relevant": ["payroll"] },
+    { "id": "vendor", "scope": "passage", "semantic_query": "How long after approval are supplier invoices paid?", "clauses": [{ "id": "supplier", "text": "supplier invoices", "occur": "must", "match": "phrase", "fields": ["body"] }], "relevant": ["supplier"] },
+    { "id": "tenant", "scope": "section", "semantic_query": "Notice required to end a commercial property lease and return the keys", "clauses": [{ "id": "tenant", "text": "tenant", "occur": "must", "fields": ["body"] }, { "id": "keys", "text": "keys", "occur": "must", "fields": ["body"] }], "relevant": ["lease/termination"] },
+    { "id": "subscription", "scope": "passage", "semantic_query": "Cancel an automatically renewing software subscription", "clauses": [{ "id": "cancel", "text": "cancel", "occur": "must", "fields": ["body"] }], "relevant": ["subscription"] },
+    { "id": "accent", "scope": "passage", "semantic_query": "Quais autorizações são necessárias para contratação internacional e proteção de dados?", "clauses": [{ "id": "accent", "text": "contratacao internacional", "occur": "must", "match": "phrase", "fields": ["body"] }], "relevant": ["international"] },
+    { "id": "spanish", "scope": "passage", "semantic_query": "Qué autorización y plazo se necesitan para renovar el servicio?", "clauses": [{ "id": "renew", "text": "renovación", "occur": "must", "fields": ["body"] }], "relevant": ["international"] },
+    { "id": "underscore", "scope": "passage", "semantic_query": "Which field identifies the exact stored text evidence?", "clauses": [{ "id": "identifier", "text": "passage_id", "occur": "must", "fields": ["body"] }], "relevant": ["technical"] },
+    { "id": "fraction", "scope": "passage", "semantic_query": "The requested recipe amount is half a cup", "clauses": [{ "id": "half", "text": "½ cup", "occur": "must", "match": "phrase", "fields": ["body"] }], "relevant": ["technical"] },
+    { "id": "late-match", "scope": "passage", "semantic_query": "Distinctive zephyr rollback evidence at the end of the incident notes", "clauses": [{ "id": "late", "text": "zephyr rollback", "occur": "must", "match": "phrase", "fields": ["body"] }], "relevant": ["late"] },
+    { "id": "title-only", "scope": "passage", "semantic_query": "Documentation for API field conventions", "clauses": [{ "id": "title", "text": "API field conventions", "occur": "must", "match": "phrase", "fields": ["title"] }], "relevant": ["technical"] },
+    { "id": "launch", "scope": "passage", "semantic_query": "When will the release launch and whose approval is required for deployment?", "clauses": [{ "id": "launch", "text": "release launch", "occur": "must", "match": "phrase", "fields": ["body"] }], "relevant": ["email"] }
+  ]
+}

@@ -39,10 +39,29 @@ public sealed class ExtractionBenchmarkFixtureTests
             var texts = SectionTexts(result.Root).ToArray();
             Assert.True(texts.Length >= fixture.MinimumSections, $"{fixture.Id}: expected at least {fixture.MinimumSections} sections.");
             var text = TextNormalization.ForSearch(string.Join('\n', texts));
-            Assert.True(texts.Sum(value => value.Length) >= fixture.MinimumCharacters,
+            Assert.True(string.Join('\n', texts).Length >= fixture.MinimumCharacters,
                 $"{fixture.Id}: expected at least {fixture.MinimumCharacters} extracted characters.");
             foreach (var expected in fixture.ExpectedText)
                 Assert.Contains(TextNormalization.ForSearch(expected), text, StringComparison.OrdinalIgnoreCase);
+            var position = 0;
+            foreach (var anchor in fixture.OrderedText ?? [])
+            {
+                var normalizedAnchor = TextNormalization.ForSearch(anchor);
+                var found = text.IndexOf(normalizedAnchor, position, StringComparison.OrdinalIgnoreCase);
+                Assert.True(found >= 0, $"{fixture.Id}: missing or out-of-order anchor '{anchor}'.");
+                position = found + normalizedAnchor.Length;
+            }
+            foreach (var page in fixture.PageAnchors ?? [])
+            {
+                var pageText = TextNormalization.ForSearch(string.Join('\n', result.Root.Sections
+                    .Where(section => section.Location.Page == page.Page).Select(section => section.Text)));
+                foreach (var anchor in page.Text)
+                    Assert.Contains(TextNormalization.ForSearch(anchor), pageText, StringComparison.OrdinalIgnoreCase);
+            }
+            foreach (var table in fixture.TableAnchors ?? [])
+                Assert.Contains(result.Root.Sections, section => section.Text.Contains(table, StringComparison.Ordinal));
+            if (fixture.RequireRegions) Assert.All(result.Root.Sections, section => Assert.NotNull(section.Location.Region));
+            Assert.True(result.Root.Sections.Count(section => section.IsBoilerplate) >= fixture.MinimumBoilerplateSections);
         }
     }
 
@@ -51,7 +70,10 @@ public sealed class ExtractionBenchmarkFixtureTests
 
     private sealed record FixtureManifest(Fixture[] Fixtures);
     private sealed record Fixture(string Id, string File, bool RequiresOcr, string[] ExpectedText,
-        string Sha256, int MinimumSections = 1, int MinimumCharacters = 0);
+        string Sha256, int MinimumSections = 1, int MinimumCharacters = 0,
+        string[]? OrderedText = null, PageAnchor[]? PageAnchors = null, string[]? TableAnchors = null,
+        bool RequireRegions = false, int MinimumBoilerplateSections = 0);
+    private sealed record PageAnchor(int Page, string[] Text);
     private sealed class UnexpectedOcrEngine : IOcrEngine
     {
         public bool IsAvailable => false;

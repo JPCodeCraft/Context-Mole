@@ -30,7 +30,7 @@ public sealed class CoreAndInfrastructureTests
             dehyphenateLineBreaks: true));
         Assert.Equal("AÇÃO 9", TextNormalization.NameKey(" ação\t9 "));
 
-        Assert.Equal("\"alpha\" OR \"ação\" OR \"beta_2\" OR \"42\"",
+        Assert.Equal("\"alpha\" OR \"acao\" OR \"beta_2\" OR \"42\"",
             TextNormalization.QuoteFtsTerms("alpha, ação beta_2 + 42"));
 
         var manyTerms = TextNormalization.QuoteFtsTerms(

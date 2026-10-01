@@ -421,7 +421,7 @@ public sealed class IndexingPipelineTests
 
         var alpha = Assert.Single(stored, item => item.DisplayText.Contains("First paragraph",
             StringComparison.Ordinal));
-        Assert.Equal("First paragraph Second paragraph", alpha.DisplayText);
+        Assert.Equal("First paragraph\nSecond paragraph", alpha.DisplayText);
         Assert.Equal("document/paragraph[1]..document/paragraph[2]", alpha.StructurePath);
         Assert.Single(stored, item => item.DisplayText == "Third paragraph");
         var wordTable = Assert.Single(stored, item => item.StructurePath == "document/table[1]");

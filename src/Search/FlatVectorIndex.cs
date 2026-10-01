@@ -14,18 +14,19 @@ public sealed class FlatVectorIndex(VectorSnapshot snapshot) : IVectorIndex
         if (query.Length != 384)
             throw new ArgumentException("The semantic query vector must have 384 dimensions.", nameof(query));
 
-        var best = new PriorityQueue<(Guid PassageId, double Score), double>();
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(count);
+        var best = CreateQueue();
         var preparedFilters = PreparedFilters.Create(filters);
         foreach (var entry in _entries)
         {
             if (!Matches(entry, preparedFilters)) continue;
             var score = Dot(query, entry.Vector);
             if (best.Count < count)
-                best.Enqueue((entry.PassageId, score), score);
-            else if (best.TryPeek(out _, out var minimum) && score > minimum)
+                best.Enqueue((entry.PassageId, score), (score, entry.PassageId));
+            else if (best.TryPeek(out var minimum, out _) && IsBetter(score, entry.PassageId, minimum))
             {
                 best.Dequeue();
-                best.Enqueue((entry.PassageId, score), score);
+                best.Enqueue((entry.PassageId, score), (score, entry.PassageId));
             }
         }
 
@@ -37,15 +38,16 @@ public sealed class FlatVectorIndex(VectorSnapshot snapshot) : IVectorIndex
     public static async Task<IReadOnlyList<VectorMatch>> SearchStreamingAsync(IAsyncEnumerable<VectorEntry> entries,
         ReadOnlyMemory<float> query, int count, CancellationToken cancellationToken)
     {
-        var best = new PriorityQueue<(Guid PassageId, double Score), double>();
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(count);
+        var best = CreateQueue();
         await foreach (var entry in entries.WithCancellation(cancellationToken).ConfigureAwait(false))
         {
             var score = Dot(query.Span, entry.Vector);
-            if (best.Count < count) best.Enqueue((entry.PassageId, score), score);
-            else if (best.TryPeek(out _, out var minimum) && score > minimum)
+            if (best.Count < count) best.Enqueue((entry.PassageId, score), (score, entry.PassageId));
+            else if (best.TryPeek(out var minimum, out _) && IsBetter(score, entry.PassageId, minimum))
             {
                 best.Dequeue();
-                best.Enqueue((entry.PassageId, score), score);
+                best.Enqueue((entry.PassageId, score), (score, entry.PassageId));
             }
         }
         return best.UnorderedItems.Select(item => item.Element)
@@ -64,6 +66,16 @@ public sealed class FlatVectorIndex(VectorSnapshot snapshot) : IVectorIndex
         for (; index < left.Length; index++) scalar += left[index] * right[index];
         return scalar;
     }
+
+    private static PriorityQueue<(Guid PassageId, double Score), (double Score, Guid PassageId)> CreateQueue() =>
+        new(Comparer<(double Score, Guid PassageId)>.Create((left, right) =>
+        {
+            var score = left.Score.CompareTo(right.Score);
+            return score != 0 ? score : right.PassageId.CompareTo(left.PassageId);
+        }));
+
+    private static bool IsBetter(double score, Guid passageId, (Guid PassageId, double Score) minimum) =>
+        score > minimum.Score || score == minimum.Score && passageId.CompareTo(minimum.PassageId) < 0;
 
     private static bool Matches(VectorEntry entry, PreparedFilters? filters)
     {

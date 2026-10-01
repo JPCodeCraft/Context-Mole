@@ -18,8 +18,9 @@ internal sealed class AiConnectionItemViewModel(AiClientDefinition client) : Vie
     public string Description => Client.Description;
     public bool SupportsAutomaticSetup => Client.SupportsAutomaticSetup;
     public bool RequiresManualSetup => !SupportsAutomaticSetup;
+    public bool RequiresReadOnlyCheck => State is AiConnectionState.Conflict or AiConnectionState.ServerUnavailable;
     public AiConnectionState State => _state;
-    public string Message => _message;
+    public string Message => IsBusy ? "Checking current configuration…" : _message;
 
     public bool IsBusy
     {
@@ -31,6 +32,10 @@ internal sealed class AiConnectionItemViewModel(AiClientDefinition client) : Vie
             OnPropertyChanged(nameof(StatusLabel));
             OnPropertyChanged(nameof(ActionLabel));
             OnPropertyChanged(nameof(HasDetailMessage));
+            OnPropertyChanged(nameof(Message));
+            OnPropertyChanged(nameof(IsReadyStatus));
+            OnPropertyChanged(nameof(IsWarningStatus));
+            OnPropertyChanged(nameof(IsErrorStatus));
         }
     }
 
@@ -40,10 +45,10 @@ internal sealed class AiConnectionItemViewModel(AiClientDefinition client) : Vie
     public bool CanChange => SupportsAutomaticSetup && !IsBusy &&
         State is (AiConnectionState.Connected or AiConnectionState.Disconnected or AiConnectionState.UpdateRequired
             or AiConnectionState.Broken or AiConnectionState.Conflict or AiConnectionState.ServerUnavailable);
-    public bool IsReadyStatus => State == AiConnectionState.Connected;
-    public bool IsWarningStatus => State == AiConnectionState.UpdateRequired;
-    public bool IsErrorStatus => State is AiConnectionState.Conflict or AiConnectionState.ServerUnavailable
-        or AiConnectionState.Broken;
+    public bool IsReadyStatus => !IsBusy && State == AiConnectionState.Connected;
+    public bool IsWarningStatus => !IsBusy && State == AiConnectionState.UpdateRequired;
+    public bool IsErrorStatus => !IsBusy && State is (AiConnectionState.Conflict or AiConnectionState.ServerUnavailable
+        or AiConnectionState.Broken);
     public bool HasDetailMessage => IsBusy || State != AiConnectionState.Disconnected;
 
     public string StatusLabel => State switch
@@ -78,6 +83,7 @@ internal sealed class AiConnectionItemViewModel(AiClientDefinition client) : Vie
         SetProperty(ref _message, status.Message, nameof(Message));
         if (!stateChanged) return;
         OnPropertyChanged(nameof(IsConfigured));
+        OnPropertyChanged(nameof(RequiresReadOnlyCheck));
         OnPropertyChanged(nameof(HasManagedConfiguration));
         OnPropertyChanged(nameof(CanChange));
         OnPropertyChanged(nameof(StatusLabel));

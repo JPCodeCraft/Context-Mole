@@ -1,5 +1,3 @@
-using System.Globalization;
-using System.Text;
 using System.Text.RegularExpressions;
 
 using ContextMole.Core;
@@ -77,21 +75,64 @@ public static partial class StructuredSearchQuery
             : new ClauseEvaluation(true, matchedIds, matchedFields.Order().ToArray());
     }
 
-    public static IReadOnlyList<string> Tokens(string? value) => WordTokens().Matches(Normalize(value))
-        .Select(match => match.Value).Where(value => value.Length > 0).ToArray();
+    public static IReadOnlyList<string> Tokens(string? value) => LexicalText.Tokens(value);
 
-    public static string Normalize(string? value)
+    public static string Normalize(string? value) => LexicalText.Normalize(value);
+
+    public static string? FieldValue(SearchCandidate candidate, SearchField field) => field switch
     {
-        if (string.IsNullOrWhiteSpace(value)) return string.Empty;
-        var decomposed = TextNormalization.ForSearch(value).Normalize(NormalizationForm.FormD);
-        var builder = new StringBuilder(decomposed.Length);
-        foreach (var rune in decomposed.EnumerateRunes())
+        SearchField.Body => candidate.SectionText ?? candidate.BodySearchText ?? candidate.DisplayText,
+        SearchField.Title => candidate.Title,
+        SearchField.Heading => candidate.Heading,
+        SearchField.Filename => candidate.FileName,
+        SearchField.Path => candidate.SourcePath,
+        SearchField.ContentName => candidate.ContentName,
+        SearchField.Sheet => candidate.Location.Sheet,
+        SearchField.EmailSubject => candidate.EmailSubject,
+        _ => null
+    };
+
+    public static IReadOnlyList<SearchMatchSpan> FindBodyMatches(string text, IReadOnlyList<SearchClause> clauses)
+    {
+        var tokens = LexicalText.TokenizeWithOffsets(text);
+        var spans = new List<SearchMatchSpan>();
+        foreach (var clause in clauses.Where(clause => clause.Occur != SearchClauseOccur.MustNot &&
+            (clause.Fields is not { Count: > 0 } || clause.Fields.Contains(SearchField.Body))))
         {
-            if (Rune.GetUnicodeCategory(rune) is not (UnicodeCategory.NonSpacingMark or
-                UnicodeCategory.SpacingCombiningMark or UnicodeCategory.EnclosingMark))
-                builder.Append(rune.ToString().ToLowerInvariant());
+            var query = Tokens(clause.Text);
+            for (var index = 0; index < tokens.Count; index++)
+            {
+                var matched = clause.Match switch
+                {
+                    SearchMatchKind.Term => tokens[index].Value == query[0],
+                    SearchMatchKind.Prefix => tokens[index].Value.StartsWith(query[0], StringComparison.Ordinal),
+                    SearchMatchKind.Phrase => index + query.Count <= tokens.Count &&
+                        query.Select((value, offset) => value == tokens[index + offset].Value).All(value => value),
+                    _ => false
+                };
+                if (!matched) continue;
+                var last = clause.Match == SearchMatchKind.Phrase ? tokens[index + query.Count - 1] : tokens[index];
+                spans.Add(new SearchMatchSpan(clause.Id, tokens[index].Start, last.Start + last.Length - tokens[index].Start));
+            }
         }
-        return builder.ToString().Normalize(NormalizationForm.FormC);
+        return spans;
+    }
+
+    public static IReadOnlyList<SearchFieldMatch> FindFieldMatches(SearchCandidate candidate, IReadOnlyList<SearchClause> clauses)
+    {
+        var result = new List<SearchFieldMatch>();
+        foreach (var clause in clauses.Where(clause => clause.Occur != SearchClauseOccur.MustNot))
+        foreach (var field in MatchFields(candidate, clause).Where(field => field != SearchField.Body))
+        {
+            var text = FieldValue(candidate, field) ?? string.Empty;
+            var bodyClause = clause with { Fields = [SearchField.Body] };
+            var span = FindBodyMatches(text, [bodyClause]).FirstOrDefault();
+            if (span is null) continue;
+            var start = Math.Max(0, span.Start - 60);
+            var end = Math.Min(text.Length, Math.Max(start + 160, span.Start + span.Length));
+            result.Add(new SearchFieldMatch(clause.Id, field, text[start..end], span.Start, span.Length) { ExcerptStart = start });
+        }
+        return result;
     }
 
     private static string BuildClauseExpression(SearchClause clause)
@@ -149,19 +190,6 @@ public static partial class StructuredSearchQuery
         }
         return false;
     }
-
-    private static string? FieldValue(SearchCandidate candidate, SearchField field) => field switch
-    {
-        SearchField.Body => candidate.BodySearchText ?? candidate.DisplayText,
-        SearchField.Title => candidate.Title,
-        SearchField.Heading => candidate.Heading,
-        SearchField.Filename => candidate.FileName,
-        SearchField.Path => candidate.SourcePath,
-        SearchField.ContentName => candidate.ContentName,
-        SearchField.Sheet => candidate.Location.Sheet,
-        SearchField.EmailSubject => candidate.EmailSubject,
-        _ => null
-    };
 
     private static string Column(SearchField field) => field switch
     {

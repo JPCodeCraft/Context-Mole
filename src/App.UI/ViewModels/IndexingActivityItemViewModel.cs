@@ -41,8 +41,9 @@ public sealed class IndexingActivityItemViewModel : ViewModelBase
         StageDisplay = StageName(activity);
         ElapsedDisplay = $"Processing {FormatDuration(activity.Elapsed)}";
         StageElapsedDisplay = $"This stage {FormatDuration(activity.StageElapsed)}";
-        PipelinePosition = StagePosition(activity.Stage);
-        IsProgressIndeterminate = activity.IsWaitingForResources;
+        // Stages have different and unknown durations; they are not completion percentages.
+        PipelinePosition = 0;
+        IsProgressIndeterminate = true;
         ShowTimers = activity.IsProcessing;
     }
 
@@ -68,18 +69,4 @@ public sealed class IndexingActivityItemViewModel : ViewModelBase
         _ => activity.Stage.ToString()
     };
 
-    private static double StagePosition(IndexingPipelineStage stage) => stage switch
-    {
-        IndexingPipelineStage.InspectingSource => 5,
-        IndexingPipelineStage.WaitingForCpu => 10,
-        IndexingPipelineStage.Hashing => 15,
-        IndexingPipelineStage.PreparingRevision => 25,
-        IndexingPipelineStage.ExtractingContent => 45,
-        IndexingPipelineStage.ChunkingText => 60,
-        IndexingPipelineStage.GeneratingEmbeddings => 75,
-        IndexingPipelineStage.VerifyingSource => 88,
-        IndexingPipelineStage.WritingIndex => 96,
-        IndexingPipelineStage.RecordingError => 100,
-        _ => 0
-    };
 }

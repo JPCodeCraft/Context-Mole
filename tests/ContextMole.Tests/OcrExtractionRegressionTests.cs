@@ -149,8 +149,11 @@ public sealed class OcrExtractionRegressionTests
 
         Assert.Empty(result.Errors);
         Assert.Equal(2, engine.Requests.Count);
-        Assert.Equal(new int?[] { 1, 2, 3 }, result.Root.Sections.Select(section => section.Location.Page));
-        Assert.Equal(ExtractionMethod.NativeText, result.Root.Sections[1].Method);
+        Assert.Equal(new int?[] { 1, 2, 3 }, result.Root.Sections.Select(section => section.Location.Page).Distinct());
+        Assert.All(result.Root.Sections.Where(section => section.Location.Page == 2),
+            section => Assert.Equal(ExtractionMethod.NativeText, section.Method));
+        Assert.Contains(result.Root.Sections, section => section.Location.Page == 1 && section.Text == "First");
+        Assert.Contains(result.Root.Sections, section => section.Location.Page == 3 && section.Text == "Third");
         var request = engine.Requests[0];
         var raster = Assert.IsType<OcrRasterInfo>(request.Raster);
         Assert.Equal(300, raster.Width);

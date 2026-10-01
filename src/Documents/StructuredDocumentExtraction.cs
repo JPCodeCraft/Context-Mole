@@ -227,17 +227,22 @@ public sealed partial class DocumentExtractionRegistry
     {
         var content = await ReadZipXmlAsync(bytes, "content.xml", context.Request.MaxAttachmentBytes, cancellationToken);
         var sections = new List<ExtractedSection>();
-        string? heading = null;
+        var heading = new HeadingContext();
         var ordinal = 0;
         foreach (var element in content.Descendants().Where(element => element.Name == TextNs + "h" || element.Name == TextNs + "p"))
         {
             cancellationToken.ThrowIfCancellationRequested();
             var text = OdfText(element).Trim();
             if (string.IsNullOrWhiteSpace(text)) continue;
-            if (element.Name == TextNs + "h") heading = text;
+            if (element.Name == TextNs + "h")
+            {
+                var level = int.TryParse((string?)element.Attribute(TextNs + "outline-level"), out var value) ? value : 1;
+                heading.Start(Math.Clamp(level, 1, 9), text);
+            }
             sections.Add(new ExtractedSection(text,
                 new SourceLocation(LocationKind.Structure, StructurePath: $"document/paragraph[{++ordinal}]"),
-                ExtractionMethod.NativeText, Heading: heading));
+                ExtractionMethod.NativeText, Heading: heading.Heading,
+                SectionKey: heading.Key, HeadingPath: heading.Path));
         }
         return new ExtractedNode(name, mimeType, relationship, sections, []);
     }
@@ -357,7 +362,8 @@ public sealed partial class DocumentExtractionRegistry
                 sections.Add(section with
                 {
                     Location = new SourceLocation(LocationKind.Structure,
-                        StructurePath: $"spine[{chapter}]/{entryPath}")
+                        StructurePath: $"spine[{chapter}]/{entryPath}/{section.Location.StructurePath}"),
+                    SectionKey = $"spine:{chapter}/{section.SectionKey}"
                 });
         }
         return new ExtractedNode(name, mimeType, relationship, sections, [], Title: title);

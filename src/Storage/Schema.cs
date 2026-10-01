@@ -9,7 +9,7 @@ namespace ContextMole.Storage;
 
 internal static class Schema
 {
-    public const int CurrentVersion = 7;
+    public const int CurrentVersion = 8;
 
     public static async Task MigrateAsync(SqliteConnection connection, ILogger logger,
         CancellationToken cancellationToken)

@@ -678,6 +678,12 @@
           "Velopack": "[1.2.0, )"
         }
       },
+      "contextmole.benchmarksupport": {
+        "type": "Project",
+        "dependencies": {
+          "ContextMole.Core": "[1.0.0, )"
+        }
+      },
       "contextmole.broker": {
         "type": "Project",
         "dependencies": {

@@ -37,7 +37,7 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
     private const int PdfOcrDpi = 300;
     private const int MinimumPdfOcrDpi = 72;
     private static readonly Encoding Windows1252;
-    private static readonly MarkdownPipeline PlainTextMarkdownPipeline = new MarkdownPipelineBuilder().DisableHtml().Build();
+    private static readonly MarkdownPipeline PlainTextMarkdownPipeline = new MarkdownPipelineBuilder().DisableHtml().UsePipeTables().Build();
     private static readonly SemaphoreSlim PdfRenderGate = new(1, 1);
     private readonly IOcrEngine _ocrEngine = ocrEngine;
 
@@ -153,32 +153,33 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
         var sections = new List<ExtractedSection>();
         var attachments = new List<ExtractedNode>();
         var ocrPages = new List<PdfOcrPage>();
+        var pageBlocks = new SortedDictionary<int, IReadOnlyList<PdfTextBlock>>();
         using var pdf = PdfDocument.Open(bytes, new ParsingOptions { SkipMissingFonts = true });
         var title = MetadataTitle(pdf.Information.Title);
         foreach (var page in pdf.GetPages())
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var text = page.Text ?? string.Empty;
+            var nativeBlocks = NativePdfBlocks(page);
+            pageBlocks[page.Number] = nativeBlocks;
+            var text = string.Join('\n', nativeBlocks.Select(block => block.Text));
             var normalized = TextNormalization.ForSearch(text, dehyphenateLineBreaks: true);
             var alphanumerics = normalized.Count(char.IsLetterOrDigit);
             var tokens = normalized.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length;
-            if (alphanumerics >= 80 && tokens >= 10)
+            if (alphanumerics >= 80 && tokens >= 10 && nativeBlocks.All(block => TextQuality(block.Text) >= 0.85) &&
+                !HasUncoveredPdfImages(page, nativeBlocks))
             {
-                sections.Add(new ExtractedSection(text, new SourceLocation(LocationKind.Page, Page: page.Number), ExtractionMethod.NativeText));
                 continue;
             }
 
             var renderDpi = SafePdfRenderDpi((double)page.Width, (double)page.Height);
             if (renderDpi is null)
             {
-                if (!string.IsNullOrWhiteSpace(text))
-                    sections.Add(new ExtractedSection(text, new SourceLocation(LocationKind.Page, Page: page.Number), ExtractionMethod.NativeText));
                 context.Errors.Add(new ExtractionError("image_dimensions_limit",
                     $"PDF page {page.Number} is too large to render safely for OCR.", false, name));
                 continue;
             }
 
-            ocrPages.Add(new PdfOcrPage(page.Number, text, renderDpi.Value));
+            ocrPages.Add(new PdfOcrPage(page.Number, nativeBlocks, renderDpi.Value));
         }
 
         // The lazy renderer keeps one PDFium document open for pages at the same resolution.
@@ -212,20 +213,12 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
                             }
                             finally { PdfRenderGate.Release(); }
                         }, cancellationToken);
-                        if (!string.IsNullOrWhiteSpace(ocr.Text))
-                            sections.Add(new ExtractedSection(ocr.Text,
-                                new SourceLocation(LocationKind.Page, Page: page.Number), ExtractionMethod.Ocr, ocr.Confidence));
-                        else if (!string.IsNullOrWhiteSpace(page.Text))
-                            sections.Add(new ExtractedSection(page.Text,
-                                new SourceLocation(LocationKind.Page, Page: page.Number), ExtractionMethod.NativeText));
+                        pageBlocks[page.Number] = ReconcilePdfText(page.NativeBlocks, ocr);
                         if (ocr.TimedOut)
                             context.Errors.Add(new ExtractionError("ocr_timeout", $"OCR timed out for PDF page {page.Number}.", true, name));
                     }
                     catch (Exception ex) when (ex is not OperationCanceledException)
                     {
-                        if (!string.IsNullOrWhiteSpace(page.Text))
-                            sections.Add(new ExtractedSection(page.Text,
-                                new SourceLocation(LocationKind.Page, Page: page.Number), ExtractionMethod.NativeText));
                         context.Errors.Add(new ExtractionError(ErrorCode(ex),
                             $"PDF page {page.Number} needs OCR. {SafeMessage(ex)}", IsTemporary(ex), name));
                     }
@@ -240,7 +233,10 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
                 finally { PdfRenderGate.Release(); }
             }
         }
-        sections.Sort((left, right) => Nullable.Compare(left.Location.Page, right.Location.Page));
+        var heading = new HeadingContext();
+        foreach (var page in pageBlocks)
+            AddPdfSections(sections, page.Value, page.Key, heading);
+        MarkRepeatedPdfMargins(sections);
 
         if (pdf.Advanced.TryGetEmbeddedFiles(out var embeddedFiles))
         {
@@ -272,7 +268,7 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
             new OcrRasterInfo(bitmap.Width, bitmap.Height, bitmap.RowBytes, bitmap.AlphaType != SKAlphaType.Unpremul));
     }
 
-    private sealed record PdfOcrPage(int Number, string Text, int Dpi);
+    private sealed record PdfOcrPage(int Number, IReadOnlyList<PdfTextBlock> NativeBlocks, int Dpi);
 
     private static int? SafePdfRenderDpi(double widthPoints, double heightPoints)
     {
@@ -332,9 +328,8 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
                         return Task.FromResult(new OcrRequest(pixels, ".bgra", TimeSpan.FromSeconds(120),
                             new OcrRasterInfo(width, height, checked(width * 4), IsPremultiplied: false)));
                     }, cancellationToken);
-                    if (!string.IsNullOrWhiteSpace(frameOcr.Text))
-                        tiffSections.Add(new ExtractedSection(frameOcr.Text,
-                            new SourceLocation(LocationKind.ImageFrame, Page: frame, ImageFrame: frame), ExtractionMethod.Ocr, frameOcr.Confidence));
+                    tiffSections.AddRange(ImageOcrSections(frameOcr,
+                        new SourceLocation(LocationKind.ImageFrame, Page: frame, ImageFrame: frame)));
                     if (frameOcr.TimedOut)
                         context.Errors.Add(new ExtractionError("ocr_timeout", $"OCR timed out for TIFF frame {frame}.", true, name));
                 }
@@ -351,9 +346,7 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
         var ocr = await _ocrEngine.RecognizeAsync(new OcrRequest(bytes, extension, TimeSpan.FromSeconds(120)), cancellationToken);
         if (ocr.TimedOut)
             context.Errors.Add(new ExtractionError("ocr_timeout", "OCR timed out for this image.", true, name));
-        var sections = string.IsNullOrWhiteSpace(ocr.Text)
-            ? Array.Empty<ExtractedSection>()
-            : [new ExtractedSection(ocr.Text, new SourceLocation(LocationKind.ImageFrame, Page: 1, ImageFrame: 1), ExtractionMethod.Ocr, ocr.Confidence)];
+        var sections = ImageOcrSections(ocr, new SourceLocation(LocationKind.ImageFrame, Page: 1, ImageFrame: 1));
         return new ExtractedNode(name, mimeType, relationship, sections, []);
     }
 
@@ -363,18 +356,16 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
 
     private static ExtractedNode MarkdownNode(string name, string? mimeType, string relationship, string markdown)
     {
-        var text = Markdown.ToPlainText(markdown, PlainTextMarkdownPipeline);
-        return TextNode(name, mimeType, relationship, text, ExtractionMethod.Markdown);
+        return new ExtractedNode(name, mimeType, relationship,
+            HtmlSections(Markdown.ToHtml(markdown, PlainTextMarkdownPipeline), ExtractionMethod.Markdown), []);
     }
 
     private static ExtractedNode HtmlNode(string name, string? mimeType, string relationship, string html)
     {
         var document = new HtmlParser().ParseDocument(html);
         var title = MetadataTitle(document.Title);
-        foreach (var element in document.QuerySelectorAll("script,style,template,noscript,iframe,object,embed,svg,canvas"))
-            element.Remove();
-        return TextNode(name, mimeType, relationship,
-            document.Body?.TextContent ?? document.DocumentElement.TextContent, ExtractionMethod.Html) with
+        return new ExtractedNode(name, mimeType, relationship,
+            HtmlSections(html, ExtractionMethod.Html), []) with
         {
             Title = title
         };

@@ -79,7 +79,8 @@ public sealed class BrokerSearchRuntimeManager : IAsyncDisposable
         await _stateGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (_runtime is null) return GetUnloadedEmbeddingStatus();
+            var selected = GetUnloadedEmbeddingStatus();
+            if (_runtime is null || selected.Policy?.Key != _runtime.Embeddings.Policy?.Key) return selected;
             var embeddings = _runtime.Embeddings;
             return new Broker.Protocol.BrokerEmbeddingStatus(embeddings.IsAvailable, embeddings.UnavailableReason,
                 embeddings.Policy);

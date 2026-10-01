@@ -189,7 +189,7 @@ public sealed class StorageTests
             await verify.OpenAsync(cancellationToken);
             await using var schema = verify.CreateCommand();
             schema.CommandText = "SELECT MAX(version) FROM schema_migrations;";
-            Assert.Equal(7L, Convert.ToInt64(await schema.ExecuteScalarAsync(cancellationToken)));
+            Assert.Equal(8L, Convert.ToInt64(await schema.ExecuteScalarAsync(cancellationToken)));
             await using var derivedRows = verify.CreateCommand();
             derivedRows.CommandText = "SELECT (SELECT COUNT(*) FROM document_revisions),(SELECT COUNT(*) FROM passages),(SELECT COUNT(*) FROM embeddings);";
             await using var derivedReader = await derivedRows.ExecuteReaderAsync(cancellationToken);

@@ -7,6 +7,70 @@ namespace ContextMole.Tests;
 public sealed class ProjectPresentationTests
 {
     [Fact]
+    public void SemanticCoverageDistinguishesLoadingCompleteEmptyUnavailableAndFailure()
+    {
+        var project = new ProjectItemViewModel(Summary(2, ready: 2));
+        Assert.Equal("CHECKING", project.SemanticIndexStatusLabel);
+        project.UpdateSemanticIndex(new(1, null, 2, TotalDocumentCount: 2, CompatibleDocumentCount: 2), true);
+        Assert.Equal("COMPLETE", project.SemanticIndexStatusLabel);
+        Assert.Contains("2 of 2", project.SemanticIndexStatusMessage);
+        project.BeginSemanticIndexRefresh();
+        Assert.Equal("CHECKING", project.SemanticIndexStatusLabel);
+        project.FailSemanticIndexRefresh("Storage is busy.");
+        Assert.Equal("UNABLE TO CHECK", project.SemanticIndexStatusLabel);
+        Assert.DoesNotContain("2 of 2", project.SemanticIndexStatusMessage);
+        project.UpdateSemanticIndex(new(1, null, 0), true);
+        Assert.Equal("NO INDEXED FILES", project.SemanticIndexStatusLabel);
+        project.UpdateSemanticIndex(null, false);
+        Assert.Equal("KEYWORD ONLY", project.SemanticIndexStatusLabel);
+        Assert.Contains("Keyword search remains", project.SemanticIndexStatusMessage);
+    }
+
+    [Fact]
+    public void PublishedGenerationChangeInvalidatesPreviousCoverageAndIssueRows()
+    {
+        var summary = Summary(2, ready: 1, attention: 1);
+        var project = new ProjectItemViewModel(summary);
+        project.UpdateSemanticIndex(new(1, null, 2, TotalDocumentCount: 2, CompatibleDocumentCount: 2), true);
+        project.UpdateErrors(Errors(summary.Id, firstId: 1, count: 1));
+        Assert.True(project.IsSemanticCoverageComplete);
+        Assert.True(project.HasRecentErrors);
+        project.UpdateFrom(summary with { SearchGeneration = 2 });
+        Assert.Equal("CHECKING", project.SemanticIndexStatusLabel);
+        Assert.False(project.IsSemanticCoverageComplete);
+        Assert.False(project.HasRecentErrors);
+    }
+
+    [Fact]
+    public void ProjectActionsDisableTogetherAndResumeWithTheirEligibilityRules()
+    {
+        var project = new ProjectItemViewModel(Summary(3, ready: 2, attention: 1));
+        Assert.True(project.CanReindex);
+        Assert.True(project.CanRetryFailedFiles);
+        project.SetActionsBusy(true);
+        Assert.False(project.AreActionsEnabled);
+        Assert.False(project.CanReindex);
+        Assert.False(project.CanRetryFailedFiles);
+        project.SetActionsBusy(false);
+        Assert.True(project.CanReindex);
+        project.UpdateFrom(project.ToSummary() with { State = ProjectState.Paused });
+        Assert.False(project.CanReindex);
+        Assert.False(project.CanRetryFailedFiles);
+        Assert.True(project.AreActionsEnabled);
+    }
+
+    [Fact]
+    public void ProgressExplainsUpToDateFilesAndDoesNotEstimateStagePercentages()
+    {
+        var project = new ProjectItemViewModel(Summary(3, pending: 1, ready: 1, attention: 1) with { IndexedCount = 3 });
+        Assert.Equal(3, project.ProgressMaximum);
+        Assert.StartsWith("1 of 3 files up to date", project.ProgressDescription);
+        var activity = new IndexingActivityItemViewModel(Activity(project.Id, IndexingPipelineStage.ExtractingContent));
+        Assert.True(activity.IsProgressIndeterminate);
+        activity.UpdateFrom(Activity(project.Id, IndexingPipelineStage.WritingIndex) with { JobId = activity.JobId });
+        Assert.True(activity.IsProgressIndeterminate);
+    }
+    [Fact]
     public void ProcessorWaitIsQueuedAndDisplayedBucketsStillSumToAllFiles()
     {
         var summary = Summary(total: 117, pending: 10, ready: 100, attention: 7) with

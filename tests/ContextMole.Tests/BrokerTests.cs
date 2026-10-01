@@ -786,9 +786,9 @@ public sealed class BrokerProtocolTests
                     FileShare.None);
             }
             var tools = new BrokerMcpTools(clients[0], NullLogger<BrokerMcpTools>.Instance);
-            var unavailable = Assert.IsType<ErrorEnvelope>(await tools.ListProjects(
-                TestContext.Current.CancellationToken));
-            Assert.Equal("not_initialized", unavailable.Error.Code);
+            var unavailable = await tools.ListProjects(TestContext.Current.CancellationToken);
+            Assert.True(unavailable.IsError);
+            Assert.Equal("not_initialized", unavailable.StructuredContent!.Value.GetProperty("error").GetProperty("code").GetString());
 
             _ = await clients[0].InvokeAsync(BrokerProtocol.ShutdownMethod, new { },
                 TestContext.Current.CancellationToken, TimeSpan.FromSeconds(5));

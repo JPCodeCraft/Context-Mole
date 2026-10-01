@@ -25,6 +25,9 @@ public partial class SettingsView : UserControl
     private MainViewModel ViewModel => (MainViewModel)DataContext!;
     private Window Owner => (Window)TopLevel.GetTopLevel(this)!;
 
+    private async void CheckAiConnections(object? sender, RoutedEventArgs args) =>
+        await RunUiActionAsync(ViewModel.CheckAiConnectionsAsync);
+
     private async void ToggleAiConnection(object? sender, RoutedEventArgs args)
     {
         if (sender is not Button { CommandParameter: AiConnectionItemViewModel connection }) return;
@@ -87,8 +90,8 @@ public partial class SettingsView : UserControl
             var confirmed = await ConfirmWindow.AskAsync(
                 Owner,
                 "Switch embedding model?",
-                $"Switching from {previous.DisplayName} to {model.DisplayName} will discard the existing semantic embeddings and rebuild them for every active project. This can take a while for large projects.\n\n" +
-                "Semantic search will be unavailable until the rebuild finishes. Keyword search will remain available throughout. Paused projects will be updated after you resume them.",
+                $"Switching from {previous.DisplayName} to {model.DisplayName} rebuilds meaning-based search for active projects. This can take a while for large projects.\n\n" +
+                "Compatible files become available as the rebuild progresses. Keyword search stays available. Paused projects update after you resume them.",
                 "Switch model");
             if (!confirmed)
             {

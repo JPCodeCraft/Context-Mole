@@ -33,6 +33,7 @@
       <Border Classes="card">
         <StackPanel Spacing="12">
           <ToggleButton Classes="sectionToggle"
+                        AutomationProperties.Name="Expand or collapse AI configurations"
                         IsChecked="{Binding IsAiConnectionsExpanded, Mode=TwoWay}">
             <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="12">
               <TextBlock Text="AI connections" Classes="sectionTitle" VerticalAlignment="Center" />
@@ -49,6 +50,9 @@
                          Classes="muted" FontSize="18" VerticalAlignment="Center" />
             </Grid>
           </ToggleButton>
+          <Button Content="Check again" Click="CheckAiConnections" IsEnabled="{Binding CanCheckAiConnections}"
+                  HorizontalAlignment="Left" ToolTip.Tip="Read current AI configuration without changing it."
+                  AutomationProperties.Name="Check AI configurations again without changing them" />
           <StackPanel IsVisible="{Binding IsAiConnectionsExpanded}" Spacing="4">
             <TextBlock Text="Connect AI tools to the same private, read-only index. Your documents stay on this computer."
                        Classes="muted" TextWrapping="Wrap" Margin="0,0,0,10" />

@@ -50,14 +50,19 @@ public sealed record McpSearchFilters(
 
 public sealed record McpSearchResultOptions(
     [property: Description("Maximum content groups returned, 1-50; default 10.")] int GroupLimit = 10,
-    [property: Description("Maximum consolidated passage previews per content group, 1-10; default 1.")] int PreviewsPerGroup = 1,
+    [property: Description("Maximum anchor passage previews per content group, 1-10; default 1.")] int PreviewsPerGroup = 1,
     [property: Description("Diversity cap per root document, 1-50; default 2.")] int MaxGroupsPerDocument = 2,
-    [property: Description("Cosine score below which any preview with a semantic score is marked low_confidence; default 0.25, allowed -1 to 1.")] double SemanticConfidenceThreshold = 0.25,
-    [property: Description("False by default so borderline semantic leads remain visible. True hides semantic-only matches below the threshold.")] bool StrictSemanticThreshold = false)
+    [property: Description("Cosine similarity below which any preview with a semantic similarity is marked below_similarity_threshold; default 0.25, allowed -1 to 1.")] double SemanticSimilarityThreshold = 0.25,
+    [property: Description("False by default so borderline semantic leads remain visible. True hides semantic-only matches below the threshold.")] bool StrictSemanticThreshold = false,
+    [property: Description("compact (default) returns evidence and provenance; full adds raw ranking and extraction diagnostics.")] SearchDetail Detail = SearchDetail.Compact)
 {
     public SearchResultOptions ToDomain() => new(GroupLimit, PreviewsPerGroup, MaxGroupsPerDocument,
-        SemanticConfidenceThreshold, StrictSemanticThreshold);
+        SemanticSimilarityThreshold, StrictSemanticThreshold);
 }
+
+public sealed record McpSearchRetrievalOptions(
+    [property: Description("Candidate budget per enabled branch, independent of output limits: default 1000, range 1-10000. Semantic budget bounds retained/hydrated candidates, not vectors scanned.")] int CandidateLimit = 1000);
 
 public sealed record ToolError(string Code, string Message, bool Retryable);
 public sealed record ErrorEnvelope(ToolError Error);
+public sealed record ProjectListResponse(IReadOnlyList<ProjectSummary> Projects);

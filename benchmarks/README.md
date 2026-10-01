@@ -6,6 +6,12 @@ extraction times, allocations and sampled process memory. Ordinary tests verify
 fixture integrity and native extraction without downloading models. Real OCR
 measurements are opt-in and fail if text checks fail.
 
+The [external PDF benchmarks](pdf/README.md) add pinned olmOCR extraction checks
+and ViDoRe v3 HR retrieval/page-evidence evaluation through the production pipeline.
+Small smoke subsets and optional full runs use an external cache, existing local
+models, and explicit dataset attribution. The adapted evaluators report unsupported
+checks and source-evidence coverage; they do not generate or grade LLM answers.
+
 The embedding runner uses the installed, pinned model assets without changing
 application settings:
 

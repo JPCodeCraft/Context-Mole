@@ -36,6 +36,10 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        Activated += (_, _) =>
+        {
+            if (DataContext is MainViewModel viewModel) viewModel.RefreshOnWindowFocus();
+        };
         Closing += (_, args) =>
         {
             if (Application.Current is App app && app.ShouldHideOnClose)
@@ -56,6 +60,8 @@ public partial class MainWindow : Window
     private void ShowProjects(object? sender, RoutedEventArgs args) => ViewModel.ShowProjects();
 
     private void ShowSettings(object? sender, RoutedEventArgs args) => ViewModel.ShowSettings();
+
+    private void DismissNotification(object? sender, RoutedEventArgs args) => ViewModel.DismissNotification();
 
     private void ProjectSelectionChanged(object? sender, SelectionChangedEventArgs args)
     {
@@ -330,14 +336,8 @@ public partial class MainWindow : Window
         _addingProject = true;
         try
         {
-            var result = await new ProjectEditorWindow().ShowDialog<ProjectEditorResult?>(this);
-            if (result is null) return;
-            if (actionControl is not null)
-            {
-                actionControl.IsHitTestVisible = false;
-                actionControl.Opacity = 0.65;
-            }
-            await RunUiActionAsync(() => ViewModel.CreateAsync(result.Name, result.Folders));
+            await new ProjectEditorWindow(null, result => ViewModel.RunProjectActionAsync(null, "Saving project…",
+                () => ViewModel.CreateAsync(result.Name, result.Folders), "save_action")).ShowDialog<ProjectEditorResult?>(this);
         }
         finally
         {
@@ -355,15 +355,4 @@ public partial class MainWindow : Window
         if (Application.Current is App app) await app.QuitAsync();
     }
 
-    private async Task RunUiActionAsync(Func<Task> action)
-    {
-        try
-        {
-            await action();
-        }
-        catch (Exception exception)
-        {
-            await ConfirmWindow.ShowErrorAsync(this, exception.Message);
-        }
-    }
 }

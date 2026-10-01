@@ -268,6 +268,7 @@ public sealed record BeginRevisionResult(
     Guid? RevisionId,
     string? Reason = null);
 
+/// <summary>Source provenance, with optional displayed-page bounds and explicit layout uncertainty.</summary>
 public sealed record SourceLocation(
     LocationKind Kind,
     int? Page = null,
@@ -276,14 +277,23 @@ public sealed record SourceLocation(
     int? Slide = null,
     string? StructurePath = null,
     string? EmailPart = null,
-    int? ImageFrame = null);
+    int? ImageFrame = null,
+    SourceRegion? Region = null,
+    string? LayoutWarning = null);
 
+/// <summary>
+/// Canonical extracted evidence. SectionKey identifies a logical heading occurrence within its
+/// node; HeadingPath retains hierarchy. Boilerplate is annotated without deleting source text.
+/// </summary>
 public sealed record ExtractedSection(
     string Text,
     SourceLocation Location,
     ExtractionMethod Method,
     double? OcrConfidence = null,
-    string? Heading = null);
+    string? Heading = null,
+    string? SectionKey = null,
+    IReadOnlyList<string>? HeadingPath = null,
+    bool IsBoilerplate = false);
 
 public sealed record ExtractedNode(
     string Name,
@@ -331,7 +341,9 @@ public sealed record OcrRequest(
 /// </summary>
 public sealed record OcrRasterInfo(int Width, int Height, int RowBytes, bool IsPremultiplied = true);
 
-public sealed record OcrResult(string Text, double? Confidence, bool TimedOut = false);
+/// <summary>Recognized text; confidence describes transcription, and Lines retain individual source regions.</summary>
+public sealed record OcrResult(string Text, double? Confidence, bool TimedOut = false,
+    IReadOnlyList<OcrTextLine>? Lines = null);
 
 public sealed record EmbeddingPolicy(
     string ModelId,
@@ -342,10 +354,11 @@ public sealed record EmbeddingPolicy(
     int SourceDimensions,
     int Dimensions,
     string Pooling,
-    string Normalization)
+    string Normalization,
+    string PreparationVersion = IndexPreparation.Version)
 {
     public string Key => string.Join(':', ModelId, Revision, ModelSha256, TokenizerSha256, Precision,
-        SourceDimensions, Dimensions, Pooling, Normalization);
+        SourceDimensions, Dimensions, Pooling, Normalization, PreparationVersion);
 }
 
 public sealed record EmbeddingBatch(
@@ -382,7 +395,12 @@ public sealed record PassageDraft(
     string? FileName = null,
     string? SourcePath = null,
     string? ContentName = null,
-    string? EmailSubject = null);
+    string? EmailSubject = null)
+{
+    public Guid? SectionId { get; init; }
+    public int SectionOffset { get; init; }
+    public bool SemanticEligible { get; init; } = true;
+}
 
 public sealed record IndexCommitRequest(
     Guid JobId,
@@ -396,7 +414,10 @@ public sealed record IndexCommitRequest(
     IReadOnlyList<ContentNodeDraft> ContentNodes,
     IReadOnlyList<PassageDraft> Passages,
     EmbeddingPolicy? EmbeddingPolicy,
-    IReadOnlyList<ExtractionError> Errors);
+    IReadOnlyList<ExtractionError> Errors)
+{
+    public IReadOnlyList<SectionDraft> Sections { get; init; } = [];
+}
 
 public sealed record EmbeddingRefreshPassage(
     Guid PassageId,
@@ -448,11 +469,14 @@ public sealed record SearchFilters(
     DateTimeOffset? ModifiedToUtc = null,
     AttachmentScope AttachmentScope = AttachmentScope.Any);
 
+public enum SearchScope { Passage, Section }
+public enum SearchDetail { Compact, Full }
+
 public sealed record SearchResultOptions(
     int GroupLimit = 10,
     int PreviewsPerGroup = 1,
     int MaxGroupsPerDocument = 2,
-    double SemanticConfidenceThreshold = 0.25,
+    double SemanticSimilarityThreshold = 0.25,
     bool StrictSemanticThreshold = false);
 
 public sealed record SearchRequest(
@@ -464,7 +488,11 @@ public sealed record SearchRequest(
     SearchFieldWeights? FieldWeights = null,
     SearchBranchWeights? BranchWeights = null,
     SearchFilters? Filters = null,
-    SearchResultOptions? ResultOptions = null);
+    SearchResultOptions? ResultOptions = null,
+    SearchScope Scope = SearchScope.Passage,
+    int CandidateLimit = 1000,
+    SearchDetail Detail = SearchDetail.Compact,
+    string? Cursor = null);
 
 public sealed record SearchCandidate(
     Guid PassageId,
@@ -490,7 +518,26 @@ public sealed record SearchCandidate(
     string? ContentName = null,
     string? ContentMimeType = null,
     string? ContentExtension = null,
-    string? EmailSubject = null);
+    string? EmailSubject = null)
+{
+    public Guid? SectionId { get; init; }
+    public string? SectionText { get; init; }
+    public IReadOnlyList<SearchCandidate>? SectionPassages { get; init; }
+    public int SectionOffset { get; init; }
+    public Guid? SemanticPassageId { get; init; }
+}
+
+public sealed record KeywordBranchSnapshot(long SearchGeneration,
+    IReadOnlyList<SearchCandidate> MainCandidates, IReadOnlyList<SearchCandidate> OptionalCandidates,
+    bool MainLimitReached, bool OptionalLimitReached);
+
+public sealed record SearchFieldMatch(string ClauseId, SearchField Field, string Text, int Start, int Length)
+{
+    public int ExcerptStart { get; init; }
+}
+public sealed record SearchMatchSpan(string ClauseId, int Start, int Length);
+public sealed record SearchClauseEvidence(string ClauseId, IReadOnlyList<Guid> PassageIds,
+    IReadOnlyList<SearchField> Fields);
 
 public sealed record SearchResultItem(
     Guid PassageId,
@@ -508,13 +555,20 @@ public sealed record SearchResultItem(
     double? OcrConfidence,
     double FusedScore,
     double? KeywordScore,
-    double? SemanticScore,
+    double? SemanticSimilarity,
     int? KeywordRank,
     int? SemanticRank,
-    bool LowConfidence,
+    bool? BelowSimilarityThreshold,
     IReadOnlyList<string> MatchedClauseIds,
     IReadOnlyList<SearchField> MatchedFields,
-    IReadOnlyList<Guid> ConsolidatedPassageIds);
+    IReadOnlyList<Guid> EvidencePassageIds)
+{
+    public int ExcerptStart { get; init; }
+    public int ExcerptLength { get; init; }
+    public Guid? SectionId { get; init; }
+    public IReadOnlyList<SearchMatchSpan> MatchSpans { get; init; } = [];
+    public IReadOnlyList<SearchFieldMatch> FieldMatches { get; init; } = [];
+}
 
 public sealed record SearchResultGroup(
     Guid DocumentId,
@@ -529,7 +583,21 @@ public sealed record SearchResultGroup(
     double Score,
     int TotalMatchCount,
     int CollapsedMatchCount,
-    IReadOnlyList<SearchResultItem> Previews);
+    IReadOnlyList<SearchResultItem> Previews)
+{
+    public string? Title { get; init; }
+    public Guid? SectionId { get; init; }
+    public IReadOnlyList<string> MatchedClauseIds { get; init; } = [];
+    public IReadOnlyList<Guid> EvidencePassageIds { get; init; } = [];
+    public IReadOnlyList<SearchClauseEvidence> ClauseEvidence { get; init; } = [];
+    public double? SemanticSimilarity { get; init; }
+    public Guid? SemanticAnchorPassageId { get; init; }
+    public bool? BelowSimilarityThreshold { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore]
+    public IReadOnlyList<SearchClauseEvidence> CompactClauseEvidence { get; init; } = [];
+    [System.Text.Json.Serialization.JsonIgnore]
+    public IReadOnlyList<Guid> CompactEvidencePassageIds { get; init; } = [];
+}
 
 public sealed record SearchSuppressedSource(
     Guid DocumentId,
@@ -546,6 +614,11 @@ public sealed record SearchBranchCandidateDepths(
     int OptionalKeywordBoost,
     int Semantic);
 
+public sealed record SearchBranchDiagnostics(bool Active = false, bool Completed = false, int Inspected = 0,
+    int MatchedCandidates = 0, bool LimitReached = false, bool Exhausted = false);
+public sealed record SearchBranchDiagnosticsMap(SearchBranchDiagnostics Keyword,
+    SearchBranchDiagnostics OptionalKeywordBoost, SearchBranchDiagnostics Semantic);
+
 public sealed record SearchResponse(
     SearchMode RequestedMode,
     string ActualMode,
@@ -557,7 +630,19 @@ public sealed record SearchResponse(
     int ReturnedGroupCount,
     int SuppressedGroupCount,
     IReadOnlyList<SearchSuppressedSource> SuppressedSources,
-    IReadOnlyList<SearchResultGroup> Results);
+    IReadOnlyList<SearchResultGroup> Results)
+{
+    public string? NextCursor { get; init; }
+    public bool HasMore { get; init; }
+    public SearchScope MatchScope { get; init; }
+    public int CandidateLimit { get; init; }
+    public string StopReason { get; init; } = "exhausted";
+    public SearchBranchDiagnosticsMap Branches { get; init; } = new(new(), new(), new());
+    [System.Text.Json.Serialization.JsonIgnore]
+    public IReadOnlyList<SearchResultGroup> RankedGroups { get; init; } = [];
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string? SemanticPolicyKey { get; init; }
+}
 
 public sealed record PassageInfo(
     Guid PassageId,
@@ -574,7 +659,19 @@ public sealed record PassageInfo(
     ExtractionMethod ExtractionMethod,
     double? OcrConfidence,
     bool Requested,
-    string? ErrorCode = null);
+    string? ErrorCode = null)
+{
+    public Guid? SectionId { get; init; }
+    public int SectionOffset { get; init; }
+}
+
+public sealed record SectionReadResponse(Guid SectionId, Guid ContentId, string? Heading,
+    IReadOnlyList<PassageInfo> Passages, long SearchGeneration, string? NextCursor)
+{
+    public IReadOnlyList<string> HeadingPath { get; init; } = [];
+    public string? Kind { get; init; }
+    public SourceLocation? Location { get; init; }
+}
 
 public sealed record DocumentInfo(
     Guid DocumentId,
@@ -591,7 +688,12 @@ public sealed record DocumentInfo(
     int PassageCount,
     int AttachmentCount,
     IReadOnlyDictionary<ExtractionMethod, int> ExtractionSummary,
-    IReadOnlyList<ProjectErrorInfo> Errors);
+    IReadOnlyList<ProjectErrorInfo> Errors)
+{
+    public Guid? ContentId { get; init; }
+    public string? ContentName { get; init; }
+    public string? ContentMimeType { get; init; }
+}
 
 public sealed record AttachmentInfo(
     Guid ContentId,

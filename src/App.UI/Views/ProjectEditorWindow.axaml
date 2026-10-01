@@ -11,11 +11,12 @@
                  Classes="muted" TextWrapping="Wrap" />
     </StackPanel>
 
-    <Border Grid.Row="1" Classes="card">
+    <Border x:Name="EditorForm" Grid.Row="1" Classes="card">
       <Grid RowDefinitions="Auto,Auto,Auto,*">
         <TextBlock Text="PROJECT NAME" Classes="eyebrow" />
         <TextBox x:Name="ProjectNameBox" Grid.Row="1" Margin="0,7,0,18"
-                 PlaceholderText="e.g. Client research" TextChanged="ProjectNameChanged" />
+                 PlaceholderText="e.g. Client research" TextChanged="ProjectNameChanged"
+                 AutomationProperties.Name="Project name" AutomationProperties.HelpText="Use 1 to 120 characters." />
 
         <Grid Grid.Row="2" ColumnDefinitions="*,Auto,Auto" Margin="0,0,0,8">
           <StackPanel Spacing="2">
@@ -28,6 +29,7 @@
         </Grid>
 
         <ListBox x:Name="FoldersList" Grid.Row="3" Classes="folderPicker"
+                 AutomationProperties.Name="Folders to index"
                  SelectionChanged="FolderSelectionChanged" />
       </Grid>
     </Border>
@@ -37,8 +39,8 @@
                AutomationProperties.LiveSetting="Assertive" />
 
     <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
-      <Button Classes="ghost" Content="Cancel" Click="Cancel" IsCancel="True" />
-      <Button Classes="primary" Content="Save project" Click="Save" IsDefault="True" />
+      <Button x:Name="CancelButton" Classes="ghost" Content="Cancel" Click="Cancel" IsCancel="True" />
+      <Button x:Name="SaveButton" Classes="primary" Content="Save project" Click="Save" IsDefault="True" />
     </StackPanel>
   </Grid>
 

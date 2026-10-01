@@ -6,6 +6,42 @@ structure, an illustrated historical scan through both the PDF and image
 paths, and clean multilingual TIFF text. This is a smoke benchmark, not a
 comprehensive document-quality dataset.
 
+The persisted preparation identity is `layout-v2/spans-v2/body-context-v2`,
+defined by the extraction, chunking and semantic constants in
+`src/Core/IndexPreparation.cs`. Existing revisions prepared with an older identity
+are extracted and indexed again before they are treated as current. Extraction
+retains canonical source text, logical heading occurrences and provenance;
+boilerplate annotations affect semantic input while the original evidence remains
+available to lexical search and reading.
+
+The synthetic `quality/` corpus adds deliberate content-stream scrambling across
+two columns, repeated page margins, numeric tables, native Portuguese accents and
+line-break hyphenation, page rotation, Portuguese OCR, and a mixed native/scanned
+PDF. Its content is repository-owned under MIT; it embeds no font files. Regenerate
+it deliberately with `tools/GenerateExtractionQualityFixtures.cs` and update the
+manifest hashes. Regeneration uses Windows Arial only to rasterize the synthetic
+scan and may vary with the installed font/rendering version.
+
+Quality cases carry ordered anchors, expected page anchors, exact table rows/cell
+separators, required normalized text regions and expected boilerplate annotations.
+OCR ground truth is measured as Unicode character error rate (CER) and word error
+rate (WER), with whitespace normalized and accents preserved. The synthetic OCR
+cases require CER ≤10%; existing upstream ground truth is reported without a new
+threshold. Inferred PDF/OCR tables retain an explicit layout warning: a geometry
+heuristic does not establish merged-cell or column meaning. Regions use normalized
+coordinates with a top-left origin on the displayed page/image. Character counts
+include canonical line separators between extracted sections, so located OCR
+lines are comparable to earlier page-sized text. Rotated native text preserves
+its content sequence and displayed bounds with an explicit warning that complex
+column/table order is unverified.
+
+Focused generated regression cases additionally exercise a ruled text-only PDF
+table, aligned OCR cell boxes, inherited Word heading styles and a custom broken
+PDF Unicode font mapping. Missing font geometry is marked as inferred; readable
+native regions survive OCR reconciliation, while stronger OCR evidence can repair
+an overlapping illegible region. These cases are generated inside tests and do
+not require fonts or model downloads.
+
 | File | Coverage | Origin and license |
 | --- | --- | --- |
 | `reading-order.pdf` | Native PDF with two columns, headings and lists | [W3C WAI PDF3 working example](https://www.w3.org/WAI/WCAG21/Techniques/pdf/PDF3), W3C Software and Document License |
@@ -55,7 +91,8 @@ fixture is excluded from measured extraction. Native-only runs do not require
 model downloads.
 
 Reports include median elapsed time, managed allocation totals, sampled peak
-process working set, GC counts, text/section counts and quality checks. Working
+process working set, GC counts, text/section counts, available CER/WER, located
+sections, layout warnings, boilerplate annotations and structural quality checks. Working
 set includes native ONNX/model memory; managed allocations do not. Compare on
 the same machine, build configuration, CPU profile and model assets, without
 other indexing or model workloads running. Use `--baseline path/to/prior.json`

@@ -55,6 +55,53 @@
       "source": "https://raw.githubusercontent.com/tesseract-ocr/test/232ff181c66516116ec0e84c4963f70de15050fd/testing/eurotext.tif",
       "groundTruth": "eurotext.txt",
       "license": "Apache-2.0"
+    },
+    {
+      "id": "native-pdf-layout-tables-margins", "file": "quality/layout-and-tables.pdf", "requiresOcr": false,
+      "minimumSections": 12, "minimumCharacters": 700,
+      "expectedText": ["Contract terms", "Left final", "Right first", "Invoice amounts", "Grace", "Approval records"],
+      "orderedText": ["Left first", "Left final", "Right first", "Right final", "Invoice amounts", "Vendor", "Portuguese records"],
+      "pageAnchors": [{"page": 1, "text": ["Left final", "Right first"]}, {"page": 2, "text": ["Ada", "Grace"]}, {"page": 3, "text": ["Approval records"]}],
+      "tableAnchors": ["Vendor\tAmount\tStatus\nAda\t42\tPaid\nGrace\t93\tOpen\nLinus\t17\tPaid"],
+      "requireRegions": true, "minimumBoilerplateSections": 6,
+      "sha256": "d3d7b3702db89d28df1a7fc586d43363eecc81b419c867bc39c93ee4337a499c",
+      "source": "tools/GenerateExtractionQualityFixtures.cs", "license": "MIT"
+    },
+    {
+      "id": "native-pdf-portuguese-hyphenation", "file": "quality/portuguese-native.pdf", "requiresOcr": false,
+      "minimumSections": 1, "minimumCharacters": 150,
+      "expectedText": ["aprovação em São Paulo", "caução", "documentação inter-", "nacional assinada"],
+      "orderedText": ["aprovação", "documentação", "nacional assinada"],
+      "pageAnchors": [{"page": 1, "text": ["São Paulo", "caução"]}], "requireRegions": true,
+      "sha256": "3180ac4f2b338f2735118ad2e1686d5057c7d55c21f08c49018ec4949e7530eb",
+      "source": "tools/GenerateExtractionQualityFixtures.cs", "license": "MIT"
+    },
+    {
+      "id": "native-pdf-rotated", "file": "quality/rotated-native.pdf", "requiresOcr": false,
+      "minimumSections": 1, "minimumCharacters": 80,
+      "expectedText": ["Rotated page evidence", "supplier handover obligations"],
+      "pageAnchors": [{"page": 1, "text": ["Rotated page evidence"]}], "requireRegions": true,
+      "sha256": "c6f57f31f52d866a250cd12858c4680682d885c867386ec5aa16adfc148fdbc7",
+      "source": "tools/GenerateExtractionQualityFixtures.cs", "license": "MIT"
+    },
+    {
+      "id": "ocr-image-portuguese-accents", "file": "quality/portuguese-scan.png", "requiresOcr": true,
+      "minimumSections": 5, "minimumCharacters": 130,
+      "expectedText": ["Aprovação em São Paulo", "caução", "atenção", "documentação"],
+      "orderedText": ["Aprovação", "prazo", "caução", "fornecedor", "documentação"],
+      "requireRegions": true, "groundTruth": "portuguese-scan.txt", "maximumCharacterErrorRate": 0.10,
+      "sha256": "5a024b2c16ce33cf34f0e148f4adda83c01713d7121abc37c3288ecede3df0fb",
+      "source": "tools/GenerateExtractionQualityFixtures.cs", "license": "MIT"
+    },
+    {
+      "id": "ocr-pdf-mixed-native-portuguese-scan", "file": "quality/mixed-native-scan.pdf", "requiresOcr": true,
+      "minimumSections": 6, "minimumCharacters": 230,
+      "expectedText": ["Native reference", "Aprovação em São Paulo", "caução", "documentação"],
+      "orderedText": ["Native reference", "Aprovação", "prazo", "caução", "fornecedor", "documentação"],
+      "pageAnchors": [{"page": 1, "text": ["Native reference", "São Paulo"]}], "requireRegions": true,
+      "groundTruth": "mixed-native-scan.txt", "maximumCharacterErrorRate": 0.10,
+      "sha256": "930a8fb9818eb4f1bb77bde496b34b42ee531314c930ce850b7cfcfabd24bbe1",
+      "source": "tools/GenerateExtractionQualityFixtures.cs", "license": "MIT"
     }
   ]
 }

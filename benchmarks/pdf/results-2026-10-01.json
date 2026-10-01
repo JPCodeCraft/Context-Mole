@@ -1,0 +1,353 @@
+{
+  "version": 1,
+  "measured_date": "2026-10-01",
+  "official_scores": false,
+  "repository_head": "d8af950a8cc6739e118f9f58226b9f818cd538cd",
+  "working_tree": "existing local edits plus benchmark integration; pending 14-file fixes excluded",
+  "datasets": {
+    "olmocr": {
+      "dataset": "allenai/olmOCR-bench",
+      "revision": "54a96a6fb6a2bd3b297e59869491db4d3625b711"
+    },
+    "vidore": {
+      "dataset": "vidore/vidore_v3_hr",
+      "revision": "0cdf0979f2c5a0fd3e335e6373b9da48a9fe3bc3"
+    }
+  },
+  "extraction": {
+    "native": {
+      "input_manifest_sha256": "5a6ffb8080ed924ef4d03161a800c4b0b70ac0540bb2fb668a3fda3ed8b90fd5",
+      "raw_report_sha256": "8aed6d3264ef757c5fe53a2476420553f7d2db58125afef8836887c65361dc10",
+      "documents": 7,
+      "source_checks": 43,
+      "added_baselines": 7,
+      "evaluation": {
+        "verdict": "incomplete",
+        "total": 50,
+        "passed": 8,
+        "failed": 32,
+        "unsupported": 10,
+        "errors": 0,
+        "coverage": 0.8,
+        "supportedPassRate": 0.2,
+        "conservativeCategoryMacro": 0.20892857142857144,
+        "categories": [
+          {
+            "category": "arxiv_math",
+            "total": 1,
+            "passed": 0,
+            "failed": 0,
+            "unsupported": 1,
+            "errors": 0,
+            "coverage": 0,
+            "supportedPassRate": null,
+            "conservativePassRate": 0
+          },
+          {
+            "category": "baseline",
+            "total": 7,
+            "passed": 4,
+            "failed": 3,
+            "unsupported": 0,
+            "errors": 0,
+            "coverage": 1,
+            "supportedPassRate": 0.5714285714285714,
+            "conservativePassRate": 0.5714285714285714
+          },
+          {
+            "category": "headers_footers",
+            "total": 2,
+            "passed": 1,
+            "failed": 1,
+            "unsupported": 0,
+            "errors": 0,
+            "coverage": 1,
+            "supportedPassRate": 0.5,
+            "conservativePassRate": 0.5
+          },
+          {
+            "category": "long_tiny_text",
+            "total": 12,
+            "passed": 0,
+            "failed": 12,
+            "unsupported": 0,
+            "errors": 0,
+            "coverage": 1,
+            "supportedPassRate": 0,
+            "conservativePassRate": 0
+          },
+          {
+            "category": "multi_column",
+            "total": 5,
+            "passed": 2,
+            "failed": 3,
+            "unsupported": 0,
+            "errors": 0,
+            "coverage": 1,
+            "supportedPassRate": 0.4,
+            "conservativePassRate": 0.4
+          },
+          {
+            "category": "old_scans",
+            "total": 5,
+            "passed": 1,
+            "failed": 4,
+            "unsupported": 0,
+            "errors": 0,
+            "coverage": 1,
+            "supportedPassRate": 0.2,
+            "conservativePassRate": 0.2
+          },
+          {
+            "category": "old_scans_math",
+            "total": 9,
+            "passed": 0,
+            "failed": 0,
+            "unsupported": 9,
+            "errors": 0,
+            "coverage": 0,
+            "supportedPassRate": null,
+            "conservativePassRate": 0
+          },
+          {
+            "category": "table_tests",
+            "total": 9,
+            "passed": 0,
+            "failed": 9,
+            "unsupported": 0,
+            "errors": 0,
+            "coverage": 1,
+            "supportedPassRate": 0,
+            "conservativePassRate": 0
+          }
+        ]
+      },
+      "detector_revision": null,
+      "recognizer_revision": null
+    },
+    "ocr": {
+      "input_manifest_sha256": "5a6ffb8080ed924ef4d03161a800c4b0b70ac0540bb2fb668a3fda3ed8b90fd5",
+      "raw_report_sha256": "a6bfc0f171e1e8418a990a65a7bb080d5dfb3644d8e1660b3bd3c12297b94ff4",
+      "documents": 7,
+      "source_checks": 43,
+      "added_baselines": 7,
+      "evaluation": {
+        "verdict": "incomplete",
+        "total": 50,
+        "passed": 18,
+        "failed": 22,
+        "unsupported": 10,
+        "errors": 0,
+        "coverage": 0.8,
+        "supportedPassRate": 0.45,
+        "conservativeCategoryMacro": 0.31339285714285714,
+        "categories": [
+          {
+            "category": "arxiv_math",
+            "total": 1,
+            "passed": 0,
+            "failed": 0,
+            "unsupported": 1,
+            "errors": 0,
+            "coverage": 0,
+            "supportedPassRate": null,
+            "conservativePassRate": 0
+          },
+          {
+            "category": "baseline",
+            "total": 7,
+            "passed": 6,
+            "failed": 1,
+            "unsupported": 0,
+            "errors": 0,
+            "coverage": 1,
+            "supportedPassRate": 0.8571428571428571,
+            "conservativePassRate": 0.8571428571428571
+          },
+          {
+            "category": "headers_footers",
+            "total": 2,
+            "passed": 1,
+            "failed": 1,
+            "unsupported": 0,
+            "errors": 0,
+            "coverage": 1,
+            "supportedPassRate": 0.5,
+            "conservativePassRate": 0.5
+          },
+          {
+            "category": "long_tiny_text",
+            "total": 12,
+            "passed": 9,
+            "failed": 3,
+            "unsupported": 0,
+            "errors": 0,
+            "coverage": 1,
+            "supportedPassRate": 0.75,
+            "conservativePassRate": 0.75
+          },
+          {
+            "category": "multi_column",
+            "total": 5,
+            "passed": 2,
+            "failed": 3,
+            "unsupported": 0,
+            "errors": 0,
+            "coverage": 1,
+            "supportedPassRate": 0.4,
+            "conservativePassRate": 0.4
+          },
+          {
+            "category": "old_scans",
+            "total": 5,
+            "passed": 0,
+            "failed": 5,
+            "unsupported": 0,
+            "errors": 0,
+            "coverage": 1,
+            "supportedPassRate": 0,
+            "conservativePassRate": 0
+          },
+          {
+            "category": "old_scans_math",
+            "total": 9,
+            "passed": 0,
+            "failed": 0,
+            "unsupported": 9,
+            "errors": 0,
+            "coverage": 0,
+            "supportedPassRate": null,
+            "conservativePassRate": 0
+          },
+          {
+            "category": "table_tests",
+            "total": 9,
+            "passed": 0,
+            "failed": 9,
+            "unsupported": 0,
+            "errors": 0,
+            "coverage": 1,
+            "supportedPassRate": 0,
+            "conservativePassRate": 0
+          }
+        ]
+      },
+      "detector_revision": "61323801669c338b7891481ec7bac61ce31b576a",
+      "recognizer_revision": "50c7eacafc52fa7bcf4194e8cd08e46f8558504b"
+    }
+  },
+  "retrieval": {
+    "dataset": "vidore/vidore_v3_hr",
+    "revision": "0cdf0979f2c5a0fd3e335e6373b9da48a9fe3bc3",
+    "manifest_sha256": "fddb4e06814176022e6e9674c2187a2970acd3c8e4f9bf450dd8027d4686574a",
+    "selected_model": "Granite97M",
+    "embedding_policy": {
+      "model_id": "ibm-granite/granite-embedding-97m-multilingual-r2",
+      "revision": "835ad14087e140460703cf0fae09f97d469d65c2",
+      "model_sha256": "68e592b160673d30250824c1116bc6ab33f70efb22b97c9e1d7ce1e69c1c9d70",
+      "tokenizer_sha256": "4f2842d568e2724370aec203652a42ac783c7937f8347a1a2cc7506d71f1582f",
+      "precision": "fp32",
+      "source_dimensions": 384,
+      "dimensions": 384,
+      "pooling": "cls",
+      "normalization": "l2",
+      "preparation_version": "layout-v2/spans-v2/body-context-v2",
+      "key": "ibm-granite/granite-embedding-97m-multilingual-r2:835ad14087e140460703cf0fae09f97d469d65c2:68e592b160673d30250824c1116bc6ab33f70efb22b97c9e1d7ce1e69c1c9d70:4f2842d568e2724370aec203652a42ac783c7937f8347a1a2cc7506d71f1582f:fp32:384:384:cls:l2:layout-v2/spans-v2/body-context-v2"
+    },
+    "mode": "semantic",
+    "ocr_enabled": false,
+    "document_count": 2,
+    "corpus_pages": 45,
+    "query_count": 12,
+    "query_counts_by_language": {
+      "english": 6,
+      "portuguese": 6
+    },
+    "candidate_limit": 10000,
+    "result_options": {
+      "group_limit": 50,
+      "previews_per_group": 10,
+      "max_groups_per_document": 50,
+      "semantic_similarity_threshold": -1,
+      "strict_semantic_threshold": false
+    },
+    "measured_iterations": 3,
+    "indexing_ms": 24154.0831,
+    "indexed_pages": 42,
+    "indexed_page_coverage": 0.9333333333333333,
+    "summary": [
+      {
+        "k": 5,
+        "recall": 0.5,
+        "ndcg": 0.502900172492139,
+        "mrr": 0.5791666666666667,
+        "evidence_area_coverage": 0.3148062894993946,
+        "evidence_region_recall": 0.3487654320987654
+      },
+      {
+        "k": 10,
+        "recall": 0.699074074074074,
+        "ndcg": 0.5477442859800971,
+        "mrr": 0.6049603174603175,
+        "evidence_area_coverage": 0.46323383518241573,
+        "evidence_region_recall": 0.5200617283950617
+      }
+    ],
+    "summary_by_language": {
+      "english": [
+        {
+          "k": 5,
+          "query_count": 6,
+          "recall": 0.6203703703703703,
+          "ndcg": 0.549192178135192,
+          "mrr": 0.5750000000000001,
+          "evidence_area_coverage": 0.3346927939511182,
+          "evidence_region_recall": 0.38580246913580246
+        },
+        {
+          "k": 10,
+          "query_count": 6,
+          "recall": 0.7592592592592592,
+          "ndcg": 0.5725353315263036,
+          "mrr": 0.5750000000000001,
+          "evidence_area_coverage": 0.473660277084689,
+          "evidence_region_recall": 0.5308641975308642
+        }
+      ],
+      "portuguese": [
+        {
+          "k": 5,
+          "query_count": 6,
+          "recall": 0.3796296296296296,
+          "ndcg": 0.45660816684908595,
+          "mrr": 0.5833333333333334,
+          "evidence_area_coverage": 0.29491978504767097,
+          "evidence_region_recall": 0.3117283950617284
+        },
+        {
+          "k": 10,
+          "query_count": 6,
+          "recall": 0.6388888888888888,
+          "ndcg": 0.5229532404338905,
+          "mrr": 0.6349206349206349,
+          "evidence_area_coverage": 0.45280739328014247,
+          "evidence_region_recall": 0.5092592592592592
+        }
+      ]
+    },
+    "citation_validity": 1,
+    "warm_latency_median_ms": 67.17365000000001,
+    "warm_latency_p95_query_median_ms": 100.4548,
+    "raw_report_sha256": "612bf694822dc85dbed6ec63c383a78d2135f45d9de3f19f85de6b1947c14373",
+    "extraction_diagnostics": 19,
+    "literal_citations_checked": 240,
+    "literal_citations_valid": 240
+  },
+  "limitations": [
+    "Small fixed smoke subsets do not establish full-corpus quality or leaderboard equivalence.",
+    "olmOCR math rendering checks remain unsupported and included in coverage/conservative denominators.",
+    "ViDoRe ranks only consumer-exposed previews, with ten previews per content group; it does not access hidden candidates.",
+    "Literal citation validity and geometric evidence coverage do not measure answer correctness.",
+    "The retrieval smoke uses native PDF extraction with OCR disabled and retains all extraction diagnostics."
+  ]
+}

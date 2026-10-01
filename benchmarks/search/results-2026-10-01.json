@@ -1,0 +1,277 @@
+{
+  "corpus_sha256": "e9577b846967c7b01c2a302ba5113de73d649f5f8e736b469bdc6716080956d9",
+  "measured_utc": "2026-10-01T01:01:33.1041721-03:00",
+  "runtime": "10.0.11",
+  "platform": "Microsoft Windows 10.0.26200",
+  "selected_model": "Granite97M",
+  "candidate_limit": 1000,
+  "group_limit": 5,
+  "measured_iterations": 3,
+  "note": "Synthetic structural regression workload. Model loading, indexing, warm-up and evidence-read verification are excluded from search latency; query embedding and vector retrieval are included. Semantic results use no lexical clauses; hybrid retains them. Raw baseline is defined here, not a replay of a historical build.",
+  "lexical_without_model": [
+    {
+      "mode": "keyword",
+      "queries": 13,
+      "recall_at_5": 1,
+      "mrr_at_5": 1,
+      "ndcg_at_5": 1,
+      "median_search_ms": 1.1629,
+      "p95_search_ms": 11.7283,
+      "mean_compact_response_bytes": 2407.153846153846,
+      "mean_full_response_bytes": 2892.230769230769,
+      "verified_anchors": 17
+    }
+  ],
+  "profiles": [
+    {
+      "profile": "raw",
+      "preprocessing_version": "layout-v2/spans-v2/body-context-v2",
+      "embedding_policy": "ibm-granite/granite-embedding-97m-multilingual-r2:835ad14087e140460703cf0fae09f97d469d65c2:68e592b160673d30250824c1116bc6ab33f70efb22b97c9e1d7ce1e69c1c9d70:4f2842d568e2724370aec203652a42ac783c7937f8347a1a2cc7506d71f1582f:fp32:384:384:cls:l2:layout-v2/spans-v2/body-context-v2",
+      "documents": 10,
+      "sections": 13,
+      "passages": 22,
+      "embedded_passages": 22,
+      "mean_semantic_tokens": 86.36363636363636,
+      "representations_over_512_tokens": 0,
+      "summaries": [
+        {
+          "mode": "keyword",
+          "queries": 13,
+          "recall_at_5": 1,
+          "mrr_at_5": 1,
+          "ndcg_at_5": 1,
+          "median_search_ms": 1.3274,
+          "p95_search_ms": 3.5494,
+          "mean_compact_response_bytes": 2407.076923076923,
+          "mean_full_response_bytes": 2892.153846153846,
+          "verified_anchors": 17
+        },
+        {
+          "mode": "semantic",
+          "queries": 13,
+          "recall_at_5": 1,
+          "mrr_at_5": 1,
+          "ndcg_at_5": 1,
+          "median_search_ms": 13.913,
+          "p95_search_ms": 18.403,
+          "mean_compact_response_bytes": 9443.307692307691,
+          "mean_full_response_bytes": 12282.461538461539,
+          "verified_anchors": 110
+        },
+        {
+          "mode": "hybrid",
+          "queries": 13,
+          "recall_at_5": 1,
+          "mrr_at_5": 1,
+          "ndcg_at_5": 1,
+          "median_search_ms": 13.9273,
+          "p95_search_ms": 20.8685,
+          "mean_compact_response_bytes": 2474.4615384615386,
+          "mean_full_response_bytes": 2953.3076923076924,
+          "verified_anchors": 17
+        }
+      ],
+      "semantic_rank_regressions": []
+    },
+    {
+      "profile": "body_context",
+      "preprocessing_version": "layout-v2/spans-v2/body-context-v2",
+      "embedding_policy": "ibm-granite/granite-embedding-97m-multilingual-r2:835ad14087e140460703cf0fae09f97d469d65c2:68e592b160673d30250824c1116bc6ab33f70efb22b97c9e1d7ce1e69c1c9d70:4f2842d568e2724370aec203652a42ac783c7937f8347a1a2cc7506d71f1582f:fp32:384:384:cls:l2:layout-v2/spans-v2/body-context-v2",
+      "documents": 10,
+      "sections": 13,
+      "passages": 22,
+      "embedded_passages": 22,
+      "mean_semantic_tokens": 79.36363636363636,
+      "representations_over_512_tokens": 0,
+      "summaries": [
+        {
+          "mode": "keyword",
+          "queries": 13,
+          "recall_at_5": 1,
+          "mrr_at_5": 1,
+          "ndcg_at_5": 1,
+          "median_search_ms": 0.8837,
+          "p95_search_ms": 1.4593,
+          "mean_compact_response_bytes": 2407.076923076923,
+          "mean_full_response_bytes": 2892,
+          "verified_anchors": 17
+        },
+        {
+          "mode": "semantic",
+          "queries": 13,
+          "recall_at_5": 1,
+          "mrr_at_5": 0.9615384615384616,
+          "ndcg_at_5": 0.9716099810439582,
+          "median_search_ms": 11.418,
+          "p95_search_ms": 13.9904,
+          "mean_compact_response_bytes": 9470.461538461539,
+          "mean_full_response_bytes": 12319.384615384615,
+          "verified_anchors": 111
+        },
+        {
+          "mode": "hybrid",
+          "queries": 13,
+          "recall_at_5": 1,
+          "mrr_at_5": 1,
+          "ndcg_at_5": 1,
+          "median_search_ms": 11.7395,
+          "p95_search_ms": 14.8306,
+          "mean_compact_response_bytes": 2471.3076923076924,
+          "mean_full_response_bytes": 2953,
+          "verified_anchors": 17
+        }
+      ],
+      "semantic_rank_regressions": [
+        {
+          "query_id": "distributed-must",
+          "mode": "semantic",
+          "scope": "section",
+          "returned": [
+            "excluded/draft",
+            "restore/schedule",
+            "restore/retention",
+            "email/decision",
+            "international/conditions"
+          ],
+          "relevant": [
+            "restore/schedule"
+          ],
+          "recall_at5": 1,
+          "mrr_at5": 0.5,
+          "ndcg_at5": 0.6309297535714575,
+          "median_search_ms": 13.9904,
+          "compact_response_bytes": 7209,
+          "full_response_bytes": 9142,
+          "verified_anchors": 5,
+          "candidate_limit_reached": false,
+          "branches": {
+            "keyword": {
+              "active": false,
+              "completed": false,
+              "inspected": 0,
+              "matched_candidates": 0,
+              "limit_reached": false,
+              "exhausted": false
+            },
+            "optional_keyword_boost": {
+              "active": false,
+              "completed": false,
+              "inspected": 0,
+              "matched_candidates": 0,
+              "limit_reached": false,
+              "exhausted": false
+            },
+            "semantic": {
+              "active": true,
+              "completed": true,
+              "inspected": 22,
+              "matched_candidates": 22,
+              "limit_reached": false,
+              "exhausted": true
+            }
+          }
+        }
+      ]
+    },
+    {
+      "profile": "prepared",
+      "preprocessing_version": "layout-v2/spans-v2/body-context-v2",
+      "embedding_policy": "ibm-granite/granite-embedding-97m-multilingual-r2:835ad14087e140460703cf0fae09f97d469d65c2:68e592b160673d30250824c1116bc6ab33f70efb22b97c9e1d7ce1e69c1c9d70:4f2842d568e2724370aec203652a42ac783c7937f8347a1a2cc7506d71f1582f:fp32:384:384:cls:l2:layout-v2/spans-v2/body-context-v2",
+      "documents": 10,
+      "sections": 13,
+      "passages": 22,
+      "embedded_passages": 21,
+      "mean_semantic_tokens": 80.66666666666667,
+      "representations_over_512_tokens": 0,
+      "summaries": [
+        {
+          "mode": "keyword",
+          "queries": 13,
+          "recall_at_5": 1,
+          "mrr_at_5": 1,
+          "ndcg_at_5": 1,
+          "median_search_ms": 1.0371,
+          "p95_search_ms": 2.3107,
+          "mean_compact_response_bytes": 2407.076923076923,
+          "mean_full_response_bytes": 2892.076923076923,
+          "verified_anchors": 17
+        },
+        {
+          "mode": "semantic",
+          "queries": 13,
+          "recall_at_5": 1,
+          "mrr_at_5": 0.9615384615384616,
+          "ndcg_at_5": 0.9716099810439582,
+          "median_search_ms": 11.6146,
+          "p95_search_ms": 16.0101,
+          "mean_compact_response_bytes": 9271.538461538461,
+          "mean_full_response_bytes": 12048.692307692309,
+          "verified_anchors": 107
+        },
+        {
+          "mode": "hybrid",
+          "queries": 13,
+          "recall_at_5": 1,
+          "mrr_at_5": 1,
+          "ndcg_at_5": 1,
+          "median_search_ms": 11.9013,
+          "p95_search_ms": 13.8284,
+          "mean_compact_response_bytes": 2471.3076923076924,
+          "mean_full_response_bytes": 2953.076923076923,
+          "verified_anchors": 17
+        }
+      ],
+      "semantic_rank_regressions": [
+        {
+          "query_id": "distributed-must",
+          "mode": "semantic",
+          "scope": "section",
+          "returned": [
+            "excluded/draft",
+            "restore/schedule",
+            "restore/retention",
+            "international/conditions",
+            "subscription/termination"
+          ],
+          "relevant": [
+            "restore/schedule"
+          ],
+          "recall_at5": 1,
+          "mrr_at5": 0.5,
+          "ndcg_at5": 0.6309297535714575,
+          "median_search_ms": 16.0101,
+          "compact_response_bytes": 7137,
+          "full_response_bytes": 9070,
+          "verified_anchors": 5,
+          "candidate_limit_reached": false,
+          "branches": {
+            "keyword": {
+              "active": false,
+              "completed": false,
+              "inspected": 0,
+              "matched_candidates": 0,
+              "limit_reached": false,
+              "exhausted": false
+            },
+            "optional_keyword_boost": {
+              "active": false,
+              "completed": false,
+              "inspected": 0,
+              "matched_candidates": 0,
+              "limit_reached": false,
+              "exhausted": false
+            },
+            "semantic": {
+              "active": true,
+              "completed": true,
+              "inspected": 21,
+              "matched_candidates": 21,
+              "limit_reached": false,
+              "exhausted": true
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

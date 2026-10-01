@@ -31,6 +31,9 @@ public sealed class ProjectItemViewModel : ViewModelBase
     private IndexingTimingSnapshot? _runtimeWork;
     private VectorSnapshotMetadata? _semanticIndex;
     private bool _semanticModelAvailable;
+    private bool _isSemanticCoverageLoading = true;
+    private string? _semanticCoverageError;
+    private bool _actionsBusy;
 
     public ProjectItemViewModel(ProjectSummary project)
     {
@@ -47,6 +50,9 @@ public sealed class ProjectItemViewModel : ViewModelBase
     public IReadOnlyList<ProjectFolderInfo> Folders { get => _folders; private set => SetProperty(ref _folders, value); }
     public IReadOnlyList<ProjectFolderIssue> FolderIssues { get => _folderIssues; private set => SetProperty(ref _folderIssues, value); }
     public bool HasFolderIssues => FolderIssues.Count > 0;
+    public bool IsDiscovering => _isDiscovering;
+    public int ProgressMaximum => Math.Max(1, DocumentCount);
+    public string ProgressDescription => $"{ReadyCount:N0} of {DocumentCount:N0} files up to date. {PendingCount:N0} pending. {AttentionCount:N0} need attention.";
     public IReadOnlyList<ProjectFileTypeCount> FileTypeCounts { get => _fileTypeCounts; private set => SetProperty(ref _fileTypeCounts, value); }
     public long SearchGeneration { get => _searchGeneration; private set => SetProperty(ref _searchGeneration, value); }
     public int DocumentCount { get => _documentCount; private set => SetProperty(ref _documentCount, value); }
@@ -135,22 +141,34 @@ public sealed class ProjectItemViewModel : ViewModelBase
     public bool NeedsAttention => Phase == "Needs attention";
     public bool HasErrors => ErrorCount > 0;
     public bool HasAttentionFiles => AttentionCount > 0;
-    public bool CanReindex => State == ProjectState.Active;
-    public bool CanRetryFailedFiles => State == ProjectState.Active && ErrorFileCount > 0;
-    public bool HasMixedSemanticIndex => _semanticIndex?.HasPartialCoverage == true;
+    public bool AreActionsEnabled => !_actionsBusy;
+    public bool CanReindex => AreActionsEnabled && State == ProjectState.Active;
+    public bool CanRetryFailedFiles => AreActionsEnabled && State == ProjectState.Active && ErrorFileCount > 0;
+    public bool HasMixedSemanticIndex => !_isSemanticCoverageLoading && _semanticCoverageError is null && _semanticIndex?.HasPartialCoverage == true;
+    public bool HasSemanticCoverageWarning => HasMixedSemanticIndex || _semanticCoverageError is not null;
     public bool IsSemanticRepairQueued => _semanticIndex?.IsRepairQueued == true;
     public bool ShowSemanticRepairButton => HasMixedSemanticIndex && !IsSemanticRepairQueued;
-    public bool CanRepairSemanticIndex => ShowSemanticRepairButton && State == ProjectState.Active &&
+    public bool CanRepairSemanticIndex => AreActionsEnabled && ShowSemanticRepairButton && State == ProjectState.Active &&
                                           _semanticModelAvailable;
-    public string SemanticIndexStatusLabel => IsSemanticRepairQueued ? "REPAIR QUEUED" : "PARTIAL COVERAGE";
+    public string SemanticIndexStatusLabel => _isSemanticCoverageLoading ? "CHECKING"
+        : _semanticCoverageError is not null ? "UNABLE TO CHECK"
+        : !_semanticModelAvailable ? "KEYWORD ONLY"
+        : _semanticIndex is null || _semanticIndex.TotalDocumentCount == 0 ? "NO INDEXED FILES"
+        : IsSemanticRepairQueued ? "REPAIR QUEUED"
+        : HasMixedSemanticIndex ? "PARTIAL COVERAGE" : "COMPLETE";
     public string SemanticIndexStatusMessage
     {
         get
         {
-            if (_semanticIndex is not { HasPartialCoverage: true } metadata) return string.Empty;
+            if (_isSemanticCoverageLoading) return "Checking meaning-based coverage for the current index and selected model…";
+            if (_semanticCoverageError is not null) return $"Coverage could not be checked. {_semanticCoverageError}";
+            if (!_semanticModelAvailable) return "Keyword search remains available. Set up a semantic model in Settings to add meaning-based search.";
+            if (_semanticIndex is not { } metadata || metadata.TotalDocumentCount == 0)
+                return "No indexed files are available for meaning-based search yet.";
             var excluded = metadata.ExcludedDocumentCount;
             var coverage = $"Meaning-based search currently covers {metadata.CompatibleDocumentCount} of " +
                            $"{metadata.TotalDocumentCount} indexed files.";
+            if (!metadata.HasPartialCoverage) return coverage;
             if (metadata.IsRepairQueued)
                 return $"{coverage} The remaining {excluded} {(excluded == 1 ? "file is" : "files are")} queued for background repair.";
             if (metadata.RepairQueuedDocumentCount > 0)
@@ -274,6 +292,7 @@ public sealed class ProjectItemViewModel : ViewModelBase
         Name = project.Name;
         State = project.State;
         if (!Folders.SequenceEqual(project.Folders)) Folders = project.Folders.ToArray();
+        var generationChanged = SearchGeneration != project.SearchGeneration;
         SearchGeneration = project.SearchGeneration;
         DocumentCount = project.DocumentCount;
         PendingCount = project.PendingCount;
@@ -286,6 +305,19 @@ public sealed class ProjectItemViewModel : ViewModelBase
         LastCompletedUtc = project.LastCompletedUtc;
         CurrentFile = project.CurrentFile;
         Work = project.Work;
+        if (generationChanged)
+        {
+            // Detail rows belong to the published generation that produced them.
+            _semanticIndex = null;
+            _semanticCoverageError = null;
+            BeginSemanticIndexRefresh();
+            UpdateFileTypeCounts([]);
+            if (RecentErrors.Count > 0)
+            {
+                RecentErrors.Clear();
+                OnPropertyChanged(nameof(HasRecentErrors));
+            }
+        }
         // A resolved page must not linger until the next details query finishes.
         var lastPage = Math.Max(0, (ErrorCount - 1) / ErrorPageSize);
         if (_errorPageIndex > lastPage)
@@ -327,6 +359,8 @@ public sealed class ProjectItemViewModel : ViewModelBase
         if (!string.Equals(previousDocumentCountDisplay, DocumentCountDisplay, StringComparison.Ordinal)) OnPropertyChanged(nameof(DocumentCountDisplay));
         if (!string.Equals(previousSidebarErrorCountDisplay, SidebarErrorCountDisplay, StringComparison.Ordinal)) OnPropertyChanged(nameof(SidebarErrorCountDisplay));
         OnPropertyChanged(nameof(ErrorCountDisplay));
+        OnPropertyChanged(nameof(ProgressMaximum));
+        OnPropertyChanged(nameof(ProgressDescription));
         if (!string.Equals(previousRecentErrorsSummary, RecentErrorsSummary, StringComparison.Ordinal)) OnPropertyChanged(nameof(RecentErrorsSummary));
         if (!string.Equals(previousProjectDetailsDisplay, ProjectDetailsDisplay, StringComparison.Ordinal)) OnPropertyChanged(nameof(ProjectDetailsDisplay));
         if (!string.Equals(previousLastCompletedDisplay, LastCompletedDisplay, StringComparison.Ordinal)) OnPropertyChanged(nameof(LastCompletedDisplay));
@@ -364,6 +398,7 @@ public sealed class ProjectItemViewModel : ViewModelBase
 
         _runtimeWork = runtime;
         _isDiscovering = isDiscovering;
+        OnPropertyChanged(nameof(IsDiscovering));
 
         if (!string.Equals(previousPhase, Phase, StringComparison.Ordinal)) OnPropertyChanged(nameof(Phase));
         if (!string.Equals(previousPhaseDetails, PhaseDetails, StringComparison.Ordinal))
@@ -435,10 +470,45 @@ public sealed class ProjectItemViewModel : ViewModelBase
 
     public void UpdateSemanticIndex(VectorSnapshotMetadata? metadata, bool modelAvailable)
     {
-        if (_semanticIndex == metadata && _semanticModelAvailable == modelAvailable) return;
+        if (_semanticIndex == metadata && _semanticModelAvailable == modelAvailable && !_isSemanticCoverageLoading && _semanticCoverageError is null) return;
         _semanticIndex = metadata;
         _semanticModelAvailable = modelAvailable;
+        _isSemanticCoverageLoading = false;
+        _semanticCoverageError = null;
+        NotifySemanticCoverageChanged();
+    }
+
+    public bool IsSemanticCoverageComplete => SemanticIndexStatusLabel == "COMPLETE";
+
+    public void SetActionsBusy(bool busy)
+    {
+        if (_actionsBusy == busy) return;
+        _actionsBusy = busy;
+        OnPropertyChanged(nameof(AreActionsEnabled));
+        OnPropertyChanged(nameof(CanReindex));
+        OnPropertyChanged(nameof(CanRetryFailedFiles));
+        OnPropertyChanged(nameof(CanRepairSemanticIndex));
+    }
+
+    public void BeginSemanticIndexRefresh()
+    {
+        _isSemanticCoverageLoading = true;
+        NotifySemanticCoverageChanged();
+    }
+
+    public void FailSemanticIndexRefresh(string message)
+    {
+        _isSemanticCoverageLoading = false;
+        _semanticCoverageError = message;
+        _semanticIndex = null;
+        NotifySemanticCoverageChanged();
+    }
+
+    private void NotifySemanticCoverageChanged()
+    {
         OnPropertyChanged(nameof(HasMixedSemanticIndex));
+        OnPropertyChanged(nameof(HasSemanticCoverageWarning));
+        OnPropertyChanged(nameof(IsSemanticCoverageComplete));
         OnPropertyChanged(nameof(IsSemanticRepairQueued));
         OnPropertyChanged(nameof(ShowSemanticRepairButton));
         OnPropertyChanged(nameof(CanRepairSemanticIndex));

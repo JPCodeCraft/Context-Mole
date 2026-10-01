@@ -133,6 +133,8 @@ public interface ISearchStore
     /// <summary>Returns false only when the database is absent; incompatible or unreadable indexes throw.</summary>
     Task<bool> IsInitializedAsync(CancellationToken cancellationToken = default);
     Task<IReadOnlyList<ProjectSummary>> ListProjectsAsync(CancellationToken cancellationToken = default);
+    async Task<long> GetSearchGenerationAsync(Guid projectId, CancellationToken cancellationToken = default) =>
+        (await KeywordSearchAsync(projectId, string.Empty, 1, null, cancellationToken).ConfigureAwait(false)).SearchGeneration;
     async Task<string?> GetProjectFolderPathAsync(Guid projectId, Guid folderId,
         CancellationToken cancellationToken = default) =>
         (await ListProjectsAsync(cancellationToken).ConfigureAwait(false))
@@ -153,6 +155,32 @@ public interface ISearchStore
             ? KeywordSearchAsync(projectId, ftsQuery, count, filters, fieldWeights, cancellationToken)
             : Task.FromResult(new KeywordSearchPage(0, []));
     Task<VectorSnapshotMetadata> LoadVectorSnapshotMetadataAsync(Guid projectId, CancellationToken cancellationToken = default);
+    async Task<KeywordBranchSnapshot> LoadKeywordBranchesAsync(Guid projectId, string mainQuery,
+        string optionalQuery, int candidateLimit, SearchFilters? filters, SearchFieldWeights weights,
+        SearchScope scope, CancellationToken cancellationToken = default)
+    {
+        var generation = 0L;
+        async Task<(IReadOnlyList<SearchCandidate> Candidates, bool Capped)> Load(string query)
+        {
+            if (query.Length == 0) return ([], false);
+            var rows = new List<SearchCandidate>();
+            while (rows.Count <= candidateLimit)
+            {
+                var count = Math.Min(1000, candidateLimit + 1 - rows.Count);
+                var page = await KeywordSearchAsync(projectId, query, count, rows.Count, filters, weights,
+                    cancellationToken).ConfigureAwait(false);
+                if (generation == 0) generation = page.SearchGeneration;
+                else if (generation != page.SearchGeneration)
+                    throw new ContextMoleException("index_changed", "The index changed during candidate retrieval.", true);
+                rows.AddRange(page.Candidates);
+                if (page.Candidates.Count < count) break;
+            }
+            return (rows.Take(candidateLimit).ToArray(), rows.Count > candidateLimit);
+        }
+        var main = await Load(mainQuery).ConfigureAwait(false);
+        var optional = await Load(optionalQuery).ConfigureAwait(false);
+        return new KeywordBranchSnapshot(generation, main.Candidates, optional.Candidates, main.Capped, optional.Capped);
+    }
     Task<VectorSnapshotMetadata> LoadVectorSnapshotMetadataAsync(Guid projectId, EmbeddingPolicy targetPolicy,
         CancellationToken cancellationToken = default) =>
         LoadVectorSnapshotMetadataAsync(projectId, cancellationToken);
@@ -168,7 +196,25 @@ public interface ISearchStore
         StreamVectorEntriesAsync(projectId, expectedGeneration, filters, cancellationToken);
     Task<IReadOnlyList<SearchCandidate>> LoadCandidatesAsync(Guid projectId, IReadOnlyCollection<Guid> passageIds,
         long expectedGeneration, CancellationToken cancellationToken = default);
+    async Task<IReadOnlyList<SearchCandidate>> LoadCandidatesAsync(Guid projectId, IReadOnlyCollection<Guid> passageIds,
+        long expectedGeneration, SearchScope scope, CancellationToken cancellationToken = default)
+    {
+        var result = new List<SearchCandidate>();
+        foreach (var batch in passageIds.Chunk(500))
+            result.AddRange(await LoadCandidatesAsync(projectId, batch, expectedGeneration, cancellationToken).ConfigureAwait(false));
+        return result;
+    }
     Task<IReadOnlyList<PassageInfo>> ReadPassagesAsync(Guid projectId, IReadOnlyCollection<Guid> passageIds, int contextBefore, int contextAfter, CancellationToken cancellationToken = default);
+    async Task<IReadOnlyList<PassageInfo>> ReadPassagesAsync(Guid projectId, IReadOnlyCollection<Guid> passageIds,
+        int contextBefore, int contextAfter, long expectedGeneration, CancellationToken cancellationToken = default)
+    {
+        if (await GetSearchGenerationAsync(projectId, cancellationToken).ConfigureAwait(false) != expectedGeneration)
+            throw new ContextMoleException("index_changed", "The index changed after search. Repeat the search.", true);
+        return await ReadPassagesAsync(projectId, passageIds, contextBefore, contextAfter, cancellationToken).ConfigureAwait(false);
+    }
+    Task<SectionReadResponse> ReadSectionAsync(Guid projectId, Guid sectionId, long expectedGeneration,
+        int limit = 20, string? cursor = null, CancellationToken cancellationToken = default) =>
+        throw new ContextMoleException("section_unavailable", "Section reading is unavailable in this store.");
     Task<DocumentInfo?> GetDocumentInfoAsync(Guid projectId, Guid documentId, Guid? contentId, CancellationToken cancellationToken = default);
     Task<AttachmentPage> ListAttachmentsAsync(Guid projectId, Guid documentId, string? cursor, int limit, CancellationToken cancellationToken = default);
     Task<ResolvedLocalFile?> ResolveLocalFileAsync(Guid projectId, Guid documentId, Guid? contentId, CancellationToken cancellationToken = default);

@@ -67,6 +67,8 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
     private string? _detectorInputName;
     private string? _recognizerInputName;
     private volatile bool _areAssetsReady;
+    private volatile bool _cachedAssetsOnly;
+    private volatile bool _cachedAssetsVerified;
     private volatile bool _isAvailable;
     private int _disposed;
     private long _lastOcrActivityTimestamp;
@@ -125,6 +127,11 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
     public async Task PrepareAssetsAsync(CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+        if (_cachedAssetsOnly)
+        {
+            await PrepareCachedAssetsAsync(cancellationToken).ConfigureAwait(false);
+            return;
+        }
         if (AreAssetsReady) return;
         if (!IsPlatformSupported())
         {
@@ -138,6 +145,13 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
         try
         {
             ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+            if (_cachedAssetsOnly)
+            {
+                if (!_cachedAssetsVerified || !AreAssetsReady)
+                    await VerifyCachedAssetsAsync(operationToken).ConfigureAwait(false);
+                MarkAssetsPrepared();
+                return;
+            }
             if (AreAssetsReady) return;
 
             var directory = ModelDirectory;
@@ -168,6 +182,42 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
         {
             _installGate.Release();
         }
+    }
+
+    /// <summary>Restrict this instance to existing pinned assets, without downloading or changing the model cache.</summary>
+    public async Task PrepareCachedAssetsAsync(CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+        _cachedAssetsOnly = true;
+        if (_cachedAssetsVerified && AreAssetsReady) return;
+        if (!IsPlatformSupported())
+            throw new ContextMoleException("ocr_platform_unsupported", "PP-OCRv6 is unavailable on this platform.");
+        using var operation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _lifetime.Token);
+        await _installGate.WaitAsync(operation.Token).ConfigureAwait(false);
+        try
+        {
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+            if (_cachedAssetsVerified && AreAssetsReady) return;
+            await VerifyCachedAssetsAsync(operation.Token).ConfigureAwait(false);
+            MarkAssetsPrepared();
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ContextMoleException)
+        {
+            MarkAssetsUnavailable(exception.Message);
+            if (exception is ContextMoleException) throw;
+            throw new ContextMoleException("ocr_cached_assets_unavailable", "The existing OCR model cache could not be verified.");
+        }
+        finally { _installGate.Release(); }
+    }
+
+    private async Task VerifyCachedAssetsAsync(CancellationToken cancellationToken)
+    {
+        foreach (var asset in GetDownloadAssets(ModelDirectory))
+            if (!File.Exists(asset.Target) ||
+                !await HasExpectedHashAsync(asset.Target, asset.Sha256, cancellationToken).ConfigureAwait(false))
+                throw new ContextMoleException("ocr_cached_assets_unavailable",
+                    $"{asset.Name} is missing or does not match its pinned checksum. Prepare the models separately before this cached-only run.");
+        _cachedAssetsVerified = true;
     }
 
     public async Task EnsureAvailableAsync(CancellationToken cancellationToken = default)
@@ -315,7 +365,10 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
         }
 
         if (lines.Count == 0) return new OcrResult(string.Empty, null);
-        lines.Sort(CompareReadingOrder);
+        var ordered = ExtractionLayout.OrderLines(lines.Select(line => new OcrTextLine(line.Text, line.Confidence,
+            new SourceRegion(line.Box.Left / (double)source.Width, line.Box.Top / (double)source.Height,
+                (line.Box.Right - line.Box.Left) / (double)source.Width,
+                (line.Box.Bottom - line.Box.Top) / (double)source.Height))).ToArray());
 
         double weightedConfidence = 0;
         long confidenceWeight = 0;
@@ -326,8 +379,8 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
             confidenceWeight += weight;
         }
 
-        return new OcrResult(string.Join(Environment.NewLine, lines.Select(line => line.Text)),
-            confidenceWeight == 0 ? null : weightedConfidence / confidenceWeight);
+        return new OcrResult(string.Join(Environment.NewLine, ordered.Select(line => line.Text)),
+            confidenceWeight == 0 ? null : weightedConfidence / confidenceWeight, Lines: ordered);
     }
 
     internal static SKBitmap DecodeImage(OcrRequest request)
@@ -670,16 +723,6 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
         return result;
     }
 
-    private static int CompareReadingOrder(RecognizedLine left, RecognizedLine right)
-    {
-        var leftHeight = left.Box.Bottom - left.Box.Top;
-        var rightHeight = right.Box.Bottom - right.Box.Top;
-        var sameLineTolerance = Math.Max(6, Math.Min(leftHeight, rightHeight) / 2);
-        if (Math.Abs(left.Box.Top - right.Box.Top) <= sameLineTolerance)
-            return left.Box.Left.CompareTo(right.Box.Left);
-        return left.Box.Top.CompareTo(right.Box.Top);
-    }
-
     private void LoadCore(int threadCount)
     {
         if (!IsPlatformSupported())
@@ -903,6 +946,7 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
         lock (_stateGate)
         {
             _areAssetsReady = false;
+            _cachedAssetsVerified = false;
             if (!_isAvailable) _unavailableReason = message;
         }
     }

@@ -1,9 +1,6 @@
 using System.Globalization;
 using System.Text;
 
-using AngleSharp.Dom;
-using AngleSharp.Html.Parser;
-
 using ContextMole.Core;
 
 using DocumentFormat.OpenXml;
@@ -32,7 +29,12 @@ public sealed partial class DocumentExtractionRegistry
         var sections = new List<ExtractedSection>();
         var paragraphNumber = 0;
         var tableNumber = 0;
-        string? currentHeading = null;
+        var heading = new HeadingContext();
+        var styles = main.StyleDefinitionsPart?.Styles?.Elements<W.Style>()
+            .Where(style => !string.IsNullOrWhiteSpace(style.StyleId?.Value))
+            .GroupBy(style => style.StyleId!.Value!, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal)
+            ?? new Dictionary<string, W.Style>(StringComparer.Ordinal);
 
         foreach (var element in body.ChildElements)
         {
@@ -44,12 +46,12 @@ public sealed partial class DocumentExtractionRegistry
                         paragraphNumber++;
                         var text = OpenXmlText(paragraph);
                         if (string.IsNullOrWhiteSpace(text)) break;
-                        var style = paragraph.ParagraphProperties?.ParagraphStyleId?.Val?.Value;
-                        if (style?.StartsWith("Heading", StringComparison.OrdinalIgnoreCase) == true)
-                            currentHeading = text;
+                        var level = WordHeadingLevel(paragraph, styles);
+                        if (level is >= 1 and <= 9) heading.Start(level, text);
                         sections.Add(new ExtractedSection(text,
                             new SourceLocation(LocationKind.Structure, StructurePath: $"document/paragraph[{paragraphNumber}]"),
-                            ExtractionMethod.NativeText, Heading: currentHeading));
+                            ExtractionMethod.NativeText, Heading: heading.Heading,
+                            SectionKey: heading.Key, HeadingPath: heading.Path));
                         break;
                     }
                 case W.Table table:
@@ -62,7 +64,8 @@ public sealed partial class DocumentExtractionRegistry
                         if (!string.IsNullOrWhiteSpace(text))
                             sections.Add(new ExtractedSection(text,
                                 new SourceLocation(LocationKind.Structure, StructurePath: $"document/table[{tableNumber}]"),
-                                ExtractionMethod.NativeText, Heading: currentHeading));
+                                ExtractionMethod.NativeText, Heading: heading.Heading,
+                                SectionKey: heading.Key, HeadingPath: heading.Path));
                         break;
                     }
             }
@@ -93,6 +96,25 @@ public sealed partial class DocumentExtractionRegistry
         var attachments = await ExtractPackageAttachmentsAsync(main, name, depth, context, cancellationToken);
         return new ExtractedNode(name, mimeType, relationship, sections, attachments,
             Title: MetadataTitle(document.PackageProperties.Title));
+    }
+
+    private static int WordHeadingLevel(W.Paragraph paragraph, IReadOnlyDictionary<string, W.Style> styles)
+    {
+        var direct = paragraph.ParagraphProperties?.OutlineLevel?.Val?.Value;
+        if (direct is not null) return direct is >= 0 and <= 8 ? direct.Value + 1 : 0;
+        var styleId = paragraph.ParagraphProperties?.ParagraphStyleId?.Val?.Value;
+        var visited = new HashSet<string>(StringComparer.Ordinal);
+        while (!string.IsNullOrWhiteSpace(styleId) && visited.Count < 32 && visited.Add(styleId))
+        {
+            styles.TryGetValue(styleId, out var style);
+            var outline = style?.StyleParagraphProperties?.OutlineLevel?.Val?.Value;
+            if (outline is not null) return outline is >= 0 and <= 8 ? outline.Value + 1 : 0;
+            var label = (style?.StyleName?.Val?.Value ?? styleId).Replace(" ", string.Empty, StringComparison.Ordinal);
+            if (label.StartsWith("Heading", StringComparison.OrdinalIgnoreCase) &&
+                int.TryParse(label.AsSpan(7), out var level) && level is >= 1 and <= 9) return level;
+            styleId = style?.BasedOn?.Val?.Value;
+        }
+        return 0;
     }
 
     private async Task<ExtractedNode> SpreadsheetNodeAsync(byte[] bytes, string name, string? mimeType, string relationship,
@@ -268,7 +290,8 @@ public sealed partial class DocumentExtractionRegistry
         {
             var headers = $"From: {message.From}\nTo: {message.To}\nCc: {message.Cc}\nDate: {message.Date:O}\nSubject: {message.Subject}";
             sections.Add(new ExtractedSection(headers,
-                new SourceLocation(LocationKind.EmailPart, EmailPart: "headers"), ExtractionMethod.Email));
+                new SourceLocation(LocationKind.EmailPart, EmailPart: "headers"), ExtractionMethod.Email,
+                SectionKey: "email:headers"));
         }
 
         var hasHtml = !string.IsNullOrWhiteSpace(message.HtmlBody);
@@ -285,7 +308,13 @@ public sealed partial class DocumentExtractionRegistry
             ? new SourceLocation(LocationKind.Document)
             : new SourceLocation(LocationKind.EmailPart, EmailPart: "body");
         if (!string.IsNullOrWhiteSpace(body))
-            sections.Add(new ExtractedSection(body, location, method));
+        {
+            if (method == ExtractionMethod.Html && hasHtml)
+                sections.AddRange(HtmlSections(message.HtmlBody!, method, location));
+            else
+                sections.Add(new ExtractedSection(body, location, method,
+                    SectionKey: isWebArchive ? "document" : "email:body"));
+        }
 
         var attachments = new List<ExtractedNode>();
         var ordinal = 0;
@@ -349,7 +378,8 @@ public sealed partial class DocumentExtractionRegistry
         var sections = new List<ExtractedSection>
         {
             new($"From: {message.Sender}\nTo: {string.Join("; ", message.Recipients ?? [])}\nDate: {message.SentOn:O}\nSubject: {message.Subject}",
-                new SourceLocation(LocationKind.EmailPart, EmailPart: "headers"), ExtractionMethod.Email)
+                new SourceLocation(LocationKind.EmailPart, EmailPart: "headers"), ExtractionMethod.Email,
+                SectionKey: "email:headers")
         };
         var body = message.BodyText;
         var method = ExtractionMethod.Email;
@@ -359,7 +389,13 @@ public sealed partial class DocumentExtractionRegistry
             method = ExtractionMethod.Html;
         }
         if (!string.IsNullOrWhiteSpace(body))
-            sections.Add(new ExtractedSection(body, new SourceLocation(LocationKind.EmailPart, EmailPart: "body"), method));
+        {
+            var location = new SourceLocation(LocationKind.EmailPart, EmailPart: "body");
+            if (method == ExtractionMethod.Html)
+                sections.AddRange(HtmlSections(message.BodyHtml!, method, location));
+            else
+                sections.Add(new ExtractedSection(body, location, method, SectionKey: "email:body"));
+        }
 
         var attachments = new List<ExtractedNode>();
         var ordinal = 0;
@@ -397,11 +433,13 @@ public sealed partial class DocumentExtractionRegistry
         var sections = new List<ExtractedSection>
         {
             new($"From: {message.Sender}\nDate: {message.SentOn:O}\nSubject: {message.Subject}",
-                new SourceLocation(LocationKind.EmailPart, EmailPart: "headers"), ExtractionMethod.Email)
+                new SourceLocation(LocationKind.EmailPart, EmailPart: "headers"), ExtractionMethod.Email,
+                SectionKey: "email:headers")
         };
         var body = !string.IsNullOrWhiteSpace(message.BodyText) ? message.BodyText : InertHtmlText(message.BodyHtml);
         if (!string.IsNullOrWhiteSpace(body))
-            sections.Add(new ExtractedSection(body, new SourceLocation(LocationKind.EmailPart, EmailPart: "body"), ExtractionMethod.Email));
+            sections.Add(new ExtractedSection(body, new SourceLocation(LocationKind.EmailPart, EmailPart: "body"), ExtractionMethod.Email,
+                SectionKey: "email:body"));
         var attachments = new List<ExtractedNode>();
         var ordinal = 0;
         foreach (var item in message.Attachments ?? [])
@@ -428,10 +466,7 @@ public sealed partial class DocumentExtractionRegistry
     private static string InertHtmlText(string? html)
     {
         if (string.IsNullOrWhiteSpace(html)) return string.Empty;
-        var document = new HtmlParser().ParseDocument(html);
-        foreach (var element in document.QuerySelectorAll("script,style,template,noscript,iframe,object,embed,svg,canvas"))
-            element.Remove();
-        return document.Body?.TextContent ?? document.DocumentElement.TextContent;
+        return string.Join('\n', HtmlSections(html, ExtractionMethod.Html).Select(section => section.Text));
     }
 
     private static string CellText(Cell cell, IReadOnlyList<string> shared)
@@ -456,7 +491,8 @@ public sealed partial class DocumentExtractionRegistry
     {
         var text = OpenXmlText(root);
         if (!string.IsNullOrWhiteSpace(text))
-            sections.Add(new ExtractedSection(text, new SourceLocation(LocationKind.Structure, StructurePath: path), ExtractionMethod.NativeText));
+            sections.Add(new ExtractedSection(text, new SourceLocation(LocationKind.Structure, StructurePath: path), ExtractionMethod.NativeText,
+                SectionKey: path, IsBoilerplate: path.StartsWith("header[", StringComparison.Ordinal) || path.StartsWith("footer[", StringComparison.Ordinal)));
     }
 
     private static string ExtensionFromContentType(string contentType) =>

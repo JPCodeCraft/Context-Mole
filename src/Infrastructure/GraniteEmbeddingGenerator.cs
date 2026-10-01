@@ -259,6 +259,9 @@ public sealed class GraniteEmbeddingGenerator : IEmbeddingGenerator
                         {
                             cancellationToken.ThrowIfCancellationRequested();
                             var tokens = tokenizer.Encode(texts[offset + index], false).First().Ids;
+                            if (maximumTokens == 512 && tokens.Count > maximumTokens - 1)
+                                throw new ContextMoleException("embedding_input_too_long",
+                                    "A prepared passage exceeds the complete embedding token budget; reindex with the current preparation pipeline.");
                             var tokenCount = Math.Min(tokens.Count, maximumTokens - 1);
                             var ids = new long[tokenCount + 1];
                             ids[0] = selectedModel.BosTokenId;

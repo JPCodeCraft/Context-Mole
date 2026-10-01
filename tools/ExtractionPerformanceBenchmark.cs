@@ -99,8 +99,11 @@ foreach (var fixture in selected)
             throw new InvalidDataException($"Benchmark fixture '{fixture.Id}' no longer matches its manifest SHA-256.");
     }
     Console.WriteLine($"{fixture.Id}: warming up ({(fixture.RequiresOcr ? "OCR" : "native extraction")})...");
+    var groundTruth = fixture.GroundTruth is { } reference
+        ? await File.ReadAllTextAsync(Path.Combine(Path.GetDirectoryName(fixturePath)!, reference), cancellation.Token)
+        : null;
     var warmup = await extractor.ExtractAsync(new ExtractionRequest(fixturePath), cancellation.Token);
-    var problems = QualityProblems(fixture, warmup);
+    var problems = QualityProblems(fixture, warmup, groundTruth);
     var samples = new List<Measurement>();
     for (var iteration = 0; iteration < iterations; iteration++)
     {
@@ -114,9 +117,16 @@ foreach (var fixture in selected)
         var allocatedBytes = GC.GetTotalAllocatedBytes(precise: true) - allocatedBefore;
         await memory.StopAsync();
         var gcCollections = Enumerable.Range(0, 3).Select(generation => GC.CollectionCount(generation) - gcBefore[generation]).ToArray();
-        problems.AddRange(QualityProblems(fixture, result));
+        problems.AddRange(QualityProblems(fixture, result, groundTruth));
+        var extractedText = string.Join('\n', SectionTexts(result.Root));
+        var allSections = Sections(result.Root).ToArray();
         samples.Add(new Measurement(timer.Elapsed.TotalMilliseconds, allocatedBytes, memory.PeakBytes,
-            gcCollections, CountSections(result.Root), CountCharacters(result.Root), OcrConfidence(result.Root)));
+            gcCollections, CountSections(result.Root), CountCharacters(result.Root), OcrConfidence(result.Root),
+            groundTruth is null ? null : ExtractionQuality.CharacterErrorRate(groundTruth, extractedText),
+            groundTruth is null ? null : ExtractionQuality.WordErrorRate(groundTruth, extractedText),
+            allSections.Count(section => section.Location.Region is not null),
+            allSections.Count(section => section.Location.LayoutWarning is not null),
+            allSections.Count(section => section.IsBoilerplate)));
     }
 
     var elapsed = Median(samples.Select(sample => sample.ElapsedMilliseconds));
@@ -140,10 +150,10 @@ Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
 await File.WriteAllTextAsync(outputPath, JsonSerializer.Serialize(report, jsonContext.BenchmarkReport), cancellation.Token);
 Console.WriteLine($"Report: {outputPath}");
 Console.WriteLine($"Completed {results.Count} fixtures; skipped {manifest.Fixtures.Length - selected.Length} OCR fixtures. Timing ratios are informational; extraction errors and missing quality anchors fail the run.");
-Console.WriteLine("Working set is sampled every 25 ms and includes loaded models and earlier fixtures. Managed allocation totals include sampling overhead. Quality checks use text anchors and size minimums; they do not measure full transcription accuracy.");
+Console.WriteLine("Working set is sampled every 25 ms and includes loaded models and earlier fixtures. Reports include available transcription CER/WER, reading-order/page/table anchors, located text regions and layout warnings. Ground-truth thresholds are fixture-specific.");
 if (results.Any(result => result.Problems.Length != 0)) Environment.ExitCode = 1;
 
-static List<string> QualityProblems(Fixture fixture, ExtractionResult result)
+static List<string> QualityProblems(Fixture fixture, ExtractionResult result, string? groundTruth)
 {
     var problems = result.Errors.Select(error => $"{error.Code}: {error.Message}").ToList();
     var text = TextNormalization.ForSearch(string.Join('\n', SectionTexts(result.Root)));
@@ -155,13 +165,43 @@ static List<string> QualityProblems(Fixture fixture, ExtractionResult result)
     if (CountCharacters(result.Root) < fixture.MinimumCharacters)
         problems.Add($"Expected at least {fixture.MinimumCharacters} extracted characters; found {CountCharacters(result.Root)}.");
     if (fixture.RequiresOcr && !ContainsOcr(result.Root)) problems.Add("Expected an OCR section.");
+    var position = 0;
+    foreach (var anchor in fixture.OrderedText ?? [])
+    {
+        var normalizedAnchor = TextNormalization.ForSearch(anchor);
+        var found = text.IndexOf(normalizedAnchor, position, StringComparison.OrdinalIgnoreCase);
+        if (found < 0) { problems.Add($"Reading-order anchor missing or out of order: {anchor}"); break; }
+        position = found + normalizedAnchor.Length;
+    }
+    var sections = Sections(result.Root).ToArray();
+    foreach (var page in fixture.PageAnchors ?? [])
+    {
+        var pageText = TextNormalization.ForSearch(string.Join('\n', sections.Where(section => section.Location.Page == page.Page).Select(section => section.Text)));
+        foreach (var anchor in page.Text)
+            if (!pageText.Contains(TextNormalization.ForSearch(anchor), StringComparison.OrdinalIgnoreCase))
+                problems.Add($"Expected text on page {page.Page}: {anchor}");
+    }
+    foreach (var table in fixture.TableAnchors ?? [])
+        if (!sections.Any(section => section.Text.Contains(table, StringComparison.Ordinal)))
+            problems.Add($"Table row/cell structure was not preserved: {table}");
+    if (fixture.RequireRegions && sections.Any(section => section.Location.Region is null))
+        problems.Add("Expected a text region for every extracted section.");
+    if (sections.Count(section => section.IsBoilerplate) < fixture.MinimumBoilerplateSections)
+        problems.Add($"Expected at least {fixture.MinimumBoilerplateSections} annotated boilerplate sections.");
+    if (groundTruth is not null && fixture.MaximumCharacterErrorRate is { } maximum &&
+        ExtractionQuality.CharacterErrorRate(groundTruth, string.Join('\n', SectionTexts(result.Root))) > maximum)
+        problems.Add($"Transcription character error rate exceeds {maximum:P0}.");
     return problems;
 }
 
 static IEnumerable<string> SectionTexts(ExtractedNode node) =>
     node.Sections.Select(section => section.Text).Concat(node.Attachments.SelectMany(SectionTexts));
+static IEnumerable<ExtractedSection> Sections(ExtractedNode node) =>
+    node.Sections.Concat(node.Attachments.SelectMany(Sections));
 static int CountSections(ExtractedNode node) => node.Sections.Count + node.Attachments.Sum(CountSections);
-static int CountCharacters(ExtractedNode node) => node.Sections.Sum(section => section.Text.Length) + node.Attachments.Sum(CountCharacters);
+// Measure the same text representation as quality anchors/CER. Splitting a former page-sized
+// OCR section into located lines must not make its canonical line separators disappear.
+static int CountCharacters(ExtractedNode node) => SectionTexts(node).Sum(text => text.Length) + Math.Max(0, CountSections(node) - 1);
 static bool ContainsOcr(ExtractedNode node) => node.Sections.Any(section => section.Method == ExtractionMethod.Ocr) || node.Attachments.Any(ContainsOcr);
 static double? OcrConfidence(ExtractedNode node)
 {
@@ -179,9 +219,14 @@ static double Median(IEnumerable<double> values)
 
 sealed record FixtureManifest(Fixture[] Fixtures);
 sealed record Fixture(string Id, string File, bool RequiresOcr, string[] ExpectedText, int MinimumSections = 1,
-    string? Sha256 = null, int MinimumCharacters = 0);
+    string? Sha256 = null, int MinimumCharacters = 0, string? GroundTruth = null,
+    string[]? OrderedText = null, PageAnchor[]? PageAnchors = null, string[]? TableAnchors = null,
+    bool RequireRegions = false, int MinimumBoilerplateSections = 0, double? MaximumCharacterErrorRate = null);
+sealed record PageAnchor(int Page, string[] Text);
 sealed record Measurement(double ElapsedMilliseconds, long AllocatedBytes, long PeakWorkingSetBytes,
-    int[] GcCollections, int Sections, int Characters, double? OcrConfidence = null);
+    int[] GcCollections, int Sections, int Characters, double? OcrConfidence = null,
+    double? CharacterErrorRate = null, double? WordErrorRate = null, int LocatedSections = 0,
+    int LayoutWarnings = 0, int BoilerplateSections = 0);
 sealed record FixtureResult(string Id, string File, bool RequiresOcr, long SourceBytes, double MedianMilliseconds,
     long MedianAllocatedBytes, long PeakWorkingSetBytes, double? BaselineTimeRatio,
     string[] Problems, List<Measurement> Samples, string Sha256);

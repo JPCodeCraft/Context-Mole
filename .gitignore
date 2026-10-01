@@ -504,3 +504,6 @@ $RECYCLE.BIN/
 
 # Vim temporary swap files
 *.swp
+# Python benchmark helpers
+__pycache__/
+*.py[cod]

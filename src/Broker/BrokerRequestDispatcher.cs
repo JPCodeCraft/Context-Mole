@@ -13,7 +13,8 @@ public sealed class BrokerRequestDispatcher(
     IAppPaths paths,
     BrokerSearchRuntimeManager searchRuntime,
     BrokerActivityTracker activity,
-    IHostApplicationLifetime applicationLifetime)
+    IHostApplicationLifetime applicationLifetime,
+    TimeProvider? timeProvider = null)
 {
     private static readonly DateTimeOffset ProcessStartedUtc = ReadProcessStartedUtc();
     private readonly ISearchStore _store = store;
@@ -24,6 +25,7 @@ public sealed class BrokerRequestDispatcher(
     private readonly IHostApplicationLifetime _applicationLifetime = applicationLifetime;
     private readonly SemaphoreSlim _ordinaryReads = new(8, 8);
     private readonly SemaphoreSlim _materializations = new(2, 2);
+    private readonly SearchSessionCache _searchSessions = new(timeProvider ?? TimeProvider.System);
 
     public async Task<JsonElement> DispatchAsync(BrokerRpcRequest request, CancellationToken cancellationToken)
     {
@@ -53,6 +55,8 @@ public sealed class BrokerRequestDispatcher(
                     Deserialize<BrokerSearchProjectRequest>(request.Payload), cancellationToken).ConfigureAwait(false)),
                 BrokerToolMethods.ReadPassages => Serialize(await ReadPassagesAsync(
                     Deserialize<BrokerReadPassagesRequest>(request.Payload), cancellationToken).ConfigureAwait(false)),
+                BrokerToolMethods.ReadSection => Serialize(await ReadSectionAsync(
+                    Deserialize<BrokerReadSectionRequest>(request.Payload), cancellationToken).ConfigureAwait(false)),
                 BrokerToolMethods.GetDocumentInfo => Serialize(await GetDocumentInfoAsync(
                     Deserialize<BrokerGetDocumentInfoRequest>(request.Payload), cancellationToken).ConfigureAwait(false)),
                 BrokerToolMethods.ListDocuments => Serialize(await ListDocumentsAsync(
@@ -89,14 +93,44 @@ public sealed class BrokerRequestDispatcher(
         return await _store.ListProjectsAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private async Task<SearchResponse> SearchProjectAsync(BrokerSearchProjectRequest request,
+    private async Task<SearchWireResponse> SearchProjectAsync(BrokerSearchProjectRequest request,
         CancellationToken cancellationToken)
     {
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-        return await _searchRuntime.SearchAsync(request.Request, cancellationToken).ConfigureAwait(false);
+        var search = request.Request;
+        if (search.Cursor is not null)
+        {
+            if (search.Mode != SearchMode.Hybrid || search.SemanticQuery is not null || search.Clauses is not null ||
+                search.MinimumShouldMatch is not null || search.FieldWeights is not null || search.BranchWeights is not null ||
+                search.Filters is not null || search.ResultOptions is not null || search.CandidateLimit != 1000 ||
+                search.Scope != SearchScope.Passage || search.Detail != SearchDetail.Compact)
+                throw new ContextMoleException("invalid_request", "A continuation accepts only project_id and cursor; its search and result settings are fixed.");
+            var continuation = _searchSessions.Get(search.ProjectId, search.Cursor);
+            await ValidateSearchSnapshotAsync(search.ProjectId, continuation.Generation, continuation.PolicyKey, cancellationToken)
+                .ConfigureAwait(false);
+            return SearchWireResponse.FromDomain(continuation.Response, continuation.Detail);
+        }
+        var response = await _searchRuntime.SearchAsync(search, cancellationToken).ConfigureAwait(false);
+        await ValidateSearchSnapshotAsync(search.ProjectId, response.SearchGeneration, response.SemanticPolicyKey, cancellationToken)
+            .ConfigureAwait(false);
+        return SearchWireResponse.FromDomain(_searchSessions.Start(search, response), search.Detail);
     }
 
-    private async Task<IReadOnlyList<PassageInfo>> ReadPassagesAsync(BrokerReadPassagesRequest request,
+    private async Task ValidateSearchSnapshotAsync(Guid projectId, long generation, string? policyKey,
+        CancellationToken cancellationToken)
+    {
+        var current = await _store.GetSearchGenerationAsync(projectId, cancellationToken).ConfigureAwait(false);
+        if (current != generation)
+            throw new ContextMoleException("index_changed", "The project index changed. Run the search again.", true);
+        if (policyKey is not null)
+        {
+            var status = await _searchRuntime.GetEmbeddingStatusAsync(cancellationToken).ConfigureAwait(false);
+            if (status.Policy?.Key != policyKey)
+                throw new ContextMoleException("semantic_model_changed", "The semantic model changed. Run the search again.", true);
+        }
+    }
+
+    private async Task<ReadPassagesResponse> ReadPassagesAsync(BrokerReadPassagesRequest request,
         CancellationToken cancellationToken)
     {
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
@@ -105,8 +139,21 @@ public sealed class BrokerRequestDispatcher(
         if (request.ContextBefore is < 0 or > 3 || request.ContextAfter is < 0 or > 3)
             throw new ContextMoleException("invalid_request",
                 "context_before and context_after must be between 0 and 3.");
-        return await _store.ReadPassagesAsync(request.ProjectId, request.PassageIds, request.ContextBefore,
-            request.ContextAfter, cancellationToken).ConfigureAwait(false);
+        var expectedGeneration = request.ExpectedSearchGeneration;
+        var passages = await _store.ReadPassagesAsync(request.ProjectId, request.PassageIds, request.ContextBefore,
+            request.ContextAfter, expectedGeneration, cancellationToken).ConfigureAwait(false);
+        var generation = await _store.GetSearchGenerationAsync(request.ProjectId, cancellationToken).ConfigureAwait(false);
+        if (generation != expectedGeneration)
+            throw new ContextMoleException("index_changed", "The project index changed while passages were read. Run the search again.", true);
+        return new ReadPassagesResponse(generation, passages);
+    }
+
+    private async Task<SectionReadResponse> ReadSectionAsync(BrokerReadSectionRequest request,
+        CancellationToken cancellationToken)
+    {
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+        return await _store.ReadSectionAsync(request.ProjectId, request.SectionId, request.ExpectedSearchGeneration,
+            request.Limit, request.Cursor, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<DocumentInfo> GetDocumentInfoAsync(BrokerGetDocumentInfoRequest request,

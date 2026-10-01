@@ -62,6 +62,7 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                 _paths.DatabasePath, _paths.DataDirectory, Schema.CurrentVersion);
             await using var connection = CreateConnection();
             await connection.OpenAsync(stoppingToken).ConfigureAwait(false);
+            connection.CreateFunction<string?, string>("lexical", value => LexicalText.Canonicalize(value));
             await Schema.MigrateAsync(connection, _logger, stoppingToken).ConfigureAwait(false);
             _logger.LogInformation("Database ready at {DatabasePath}, schema version {SchemaVersion}", _paths.DatabasePath, Schema.CurrentVersion);
             _ready.TrySetResult();
@@ -298,7 +299,7 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                       SELECT 1 FROM embeddings e
                       WHERE e.revision_id=r.id AND e.policy_key<>$policy_key
                     )
-                    OR (SELECT COUNT(*) FROM passages p WHERE p.revision_id=r.id)<>
+                    OR (SELECT COUNT(*) FROM passages p WHERE p.revision_id=r.id AND p.semantic_eligible=1)<>
                        (SELECT COUNT(*) FROM embeddings e WHERE e.revision_id=r.id AND e.policy_key=$policy_key)
                   )
                 ORDER BY d.path_key,d.id;
@@ -568,8 +569,9 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                         [new("$path", canonicalNew), new("$filename", newName),
                          new("$revision", revision.ToString())], token).ConfigureAwait(false);
                     await ExecuteAsync(connection, transaction,
-                        "INSERT INTO passages_fts(rowid,body_text,title,heading,filename,path,content_name,sheet,email_subject) SELECT rowid,body_text,title,heading,filename,path,content_name,COALESCE(sheet,''),email_subject FROM passages WHERE revision_id=$revision;",
+                        "INSERT INTO passages_fts(rowid,body_text,title,heading,filename,path,content_name,sheet,email_subject) SELECT rowid,lexical(body_text),lexical(title),lexical(heading),lexical(filename),lexical(path),lexical(content_name),lexical(sheet),lexical(email_subject) FROM passages WHERE revision_id=$revision;",
                         [new("$revision", revision.ToString())], token).ConfigureAwait(false);
+                    await InsertSectionFtsRevisionAsync(connection, transaction, revision, token).ConfigureAwait(false);
                 }
                 await ExecuteAsync(connection, transaction,
                     "UPDATE projects SET search_generation=search_generation+1,updated_utc=$now WHERE id=$project;",
@@ -703,13 +705,15 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
             string currentFileName;
             string currentExtension;
             string? currentSeenToken;
+            string? preparationVersion;
             await using (var select = connection.CreateCommand())
             {
                 select.Transaction = transaction;
                 select.CommandText =
                     """
                     SELECT d.observation_epoch,d.sha256,d.active_revision_id,d.path,d.folder_id,d.path_key,
-                           d.file_name,d.extension,d.last_seen_token
+                           d.file_name,d.extension,d.last_seen_token,
+                           (SELECT preparation_version FROM document_revisions WHERE id=d.active_revision_id)
                     FROM documents d
                     JOIN projects p ON p.id=d.project_id
                     JOIN index_jobs j ON j.id=$job AND j.project_id=d.project_id AND j.document_id=d.id
@@ -736,6 +740,7 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                 currentFileName = reader.GetString(6);
                 currentExtension = reader.GetString(7);
                 currentSeenToken = reader.IsDBNull(8) ? null : reader.GetString(8);
+                preparationVersion = reader.IsDBNull(9) ? null : reader.GetString(9);
             }
 
             if (epoch != job.ExpectedObservationEpoch)
@@ -809,8 +814,9 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                         await ExecuteAsync(connection, transaction, "UPDATE document_revisions SET status='active' WHERE id=$revision;",
                             [new("$revision", preservedRevision.ToString())], token).ConfigureAwait(false);
                     await ExecuteAsync(connection, transaction,
-                        "INSERT INTO passages_fts(rowid,body_text,title,heading,filename,path,content_name,sheet,email_subject) SELECT rowid,body_text,title,heading,filename,path,content_name,COALESCE(sheet,''),email_subject FROM passages WHERE revision_id=$revision;",
+                        "INSERT INTO passages_fts(rowid,body_text,title,heading,filename,path,content_name,sheet,email_subject) SELECT rowid,lexical(body_text),lexical(title),lexical(heading),lexical(filename),lexical(path),lexical(content_name),lexical(sheet),lexical(email_subject) FROM passages WHERE revision_id=$revision;",
                         [new("$revision", preservedRevision.ToString())], token).ConfigureAwait(false);
+                    await InsertSectionFtsRevisionAsync(connection, transaction, preservedRevision, token).ConfigureAwait(false);
                     await ExecuteAsync(connection, transaction,
                         "UPDATE projects SET search_generation=search_generation+1,updated_utc=$now WHERE id=$project;",
                         [new("$now", now), new("$project", job.ProjectId.ToString())], token).ConfigureAwait(false);
@@ -830,7 +836,8 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                 }
             }
 
-            if (job.Kind == IndexJobKind.Index && string.Equals(existingSha, sha256, StringComparison.OrdinalIgnoreCase) && activeRevision is not null)
+            if (job.Kind == IndexJobKind.Index && string.Equals(existingSha, sha256, StringComparison.OrdinalIgnoreCase) &&
+                activeRevision is not null && preparationVersion == IndexPreparation.Version)
             {
                 await ExecuteAsync(connection, transaction,
                     "UPDATE documents SET size=$size,modified_utc=$modified,available=1,updated_utc=$now WHERE id=$id;",
@@ -848,8 +855,9 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                 [new("$document", job.DocumentId.ToString())], token).ConfigureAwait(false);
             var revisionId = Guid.CreateVersion7();
             await ExecuteAsync(connection, transaction,
-                "INSERT INTO document_revisions(id,document_id,sha256,status,created_utc) VALUES($id,$document,$sha,'staging',$now);",
-                [new("$id", revisionId.ToString()), new("$document", job.DocumentId.ToString()), new("$sha", sha256), new("$now", now)], token).ConfigureAwait(false);
+                "INSERT INTO document_revisions(id,document_id,sha256,status,created_utc,preparation_version) VALUES($id,$document,$sha,'staging',$now,$preparation);",
+                [new("$id", revisionId.ToString()), new("$document", job.DocumentId.ToString()), new("$sha", sha256), new("$now", now),
+                 new("$preparation", IndexPreparation.Version)], token).ConfigureAwait(false);
             await transaction.CommitAsync(token).ConfigureAwait(false);
             return new BeginRevisionResult(true, false, revisionId);
         }, cancellationToken);
@@ -935,8 +943,8 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                 {
                     insert.Transaction = transaction;
                     insert.CommandText = """
-                        INSERT INTO passages(id,revision_id,content_id,ordinal,display_text,search_text,body_text,title,heading,filename,path,content_name,email_subject,location_kind,page,sheet,cell_range,slide,structure_path,email_part,image_frame,extraction_method,ocr_confidence)
-                        VALUES($id,$revision,$content,$ordinal,$display,$search,$body,$title,$heading,$filename,$path,$content_name,$email_subject,$kind,$page,$sheet,$range,$slide,$structure,$email,$frame,$method,$confidence)
+                        INSERT INTO passages(id,revision_id,content_id,ordinal,display_text,search_text,body_text,title,heading,filename,path,content_name,email_subject,location_kind,page,sheet,cell_range,slide,structure_path,email_part,image_frame,extraction_method,ocr_confidence,section_id,section_offset,location_json,semantic_eligible)
+                        VALUES($id,$revision,$content,$ordinal,$display,$search,$body,$title,$heading,$filename,$path,$content_name,$email_subject,$kind,$page,$sheet,$range,$slide,$structure,$email,$frame,$method,$confidence,$section,$section_offset,$location_json,$semantic_eligible)
                         RETURNING rowid;
                         """;
                     insert.Parameters.AddWithValue("$id", passage.Id.ToString());
@@ -962,6 +970,10 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                     insert.Parameters.AddWithValue("$frame", (object?)passage.Location.ImageFrame ?? DBNull.Value);
                     insert.Parameters.AddWithValue("$method", (int)passage.ExtractionMethod);
                     insert.Parameters.AddWithValue("$confidence", (object?)passage.OcrConfidence ?? DBNull.Value);
+                    insert.Parameters.AddWithValue("$section", (passage.SectionId ?? passage.Id).ToString());
+                    insert.Parameters.AddWithValue("$section_offset", passage.SectionOffset);
+                    insert.Parameters.AddWithValue("$location_json", JsonSerializer.Serialize(passage.Location, StorageJsonOptions));
+                    insert.Parameters.AddWithValue("$semantic_eligible", passage.SemanticEligible ? 1 : 0);
                     rowId = Convert.ToInt64(await insert.ExecuteScalarAsync(token).ConfigureAwait(false));
                 }
 
@@ -987,8 +999,21 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                 [new("$revision", request.RevisionId.ToString()), new("$sha", request.Sha256), new("$size", request.Size),
                  new("$modified", request.ModifiedUtc.ToString("O")), new("$now", now), new("$document", request.DocumentId.ToString())], token).ConfigureAwait(false);
             await ExecuteAsync(connection, transaction,
-                "INSERT INTO passages_fts(rowid,body_text,title,heading,filename,path,content_name,sheet,email_subject) SELECT rowid,body_text,title,heading,filename,path,content_name,COALESCE(sheet,''),email_subject FROM passages WHERE revision_id=$revision;",
+                "INSERT INTO passages_fts(rowid,body_text,title,heading,filename,path,content_name,sheet,email_subject) SELECT rowid,lexical(body_text),lexical(title),lexical(heading),lexical(filename),lexical(path),lexical(content_name),lexical(sheet),lexical(email_subject) FROM passages WHERE revision_id=$revision;",
                 [new("$revision", request.RevisionId.ToString())], token).ConfigureAwait(false);
+            foreach (var section in request.Sections.Count > 0 ? request.Sections :
+                request.Passages.Select(p => new SectionDraft(p.SectionId ?? p.Id, p.ContentId, p.Ordinal,
+                    p.DisplayText, p.Heading, [], "block", p.Location)).DistinctBy(s => s.Id).ToArray())
+            {
+                await ExecuteAsync(connection, transaction,
+                    "INSERT INTO sections(id,revision_id,content_id,ordinal,display_text,heading,heading_path_json,kind,location_json) VALUES($id,$revision,$content,$ordinal,$text,$heading,$headings,$kind,$location);",
+                    [new("$id", section.Id.ToString()), new("$revision", request.RevisionId.ToString()),
+                     new("$content", section.ContentId.ToString()), new("$ordinal", section.Ordinal),
+                     new("$text", section.Text), new("$heading", section.Heading ?? string.Empty),
+                     new("$headings", JsonSerializer.Serialize(section.HeadingPath, StorageJsonOptions)),
+                     new("$kind", section.Kind), new("$location", JsonSerializer.Serialize(section.Location, StorageJsonOptions))], token).ConfigureAwait(false);
+            }
+            await InsertSectionFtsRevisionAsync(connection, transaction, request.RevisionId, token).ConfigureAwait(false);
             await ExecuteAsync(connection, transaction,
                 "UPDATE projects SET search_generation=search_generation+1,updated_utc=$now WHERE id=$project;",
                 [new("$now", now), new("$project", request.ProjectId.ToString())], token).ConfigureAwait(false);
@@ -1003,8 +1028,10 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
             await ClearDocumentErrorsAsync(connection, transaction, request.ProjectId, request.DocumentId, token).ConfigureAwait(false);
             foreach (var error in request.Errors)
             {
+                var matches = request.ContentNodes.Where(node => node.Name == error.ItemName).Take(2).ToArray();
                 await InsertErrorAsync(connection, transaction, request.ProjectId, request.DocumentId, error.Code,
-                    error.ItemName is null ? error.Message : $"{error.ItemName}: {error.Message}", error.Retryable, 0, sourcePath, token).ConfigureAwait(false);
+                    error.ItemName is null ? error.Message : $"{error.ItemName}: {error.Message}", error.Retryable, 0, sourcePath, token,
+                    matches.Length == 1 ? matches[0].Id : null).ConfigureAwait(false);
             }
 
             await transaction.CommitAsync(token).ConfigureAwait(false);
@@ -1062,7 +1089,7 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
             {
                 passagesCommand.Transaction = transaction;
                 passagesCommand.CommandText =
-                    "SELECT id,search_text FROM passages WHERE revision_id=$revision ORDER BY rowid;";
+                    "SELECT id,search_text FROM passages WHERE revision_id=$revision AND semantic_eligible=1 ORDER BY rowid;";
                 passagesCommand.Parameters.AddWithValue("$revision", revisionId.Value.ToString());
                 await using var reader = await passagesCommand.ExecuteReaderAsync(token).ConfigureAwait(false);
                 while (await reader.ReadAsync(token).ConfigureAwait(false))
@@ -1125,7 +1152,7 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
             await using (var passageCount = connection.CreateCommand())
             {
                 passageCount.Transaction = transaction;
-                passageCount.CommandText = "SELECT COUNT(*) FROM passages WHERE revision_id=$revision;";
+                passageCount.CommandText = "SELECT COUNT(*) FROM passages WHERE revision_id=$revision AND semantic_eligible=1;";
                 passageCount.Parameters.AddWithValue("$revision", request.RevisionId.ToString());
                 var expectedCount = Convert.ToInt32(await passageCount.ExecuteScalarAsync(token).ConfigureAwait(false));
                 if (expectedCount != request.Embeddings.Count)
@@ -1404,9 +1431,20 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
         Guid revisionId, CancellationToken cancellationToken)
     {
         await ExecuteAsync(connection, transaction,
-            "INSERT INTO passages_fts(passages_fts,rowid,body_text,title,heading,filename,path,content_name,sheet,email_subject) SELECT 'delete',rowid,body_text,title,heading,filename,path,content_name,COALESCE(sheet,''),email_subject FROM passages WHERE revision_id=$revision;",
+            "DELETE FROM passages_fts WHERE rowid IN (SELECT rowid FROM passages WHERE revision_id=$revision); DELETE FROM sections_fts WHERE rowid IN (SELECT rowid FROM sections WHERE revision_id=$revision);",
             [new("$revision", revisionId.ToString())], cancellationToken).ConfigureAwait(false);
     }
+
+    private static Task<int> InsertSectionFtsRevisionAsync(SqliteConnection connection, SqliteTransaction transaction,
+        Guid revisionId, CancellationToken cancellationToken) => ExecuteAsync(connection, transaction,
+        """
+        INSERT INTO sections_fts(rowid,body_text,title,heading,filename,path,content_name,sheet,email_subject)
+        SELECT s.rowid,lexical(s.display_text),lexical(p.title),lexical(s.heading),lexical(p.filename),
+               lexical(p.path),lexical(p.content_name),lexical(p.sheet),lexical(p.email_subject)
+        FROM sections s JOIN passages p ON p.id=(
+            SELECT first.id FROM passages first WHERE first.section_id=s.id ORDER BY first.ordinal LIMIT 1)
+        WHERE s.revision_id=$revision;
+        """, [new("$revision", revisionId.ToString())], cancellationToken);
 
     private static async Task<List<Guid>> GetActiveRevisionIdsAsync(SqliteConnection connection, SqliteTransaction transaction,
         string scopeColumn, Guid scopeId, CancellationToken cancellationToken)
@@ -1474,13 +1512,14 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
 
     private static async Task InsertErrorAsync(SqliteConnection connection, SqliteTransaction transaction, Guid projectId,
         Guid? documentId, string code, string message, bool retryable, int attempt, string? sourcePath,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, Guid? contentId = null)
     {
         await ExecuteAsync(connection, transaction,
-            "INSERT INTO project_errors(project_id,document_id,code,message,retryable,attempt,source_path,created_utc) VALUES($project,$document,$code,$message,$retryable,$attempt,$path,$now);",
+            "INSERT INTO project_errors(project_id,document_id,code,message,retryable,attempt,source_path,created_utc,content_id) VALUES($project,$document,$code,$message,$retryable,$attempt,$path,$now,$content);",
             [new("$project", projectId.ToString()), new("$document", (object?)documentId?.ToString() ?? DBNull.Value),
              new("$code", code), new("$message", Limit(message, 2000)), new("$retryable", retryable ? 1 : 0),
-             new("$attempt", attempt), new("$path", (object?)sourcePath ?? DBNull.Value), new("$now", DateTimeOffset.UtcNow.ToString("O"))], cancellationToken).ConfigureAwait(false);
+             new("$attempt", attempt), new("$path", (object?)sourcePath ?? DBNull.Value), new("$now", DateTimeOffset.UtcNow.ToString("O")),
+             new("$content", (object?)contentId?.ToString() ?? DBNull.Value)], cancellationToken).ConfigureAwait(false);
         await ExecuteAsync(connection, transaction, "UPDATE projects SET error_total=error_total+1 WHERE id=$project;",
             [new("$project", projectId.ToString())], cancellationToken).ConfigureAwait(false);
     }
@@ -1509,59 +1548,11 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
         return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private static string ValidateName(string name)
-    {
-        var normalized = TextNormalization.ForDisplay(name);
-        if (normalized.Length is < 1 or > 120)
-        {
-            throw new ContextMoleException("invalid_project_name", "Project names must contain 1 to 120 characters.");
-        }
-
-        return normalized;
-    }
+    private static string ValidateName(string name) => ProjectValidation.NormalizeName(name);
 
     private IReadOnlyList<string> ValidateFolders(IReadOnlyList<string> folders,
-        IReadOnlySet<string>? allowedUnavailableFolderKeys = null)
-    {
-        if (folders.Count == 0)
-        {
-            throw new ContextMoleException("folders_required", "Select at least one folder.");
-        }
-
-        var canonical = folders.Select(CanonicalPath).Distinct(StringComparer.Ordinal).ToArray();
-        var appDataKey = PathKey(_paths.DataDirectory);
-        for (var index = 0; index < canonical.Length; index++)
-        {
-            var key = PathKey(canonical[index]);
-            var exists = Directory.Exists(canonical[index]);
-            if (!exists && !(allowedUnavailableFolderKeys?.Contains(key) ?? false))
-            {
-                throw new ContextMoleException("folder_unavailable", $"Folder does not exist or is unavailable: {canonical[index]}", true);
-            }
-
-            if (exists && IsFileSystemLink(new DirectoryInfo(canonical[index])))
-            {
-                throw new ContextMoleException("unsafe_folder", $"Folder roots cannot be symbolic links: {canonical[index]}");
-            }
-
-            if (IsSameOrChild(key, appDataKey) || IsSameOrChild(appDataKey, key))
-            {
-                throw new ContextMoleException("unsafe_folder",
-                    "A project folder cannot contain or be contained by the application data directory.");
-            }
-
-            for (var other = 0; other < canonical.Length; other++)
-            {
-                if (index != other && IsSameOrChild(key, PathKey(canonical[other])))
-                {
-                    throw new ContextMoleException("nested_folder", "A project cannot contain duplicate or nested folder roots.");
-                }
-            }
-        }
-
-        return canonical;
-    }
-
+        IReadOnlySet<string>? allowedUnavailableFolderKeys = null) =>
+        ProjectValidation.NormalizeFolders(folders, _paths.DataDirectory, allowedUnavailableFolderKeys);
     private static bool IsFileSystemLink(FileSystemInfo info)
     {
         try
@@ -1574,25 +1565,18 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
         }
     }
 
-    internal static string CanonicalPath(string path) => Path.TrimEndingDirectorySeparator(Path.GetFullPath(path.Trim()));
+    internal static string CanonicalPath(string path) => ProjectValidation.CanonicalPath(path);
 
     private static string StoredExtension(string path) => SupportedContent.ExtensionForPath(path) ?? string.Empty;
 
     internal static string PathKey(string path)
     {
-        var canonical = CanonicalPath(path);
-        return OperatingSystem.IsWindows() || OperatingSystem.IsMacOS() ? canonical.ToUpperInvariant() : canonical;
+        return ProjectValidation.FolderKey(path);
     }
 
     internal static bool IsSameOrChild(string candidateKey, string rootKey)
     {
-        if (string.Equals(candidateKey, rootKey, StringComparison.Ordinal))
-        {
-            return true;
-        }
-
-        return candidateKey.StartsWith(rootKey + Path.DirectorySeparatorChar, StringComparison.Ordinal)
-            || candidateKey.StartsWith(rootKey + Path.AltDirectorySeparatorChar, StringComparison.Ordinal);
+        return ProjectValidation.IsSameOrChild(candidateKey, rootKey);
     }
 
     private static string Limit(string value, int length) => value.Length <= length ? value : value[..length];

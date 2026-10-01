@@ -1,7 +1,9 @@
 using System.IO.Compression;
 using System.Runtime.CompilerServices;
 using System.Text;
+using System.Text.Json;
 
+using ContextMole.Broker.Protocol;
 using ContextMole.Core;
 using ContextMole.Documents;
 using ContextMole.Search;
@@ -219,6 +221,23 @@ public sealed class FlatVectorIndexTests
         Assert.Equal("query", exception.ParamName);
     }
 
+    [Fact]
+    public async Task EqualVectorScoresSelectTheSameIdsRegardlessOfEnumerationOrder()
+    {
+        var first = Guid.Parse("00000000-0000-0000-0000-000000000001");
+        var last = Guid.Parse("00000000-0000-0000-0000-000000000099");
+        var entries = new[] { Entry(last, ".txt", false, 1), Entry(first, ".txt", false, 1) };
+        Assert.Equal(first, Assert.Single(new FlatVectorIndex(new VectorSnapshot(1, TestPolicy, entries)).Search(Vector(1), 1)).PassageId);
+        Assert.Equal(first, Assert.Single(new FlatVectorIndex(new VectorSnapshot(1, TestPolicy, entries.Reverse().ToArray())).Search(Vector(1), 1)).PassageId);
+        async IAsyncEnumerable<VectorEntry> Stream()
+        {
+            foreach (var entry in entries) yield return entry;
+            await Task.CompletedTask;
+        }
+        var streamed = await FlatVectorIndex.SearchStreamingAsync(Stream(), Vector(1), 1, TestContext.Current.CancellationToken);
+        Assert.Equal(first, Assert.Single(streamed).PassageId);
+    }
+
     private static VectorEntry Entry(Guid passageId, string extension, bool isAttachment, float similarity,
         Guid? contentId = null, string? contentExtension = null) =>
         new(passageId, Guid.NewGuid(), contentId ?? Guid.NewGuid(),
@@ -290,8 +309,8 @@ public sealed class HybridSearchTests
         Assert.Contains("budget", result.Results[0].Previews[0].MatchedClauseIds);
         Assert.DoesNotContain("budget", result.Results[1].Previews[0].MatchedClauseIds);
         Assert.Equal(2, store.KeywordQueries.Count);
-        Assert.Contains("budget", store.KeywordQueries[0], StringComparison.Ordinal);
-        Assert.DoesNotContain("budget", store.KeywordQueries[1], StringComparison.Ordinal);
+        Assert.DoesNotContain("budget", store.KeywordQueries[0], StringComparison.Ordinal);
+        Assert.Contains("budget", store.KeywordQueries[1], StringComparison.Ordinal);
         Assert.Equal(new SearchBranchCandidateDepths(2, 2, 0), result.InspectedCandidateDepths);
         Assert.Equal(2, result.CandidateMatchCount);
     }
@@ -336,7 +355,7 @@ public sealed class HybridSearchTests
             [
                 new SearchClause("anchor", "anchor", SearchClauseOccur.Must, Fields: [SearchField.Body]),
                 new SearchClause("budget", "budget", SearchClauseOccur.Should, Fields: [SearchField.Heading])
-            ]), TestContext.Current.CancellationToken);
+            ], ResultOptions: new SearchResultOptions(GroupLimit: 20)), TestContext.Current.CancellationToken);
 
         var previews = result.Results.SelectMany(group => group.Previews).ToArray();
         Assert.NotEqual(boosted.PassageId, previews[0].PassageId);
@@ -370,7 +389,7 @@ public sealed class HybridSearchTests
         Assert.Equal(10, result.ReturnedGroupCount);
         Assert.All(result.Results.SelectMany(group => group.Previews),
             preview => Assert.Contains("blue", preview.Excerpt, StringComparison.Ordinal));
-        Assert.True(store.KeywordOffsets.Max() > 500);
+        Assert.True(result.InspectedCandidateDepths.Keyword > 500);
         Assert.Contains("NOT", store.KeywordQueries[0], StringComparison.Ordinal);
     }
 
@@ -396,7 +415,7 @@ public sealed class HybridSearchTests
 
         Assert.Equal(10, result.ReturnedGroupCount);
         Assert.Equal(10, result.Results.Select(group => group.ContentId).Distinct().Count());
-        Assert.True(store.KeywordOffsets.Max() > 500);
+        Assert.True(result.InspectedCandidateDepths.Keyword > 500);
     }
 
     [Fact]
@@ -455,7 +474,7 @@ public sealed class HybridSearchTests
 
         var group = Assert.Single(result.Results);
         Assert.Equal(candidates.Length, group.Previews.Count);
-        Assert.All(group.Previews, preview => Assert.Single(preview.ConsolidatedPassageIds));
+        Assert.All(group.Previews, preview => Assert.Single(preview.EvidencePassageIds));
     }
 
     [Fact]
@@ -467,7 +486,7 @@ public sealed class HybridSearchTests
         var requests = new SearchRequest[]
         {
             new(project, SearchMode.Keyword, Clauses: [new SearchClause("term", "term")],
-                ResultOptions: new SearchResultOptions(SemanticConfidenceThreshold: 0.5)),
+                ResultOptions: new SearchResultOptions(SemanticSimilarityThreshold: 0.5)),
             new(project, SearchMode.Hybrid, "concept", FieldWeights: new SearchFieldWeights()),
             new(project, SearchMode.Hybrid, "concept", [new SearchClause("term", "term")],
                 BranchWeights: new SearchBranchWeights(1, 0)),
@@ -645,8 +664,8 @@ public sealed class HybridSearchTests
         var permissive = await search.SearchAsync(new SearchRequest(Guid.NewGuid(), SearchMode.Semantic, "concept"),
             TestContext.Current.CancellationToken);
         Assert.Equal(2, permissive.Results.Count);
-        Assert.False(permissive.Results[0].Previews[0].LowConfidence);
-        Assert.True(permissive.Results[1].Previews[0].LowConfidence);
+        Assert.False(permissive.Results[0].Previews[0].BelowSimilarityThreshold);
+        Assert.True(permissive.Results[1].Previews[0].BelowSimilarityThreshold);
 
         var strict = await search.SearchAsync(new SearchRequest(Guid.NewGuid(), SearchMode.Semantic, "concept",
             ResultOptions: new SearchResultOptions(StrictSemanticThreshold: true)),
@@ -718,10 +737,10 @@ public sealed class HybridSearchTests
         Assert.Equal(new[] { overlapId, semanticOnlyId }, previews.Select(item => item.PassageId));
         Assert.Equal(1, previews[0].KeywordRank);
         Assert.Equal(2, previews[0].SemanticRank);
-        Assert.True(previews[0].LowConfidence);
+        Assert.True(previews[0].BelowSimilarityThreshold);
         Assert.Null(previews[1].KeywordRank);
         Assert.Equal(1, previews[1].SemanticRank);
-        Assert.False(previews[1].LowConfidence);
+        Assert.False(previews[1].BelowSimilarityThreshold);
         Assert.Equal(1, embeddings.QueryCalls);
     }
 
@@ -838,6 +857,201 @@ public sealed class HybridSearchTests
         Assert.Equal(0, embeddings.QueryCalls);
     }
 
+    [Fact]
+    public async Task PreviewIsAMatchCenteredLiteralSliceOfItsAnchor()
+    {
+        var first = Candidate(Guid.NewGuid(), "needle from earlier neighboring passage") with { Ordinal = 0 };
+        var anchor = first with { PassageId = Guid.NewGuid(), Ordinal = 1, DisplayText = new string('x', 1200) + " needle late evidence" };
+        var store = new SearchStoreFake([anchor, first], new VectorSnapshot(8, null, []), [anchor, first]);
+        var result = await CreateSearch(store, new EmbeddingGeneratorFake(Policy, Policy, Vector(1))).SearchAsync(
+            new SearchRequest(Guid.NewGuid(), SearchMode.Keyword, Clauses: [new SearchClause("needle", "needle", Fields: [SearchField.Body])]),
+            TestContext.Current.CancellationToken);
+        var preview = Assert.Single(Assert.Single(result.Results).Previews);
+        Assert.Equal(anchor.PassageId, preview.PassageId);
+        Assert.Contains("needle", preview.Excerpt, StringComparison.Ordinal);
+        Assert.DoesNotContain("earlier", preview.Excerpt, StringComparison.Ordinal);
+        Assert.True(preview.ExcerptStart > 0);
+        Assert.Equal(anchor.DisplayText.Substring(preview.ExcerptStart, preview.ExcerptLength), preview.Excerpt);
+        Assert.All(preview.MatchSpans, span => Assert.Equal("needle", anchor.DisplayText.Substring(span.Start, span.Length)));
+        Assert.Equal([anchor.PassageId], preview.EvidencePassageIds);
+    }
+
+    [Fact]
+    public async Task MetadataOnlyMatchReportsTheFieldWithoutInventingBodyEvidence()
+    {
+        var candidate = Candidate(Guid.NewGuid(), "Unrelated body") with { Title = "Café Budget", Heading = "Heading" };
+        var store = new SearchStoreFake([candidate], new VectorSnapshot(9, null, []), [candidate]);
+        var result = await CreateSearch(store, new EmbeddingGeneratorFake(Policy, Policy, Vector(1))).SearchAsync(
+            new SearchRequest(Guid.NewGuid(), SearchMode.Keyword, Clauses: [new SearchClause("title", "cafe", Fields: [SearchField.Title])]),
+            TestContext.Current.CancellationToken);
+        var group = Assert.Single(result.Results);
+        var preview = Assert.Single(group.Previews);
+        Assert.Equal("Café Budget", group.Title);
+        Assert.Empty(preview.MatchSpans);
+        Assert.Equal(SearchField.Title, Assert.Single(preview.FieldMatches).Field);
+        Assert.Null(preview.SemanticSimilarity);
+        Assert.Null(preview.BelowSimilarityThreshold);
+    }
+
+    [Fact]
+    public async Task PreviewKeepsNearbySentencesAndReportsOnlyVisibleBodyMatches()
+    {
+        var ordinary = "An ordinary observation is recorded. ";
+        var body = string.Concat(Enumerable.Repeat(ordinary, 40)) + "Alpha evidence is useful. " +
+            string.Concat(Enumerable.Repeat(ordinary, 120)) + "Omega evidence is distant. " +
+            string.Concat(Enumerable.Repeat(ordinary, 40));
+        var candidate = Candidate(Guid.NewGuid(), body);
+        var store = new SearchStoreFake([candidate], new VectorSnapshot(9, null, []), [candidate]);
+        var result = await CreateSearch(store, new EmbeddingGeneratorFake(Policy, Policy, Vector(1))).SearchAsync(
+            new SearchRequest(Guid.NewGuid(), SearchMode.Keyword, Clauses:
+                [new SearchClause("alpha", "alpha", SearchClauseOccur.Must, Fields: [SearchField.Body]),
+                 new SearchClause("omega", "omega", SearchClauseOccur.Must, Fields: [SearchField.Body])]),
+            TestContext.Current.CancellationToken);
+        var group = Assert.Single(result.Results);
+        var preview = Assert.Single(group.Previews);
+        Assert.StartsWith("An ordinary", preview.Excerpt, StringComparison.Ordinal);
+        Assert.EndsWith(".", preview.Excerpt, StringComparison.Ordinal);
+        Assert.True(preview.ExcerptLength <= 800);
+        Assert.Equal(body.Substring(preview.ExcerptStart, preview.ExcerptLength), preview.Excerpt);
+        Assert.Equal(["alpha"], preview.MatchedClauseIds);
+        Assert.Equal([SearchField.Body], preview.MatchedFields);
+        Assert.Equal(["alpha", "omega"], group.MatchedClauseIds.Order());
+        Assert.All(preview.MatchSpans, span => Assert.Equal("alpha", span.ClauseId));
+    }
+
+    [Fact]
+    public async Task CandidateBudgetIsIndependentOfOutputCountAndReportsItsStopReason()
+    {
+        var candidates = Enumerable.Range(0, 1100).Select(_ => Candidate(Guid.NewGuid(), "needle")).ToArray();
+        var store = new SearchStoreFake(candidates, new VectorSnapshot(11, null, []), candidates);
+        var search = CreateSearch(store, new EmbeddingGeneratorFake(Policy, Policy, Vector(1)));
+        var request = new SearchRequest(Guid.NewGuid(), SearchMode.Keyword, Clauses: [new SearchClause("needle", "needle")],
+            ResultOptions: new SearchResultOptions(GroupLimit: 1));
+        var one = await search.SearchAsync(request, TestContext.Current.CancellationToken);
+        var many = await search.SearchAsync(request with { ResultOptions = new SearchResultOptions(GroupLimit: 50) }, TestContext.Current.CancellationToken);
+        Assert.Equal(1000, one.InspectedCandidateDepths.Keyword);
+        Assert.Equal(one.InspectedCandidateDepths, many.InspectedCandidateDepths);
+        Assert.True(one.CandidateLimitReached);
+        Assert.Equal("candidate_budget", one.StopReason);
+        Assert.True(one.Branches.Keyword.Active);
+        Assert.True(one.Branches.Keyword.Completed);
+        Assert.True(one.Branches.Keyword.LimitReached);
+        Assert.False(one.Branches.Keyword.Exhausted);
+        Assert.Equal(1000, one.Branches.Keyword.MatchedCandidates);
+        Assert.False(one.Branches.OptionalKeywordBoost.Active);
+        Assert.False(one.Branches.Semantic.Active);
+        Assert.Equal(1000, one.RankedGroups.Count);
+        Assert.Equal(one.Results[0].ContentId, many.Results[0].ContentId);
+    }
+
+    [Fact]
+    public async Task CompactProofRemainsSmallWhenOneTermMatchesAThousandPassages()
+    {
+        var first = Candidate(Guid.NewGuid(), "needle evidence");
+        var candidates = Enumerable.Range(0, 1000).Select(index => first with { PassageId = Guid.NewGuid(), Ordinal = index }).ToArray();
+        var store = new SearchStoreFake(candidates, new VectorSnapshot(18, null, []), candidates);
+        var response = await CreateSearch(store, new EmbeddingGeneratorFake(Policy, Policy, Vector(1))).SearchAsync(
+            new SearchRequest(Guid.NewGuid(), SearchMode.Keyword, Clauses:
+                [new SearchClause("needle", "needle", SearchClauseOccur.Must, Fields: [SearchField.Body])]),
+            TestContext.Current.CancellationToken);
+        var compact = SearchWireResponse.FromDomain(response, SearchDetail.Compact);
+        var full = SearchWireResponse.FromDomain(response, SearchDetail.Full);
+        Assert.Single(Assert.Single(compact.Results).EvidencePassageIds);
+        Assert.Single(Assert.Single(Assert.Single(compact.Results).ClauseEvidence).PassageIds);
+        Assert.Equal(1000, Assert.Single(full.Results).EvidencePassageIds.Count);
+        Assert.Equal(1000, Assert.Single(Assert.Single(full.Results).ClauseEvidence).PassageIds.Count);
+        Assert.True(JsonSerializer.SerializeToUtf8Bytes(compact, BrokerJson.Options).Length < 5000);
+        Assert.True(JsonSerializer.SerializeToUtf8Bytes(full, BrokerJson.Options).Length > 70_000);
+    }
+
+    [Fact]
+    public async Task SectionScopeSupportsDistributedRequirementsAndWholeSectionExclusions()
+    {
+        var red = Candidate(Guid.NewGuid(), "red") with { SectionOffset = 0 };
+        var blue = red with { PassageId = Guid.NewGuid(), DisplayText = "blue", Ordinal = 1, SectionOffset = 4 };
+        var sectionId = Guid.NewGuid();
+        var section = red with { SectionId = sectionId, SectionText = "red blue", SectionPassages = [red, blue] };
+        var store = new SearchStoreFake([section], new VectorSnapshot(12, null, []), [section]);
+        var clauses = new[] { new SearchClause("red", "red", SearchClauseOccur.Must, Fields: [SearchField.Body]),
+            new SearchClause("blue", "blue", SearchClauseOccur.Must, Fields: [SearchField.Body]) };
+        var request = new SearchRequest(Guid.NewGuid(), SearchMode.Keyword, Clauses: clauses, Scope: SearchScope.Section,
+            ResultOptions: new SearchResultOptions(PreviewsPerGroup: 2));
+        var search = CreateSearch(store, new EmbeddingGeneratorFake(Policy, Policy, Vector(1)));
+        var result = await search.SearchAsync(request, TestContext.Current.CancellationToken);
+        var group = Assert.Single(result.Results);
+        Assert.Equal(sectionId, group.SectionId);
+        Assert.Equal(2, group.EvidencePassageIds.Count);
+        Assert.Equal([red.PassageId], group.ClauseEvidence.Single(item => item.ClauseId == "red").PassageIds);
+        Assert.Equal([blue.PassageId], group.ClauseEvidence.Single(item => item.ClauseId == "blue").PassageIds);
+        var excluded = await search.SearchAsync(request with { Clauses = clauses.Append(new SearchClause("exclude", "blue",
+            SearchClauseOccur.MustNot, Fields: [SearchField.Body])).ToArray() }, TestContext.Current.CancellationToken);
+        Assert.Empty(excluded.Results);
+        var passageStore = new SearchStoreFake([red, blue], new VectorSnapshot(12, null, []), [red, blue]);
+        var passage = await CreateSearch(passageStore, new EmbeddingGeneratorFake(Policy, Policy, Vector(1))).SearchAsync(
+            request with { Scope = SearchScope.Passage }, TestContext.Current.CancellationToken);
+        Assert.Empty(passage.Results);
+    }
+
+    [Fact]
+    public async Task SectionPhraseAcrossChunksRetainsBothEvidenceAnchors()
+    {
+        var left = Candidate(Guid.NewGuid(), "renewal notice") with { SectionOffset = 0 };
+        var right = left with { PassageId = Guid.NewGuid(), DisplayText = "period applies", Ordinal = 1, SectionOffset = 15 };
+        var section = left with { SectionId = Guid.NewGuid(), SectionText = "renewal notice period applies", SectionPassages = [left, right] };
+        var store = new SearchStoreFake([section], new VectorSnapshot(15, null, []), [section]);
+        var result = await CreateSearch(store, new EmbeddingGeneratorFake(Policy, Policy, Vector(1))).SearchAsync(
+            new SearchRequest(Guid.NewGuid(), SearchMode.Keyword, Clauses: [new SearchClause("phrase", "notice period",
+                SearchClauseOccur.Must, SearchMatchKind.Phrase, [SearchField.Body])], Scope: SearchScope.Section),
+            TestContext.Current.CancellationToken);
+        Assert.Equal(2, Assert.Single(Assert.Single(result.Results).ClauseEvidence).PassageIds.Count);
+        var compact = SearchWireResponse.FromDomain(result, SearchDetail.Compact);
+        Assert.Equal(2, Assert.Single(Assert.Single(compact.Results).ClauseEvidence).PassageIds.Count);
+        Assert.Equal(2, Assert.Single(compact.Results).EvidencePassageIds.Count);
+    }
+
+    [Fact]
+    public async Task SemanticSectionPreviewUsesItsActualVectorAnchorAndCountsOnlySupportedEvidence()
+    {
+        var first = Candidate(Guid.NewGuid(), "Ordinary introduction") with { SectionOffset = 0 };
+        var second = first with { PassageId = Guid.NewGuid(), DisplayText = "Target semantic evidence", Ordinal = 1,
+            SectionOffset = first.DisplayText.Length + 1 };
+        var section = second with { SectionId = Guid.NewGuid(), SectionText = first.DisplayText + " " + second.DisplayText,
+            SectionPassages = [first, second] };
+        var store = new SearchStoreFake([], new VectorSnapshot(22, Policy, [VectorEntry(second, 1)]), [section]);
+        var result = await CreateSearch(store, new EmbeddingGeneratorFake(Policy, Policy, Vector(1))).SearchAsync(
+            new SearchRequest(Guid.NewGuid(), SearchMode.Semantic, "Target evidence", Scope: SearchScope.Section),
+            TestContext.Current.CancellationToken);
+        var group = Assert.Single(result.Results);
+        Assert.Equal(1, group.TotalMatchCount);
+        Assert.Equal(second.PassageId, Assert.Single(group.Previews).PassageId);
+        Assert.Equal(1, Assert.Single(group.Previews).SemanticSimilarity);
+        Assert.Equal([second.PassageId], Assert.Single(SearchWireResponse.FromDomain(result, SearchDetail.Compact).Results).EvidencePassageIds);
+    }
+
+    [Fact]
+    public async Task HybridSectionKeepsGroupSimilarityWhenLexicalPreviewUsesAnotherPassage()
+    {
+        var first = Candidate(Guid.NewGuid(), "Required lexical evidence") with { SectionOffset = 0 };
+        var second = first with { PassageId = Guid.NewGuid(), DisplayText = "Target semantic evidence", Ordinal = 1,
+            SectionOffset = first.DisplayText.Length + 1 };
+        var sectionId = Guid.NewGuid();
+        var lexical = first with { SectionId = sectionId, SectionText = first.DisplayText + " " + second.DisplayText,
+            SectionPassages = [first, second] };
+        var semantic = lexical with { PassageId = second.PassageId };
+        var store = new SearchStoreFake([lexical], new VectorSnapshot(23, Policy, [VectorEntry(second, 1)]), [lexical, semantic]);
+        var result = await CreateSearch(store, new EmbeddingGeneratorFake(Policy, Policy, Vector(1))).SearchAsync(
+            new SearchRequest(Guid.NewGuid(), SearchMode.Hybrid, "Target evidence",
+                [new SearchClause("required", "required", SearchClauseOccur.Must, Fields: [SearchField.Body])],
+                Scope: SearchScope.Section), TestContext.Current.CancellationToken);
+        var group = Assert.Single(SearchWireResponse.FromDomain(result, SearchDetail.Compact).Results);
+        Assert.Equal(first.PassageId, Assert.Single(group.Previews).PassageId);
+        Assert.Null(Assert.Single(group.Previews).SemanticSimilarity);
+        Assert.Equal(second.PassageId, group.SemanticAnchorPassageId);
+        Assert.Equal(1, group.SemanticSimilarity);
+        Assert.False(group.BelowSimilarityThreshold);
+        Assert.Equal(2, group.EvidencePassageIds.Count);
+    }
+
     private static HybridSearchService CreateSearch(ISearchStore store, IEmbeddingGenerator embeddings) =>
         new(store, embeddings, new FlatVectorIndexFactory(), new VectorIndexCache(), new ImmediateCpuBudget());
 
@@ -877,6 +1091,9 @@ public sealed class HybridSearchTests
         public List<string> KeywordQueries { get; } = [];
         public List<int> KeywordOffsets { get; } = [];
         public List<int> CandidateBatchSizes { get; } = [];
+
+        public Task<long> GetSearchGenerationAsync(Guid projectId, CancellationToken cancellationToken = default) =>
+            Task.FromResult(snapshot.SearchGeneration);
 
         public Task<KeywordSearchPage> KeywordSearchAsync(Guid projectId, string ftsQuery, int count,
             SearchFilters? filters, CancellationToken cancellationToken = default)

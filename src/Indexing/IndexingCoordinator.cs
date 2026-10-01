@@ -802,7 +802,7 @@ public sealed class IndexingCoordinator(
         activity.SetStage(IndexingPipelineStage.ExtractingContent);
         var extraction = await _extractor.ExtractAsync(new ExtractionRequest(job.SourcePath), cancellationToken).ConfigureAwait(false);
         activity.SetStage(IndexingPipelineStage.ChunkingText);
-        var (contentNodes, passageSeeds) = FlattenAndChunk(extraction.Root, job.SourcePath, job.DocumentId);
+        var (contentNodes, passageSeeds, sections) = FlattenAndChunk(extraction.Root, job.SourcePath, job.DocumentId);
         if (passageSeeds.Count == 0 && extraction.Errors.Count > 0)
         {
             var failure = extraction.Errors.FirstOrDefault(error => error.Retryable) ?? extraction.Errors[0];
@@ -814,14 +814,15 @@ public sealed class IndexingCoordinator(
         var indexingErrors = extraction.Errors.ToList();
         IReadOnlyList<float[]> vectors = [];
         EmbeddingPolicy? embeddingPolicy = null;
+        var eligibleSeeds = passageSeeds.Where(seed => seed.SemanticEligible).ToArray();
         if (_embeddings.IsAvailable && passageSeeds.Count > 0)
         {
             try
             {
                 activity.SetStage(IndexingPipelineStage.GeneratingEmbeddings);
                 var embeddingBatch = await _embeddings.EmbedPassagesAsync(
-                    passageSeeds.Select(seed => seed.SearchText).ToArray(), cancellationToken).ConfigureAwait(false);
-                if (embeddingBatch.Policy.Dimensions != 384 || embeddingBatch.Vectors.Count != passageSeeds.Count ||
+                    eligibleSeeds.Select(seed => seed.SearchText).ToArray(), cancellationToken).ConfigureAwait(false);
+                if (embeddingBatch.Policy.Dimensions != 384 || embeddingBatch.Vectors.Count != eligibleSeeds.Length ||
                     embeddingBatch.Vectors.Any(vector => vector.Length != 384))
                     throw new ContextMoleException("model_output_invalid",
                         "The embedding model returned an invalid passage vector set.");
@@ -864,14 +865,18 @@ public sealed class IndexingCoordinator(
             return false;
         }
 
-        var passages = passageSeeds.Select((seed, index) => seed with
+        var vectorsById = vectors.Count == eligibleSeeds.Length
+            ? eligibleSeeds.Select((seed, index) => (seed.Id, Vector: vectors[index])).ToDictionary(item => item.Id, item => item.Vector)
+            : new Dictionary<Guid, float[]>();
+        var passages = passageSeeds.Select(seed => seed with
         {
-            Embedding = vectors.Count == passageSeeds.Count ? vectors[index] : null
+            Embedding = vectorsById.GetValueOrDefault(seed.Id)
         }).ToArray();
         activity.SetStage(IndexingPipelineStage.WritingIndex);
         return await _writer.CommitRevisionAsync(new IndexCommitRequest(job.JobId, job.ProjectId, job.DocumentId, begin.RevisionId.Value,
             job.ExpectedObservationEpoch, sha256, initialLength, initialModified, contentNodes, passages,
-            vectors.Count == passageSeeds.Count ? embeddingPolicy : null, indexingErrors), cancellationToken).ConfigureAwait(false);
+            vectors.Count == eligibleSeeds.Length ? embeddingPolicy : null, indexingErrors)
+            { Sections = sections }, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task RequeueChangedSourceAsync(IndexJobLease job, CancellationToken cancellationToken)
@@ -988,14 +993,15 @@ public sealed class IndexingCoordinator(
             cancellationToken).ConfigureAwait(false);
     }
 
-    private (List<ContentNodeDraft> Nodes, List<PassageDraft> Passages) FlattenAndChunk(
+    private (List<ContentNodeDraft> Nodes, List<PassageDraft> Passages, List<SectionDraft> Sections) FlattenAndChunk(
         ExtractedNode root, string sourcePath, Guid documentId)
     {
         var nodes = new List<ContentNodeDraft>();
         var passages = new List<PassageDraft>();
+        var sections = new List<SectionDraft>();
         var fileName = Path.GetFileName(sourcePath);
         AddNode(root, null, 0, 0, "root");
-        return (nodes, passages);
+        return (nodes, passages, sections);
 
         void AddNode(ExtractedNode node, Guid? parentId, int ordinal, int depth, string structuralPath)
         {
@@ -1004,21 +1010,53 @@ public sealed class IndexingCoordinator(
             var passageOrdinal = 0;
             var title = IndependentTitle(node.Title, node.Name, depth == 0 ? fileName : null);
             var emailSubject = ExtractEmailSubject(node.Sections);
-            foreach (var prepared in PrepareSections(node.Sections))
+            var keyedSections = AssignSectionKeys(node.Sections);
+            var offsets = new Dictionary<int, int>();
+            var sectionIds = new Dictionary<string, Guid>(StringComparer.Ordinal);
+            foreach (var group in keyedSections.Select((section, index) => (Section: section, Index: index))
+                .GroupBy(item => item.Section.SectionKey!, StringComparer.Ordinal))
+            {
+                var first = group.First().Section;
+                var id = DeterministicId(contentId, "section", group.Key);
+                sectionIds[group.Key] = id;
+                var text = new StringBuilder();
+                foreach (var item in group)
+                {
+                    var canonical = TextNormalization.ForDisplay(item.Section.Text);
+                    if (text.Length > 0 && canonical.Length > 0) text.Append('\n');
+                    offsets[item.Index] = text.Length;
+                    text.Append(canonical);
+                }
+                sections.Add(new SectionDraft(id, contentId, sections.Count(s => s.ContentId == contentId),
+                    text.ToString(), first.Heading, first.HeadingPath ?? [],
+                    first.HeadingPath is { Count: > 0 } ? "heading" : first.Location.Kind.ToString().ToLowerInvariant(),
+                    first.Location));
+            }
+            foreach (var prepared in PrepareSections(keyedSections))
             {
                 var chunkOrdinal = 0;
-                foreach (var chunk in Chunk(prepared.Text))
+                var section = prepared.Section;
+                var signatureStart = SemanticTextPreparation.SignatureStart(prepared.Text);
+                string Semantic(string body) => BuildSemanticText(SemanticTextPreparation.CleanBody(body,
+                    section.IsBoilerplate || section.Location.EmailPart == "headers"), title, fileName, sourcePath,
+                    node.Name, section.Heading, section.Location.Sheet, emailSubject, prepared.TableHeader);
+                foreach (var chunk in Chunk(prepared.Text, Semantic))
                 {
-                    var section = prepared.Section;
-                    var body = TextNormalization.ForSearch(chunk,
-                        section.Method == ExtractionMethod.NativeText && section.Location.Kind == LocationKind.Page);
-                    var semanticText = BuildSemanticText(body, title, fileName, sourcePath, node.Name,
-                        section.Heading, section.Location.Sheet, emailSubject, prepared.TableHeader);
+                    var body = LexicalText.Canonicalize(chunk.Text);
+                    var semanticBody = signatureStart is { } signature
+                        ? chunk.Start >= signature ? string.Empty : chunk.Text[..Math.Min(chunk.Text.Length, signature - chunk.Start)]
+                        : chunk.Text;
+                    var cleanBody = SemanticTextPreparation.CleanBody(semanticBody,
+                        section.IsBoilerplate || section.Location.EmailPart == "headers");
+                    var semanticText = cleanBody.Length == 0 ? string.Empty : Semantic(semanticBody);
                     var passageId = DeterministicId(contentId, "passage",
                         $"{prepared.FirstSectionOrdinal}:{prepared.LastSectionOrdinal}:{LocationIdentity(section.Location)}:{chunkOrdinal++}");
-                    passages.Add(new PassageDraft(passageId, contentId, passageOrdinal++, chunk,
+                    passages.Add(new PassageDraft(passageId, contentId, passageOrdinal++, chunk.Text,
                         semanticText, section.Location, section.Method, section.OcrConfidence, null, body, title,
-                        section.Heading, fileName, sourcePath, node.Name, emailSubject));
+                        section.Heading, fileName, sourcePath, node.Name, emailSubject)
+                        { SectionId = sectionIds[section.SectionKey!],
+                          SectionOffset = offsets[prepared.FirstSectionOrdinal] + chunk.Start,
+                          SemanticEligible = semanticText.Length > 0 });
                 }
             }
             var siblingOccurrences = new Dictionary<string, int>(StringComparer.Ordinal);
@@ -1065,6 +1103,7 @@ public sealed class IndexingCoordinator(
                 var previous = result[^1];
                 var combinedWordCount = CountWords(previous.Text) + CountWords(item.Text);
                 if (CanMerge(section) && combinedWordCount <= 256 && previous.Boundary == boundary &&
+                    previous.Section.SectionKey == section.SectionKey && previous.Section.IsBoilerplate == section.IsBoilerplate &&
                     previous.Section.Method == section.Method &&
                     string.Equals(previous.Section.Heading, section.Heading, StringComparison.Ordinal))
                 {
@@ -1125,20 +1164,12 @@ public sealed class IndexingCoordinator(
         return first;
     }
 
-    private static string BuildSemanticText(string body, string title, string fileName, string sourcePath,
+    private string BuildSemanticText(string body, string title, string fileName, string sourcePath,
         string contentName, string? heading, string? sheet, string? emailSubject, string? tableHeader)
     {
-        var lines = new List<string>();
-        if (!string.IsNullOrWhiteSpace(title)) lines.Add($"Title: {title}");
-        lines.Add($"Filename: {fileName}");
-        lines.Add($"Path: {sourcePath}");
-        lines.Add($"Content: {contentName}");
-        if (!string.IsNullOrWhiteSpace(heading)) lines.Add($"Heading: {heading}");
-        if (!string.IsNullOrWhiteSpace(sheet)) lines.Add($"Sheet: {sheet}");
-        if (!string.IsNullOrWhiteSpace(emailSubject)) lines.Add($"Email subject: {emailSubject}");
-        if (!string.IsNullOrWhiteSpace(tableHeader)) lines.Add($"Table headers: {tableHeader}");
-        lines.Add($"Body: {body}");
-        return TextNormalization.ForSearch(string.Join('\n', lines));
+        return SemanticTextPreparation.Compose(body,
+            [("Title", title), ("Heading", heading), ("Sheet", sheet), ("Email subject", emailSubject),
+             ("Table headers", tableHeader), ("Content", contentName), ("Filename", fileName)], _embeddings.CountTokens);
     }
 
     private static string IndependentTitle(string? extractedTitle, string contentName, string? rootFileName)
@@ -1219,20 +1250,52 @@ public sealed class IndexingCoordinator(
         string Boundary,
         string? TableHeader);
 
-    private IEnumerable<string> Chunk(string source)
+    private static IReadOnlyList<ExtractedSection> AssignSectionKeys(IReadOnlyList<ExtractedSection> source)
+    {
+        var result = new List<ExtractedSection>();
+        var occurrences = new Dictionary<string, int>(StringComparer.Ordinal);
+        string? previous = null;
+        string? current = null;
+        foreach (var section in source)
+        {
+            var boundary = section.Location.Kind switch
+            {
+                LocationKind.Page => $"page:{section.Location.Page}",
+                LocationKind.Slide => $"slide:{section.Location.Slide}",
+                LocationKind.Sheet => $"sheet:{section.Location.Sheet}",
+                LocationKind.EmailPart => $"email:{section.Location.EmailPart}",
+                LocationKind.ImageFrame => $"image:{section.Location.Page}:{section.Location.ImageFrame}",
+                _ => StructuralBoundary(section)
+            };
+            if (section.SectionKey is { Length: > 0 }) current = section.SectionKey;
+            else if (boundary != previous)
+            {
+                var occurrence = occurrences.GetValueOrDefault(boundary);
+                occurrences[boundary] = occurrence + 1;
+                current = $"{boundary}:occurrence:{occurrence}";
+            }
+            result.Add(section with { SectionKey = current });
+            previous = boundary;
+        }
+        return result;
+    }
+
+    private sealed record TextChunk(string Text, int Start);
+
+    private IEnumerable<TextChunk> Chunk(string source, Func<string, string> prepareSemantic)
     {
         var normalized = TextNormalization.ForDisplay(source);
         if (string.IsNullOrWhiteSpace(normalized)) yield break;
-        var words = normalized.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        var words = System.Text.RegularExpressions.Regex.Matches(normalized, @"\S+");
         var start = 0;
-        while (start < words.Length)
+        while (start < words.Count)
         {
             var end = start;
             var bestEnd = start + 1;
-            while (end < words.Length)
+            while (end < words.Count)
             {
-                var probeEnd = Math.Min(words.Length, end + TokenProbeWordCount);
-                if (CountTokens(start, probeEnd) < ChunkTargetTokens)
+                var probeEnd = Math.Min(words.Count, end + TokenProbeWordCount);
+                if (CountTokens(start, probeEnd) < ChunkTargetTokens && JoinWords(start, probeEnd).Length <= 16_000)
                 {
                     bestEnd = probeEnd;
                     end = probeEnd;
@@ -1243,20 +1306,35 @@ public sealed class IndexingCoordinator(
                 {
                     end++;
                     var count = CountTokens(start, end);
-                    if (count > ChunkMaximumTokens) break;
+                    if (count > ChunkMaximumTokens || JoinWords(start, end).Length > 16_000) break;
                     bestEnd = end;
                     if (count >= ChunkTargetTokens) break;
                 }
                 break;
             }
-            yield return JoinWords(start, bestEnd);
-            if (bestEnd >= words.Length) yield break;
+            var chunk = JoinWords(start, bestEnd);
+            if (CountTokens(start, bestEnd) > ChunkMaximumTokens || chunk.Length > 16_000)
+            {
+                // A single very long token still needs to be represented without silent truncation.
+                var offset = 0;
+                while (offset < chunk.Length)
+                {
+                    var length = Math.Min(16_000, chunk.Length - offset);
+                    while (length > 1 && _embeddings.CountTokens(prepareSemantic(chunk.Substring(offset, length))) > ChunkMaximumTokens)
+                        length /= 2;
+                    if (length < chunk.Length - offset && length > 1 && char.IsHighSurrogate(chunk[offset + length - 1])) length--;
+                    yield return new TextChunk(chunk.Substring(offset, length), words[start].Index + offset);
+                    offset += length;
+                }
+            }
+            else yield return new TextChunk(chunk, words[start].Index);
+            if (bestEnd >= words.Count) yield break;
 
             var overlapStart = bestEnd;
             while (overlapStart > start)
             {
                 var probeStart = Math.Max(start, overlapStart - TokenProbeWordCount);
-                if (CountTokens(probeStart, bestEnd) <= ChunkOverlapTokens)
+                if (CountBodyTokens(probeStart, bestEnd) <= ChunkOverlapTokens + 1)
                 {
                     overlapStart = probeStart;
                     continue;
@@ -1264,7 +1342,7 @@ public sealed class IndexingCoordinator(
 
                 while (overlapStart > probeStart)
                 {
-                    if (CountTokens(overlapStart - 1, bestEnd) > ChunkOverlapTokens) break;
+                    if (CountBodyTokens(overlapStart - 1, bestEnd) > ChunkOverlapTokens + 1) break;
                     overlapStart--;
                 }
                 break;
@@ -1272,8 +1350,16 @@ public sealed class IndexingCoordinator(
             start = overlapStart == start ? bestEnd : overlapStart;
         }
 
-        int CountTokens(int first, int end) => _embeddings.CountTokens(JoinWords(first, end));
-        string JoinWords(int first, int end) => string.Join(" ", words, first, end - first);
+        int CountTokens(int first, int end) => _embeddings.CountTokens(prepareSemantic(JoinWords(first, end)));
+        // Repeated metadata is part of the input limit, but must not consume the body overlap.
+        // CountTokens includes BOS, hence the extra token for this 64-token body window.
+        int CountBodyTokens(int first, int end) => _embeddings.CountTokens(JoinWords(first, end));
+        string JoinWords(int first, int end)
+        {
+            var begin = words[first].Index;
+            var finish = words[end - 1].Index + words[end - 1].Length;
+            return normalized[begin..finish];
+        }
     }
 
     private static async Task<string> HashAsync(string path, CancellationToken cancellationToken)

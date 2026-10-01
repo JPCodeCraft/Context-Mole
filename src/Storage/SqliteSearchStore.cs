@@ -13,7 +13,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace ContextMole.Storage;
 
-public sealed class SqliteSearchStore : ISearchStore
+public sealed partial class SqliteSearchStore : ISearchStore
 {
     private const long VectorCacheBudgetBytes = 512L * 1024 * 1024;
     private const long VectorEntryBaseBytes = 2048;
@@ -419,7 +419,8 @@ public sealed class SqliteSearchStore : ISearchStore
                    p.extraction_method,p.ocr_confidence,c.depth,
                    -bm25(passages_fts,$weight_body,$weight_title,$weight_heading,$weight_filename,
                      $weight_path,$weight_content_name,$weight_sheet,$weight_email_subject),
-                   p.ordinal,p.body_text,p.title,p.heading,p.content_name,c.mime_type,p.email_subject
+                   p.ordinal,p.body_text,p.title,p.heading,p.content_name,c.mime_type,p.email_subject,
+                   p.section_id,p.section_offset,p.location_json
             FROM passages_fts
             JOIN passages p ON p.rowid=passages_fts.rowid
             JOIN document_revisions r ON r.id=p.revision_id AND r.status='active'
@@ -596,7 +597,7 @@ public sealed class SqliteSearchStore : ISearchStore
               (SELECT COUNT(DISTINCT r.embedding_policy_json) FROM active_revisions r),
               (SELECT MIN(r.embedding_policy_json) FROM active_revisions r),
               (SELECT COUNT(*) FROM active_revisions r WHERE r.embedding_policy_json IS NULL),
-              (SELECT COUNT(*) FROM passages p JOIN active_revisions r ON r.id=p.revision_id);
+              (SELECT COUNT(*) FROM passages p JOIN active_revisions r ON r.id=p.revision_id WHERE p.semantic_eligible=1);
             """;
         metadata.Parameters.AddWithValue("$project", projectId.ToString());
         long total;
@@ -671,7 +672,7 @@ public sealed class SqliteSearchStore : ISearchStore
                        WHEN r.embedding_policy_json=$policy_json AND e.policy_key=$policy_key
                             AND LENGTH(e.vector)=1536 THEN 1 ELSE 0 END),0) AS compatible_passage_count
               FROM active_revisions r
-              LEFT JOIN passages p ON p.revision_id=r.id
+              LEFT JOIN passages p ON p.revision_id=r.id AND p.semantic_eligible=1
               LEFT JOIN embeddings e ON e.passage_rowid=p.rowid AND e.revision_id=r.id
                                       AND e.policy_key=$policy_key
               GROUP BY r.id,r.document_id,r.path,r.extension,r.embedding_policy_json
@@ -833,7 +834,8 @@ public sealed class SqliteSearchStore : ISearchStore
             SELECT p.id,d.id,c.id,p.display_text,d.path,d.file_name,d.extension,d.modified_utc,
                    p.location_kind,p.page,p.sheet,p.cell_range,p.slide,p.structure_path,p.email_part,p.image_frame,
                    p.extraction_method,p.ocr_confidence,c.depth,NULL,
-                   p.ordinal,p.body_text,p.title,p.heading,p.content_name,c.mime_type,p.email_subject
+                   p.ordinal,p.body_text,p.title,p.heading,p.content_name,c.mime_type,p.email_subject,
+                   p.section_id,p.section_offset,p.location_json
             FROM passages p
             JOIN document_revisions r ON r.id=p.revision_id AND r.status='active'
             JOIN documents d ON d.id=r.document_id AND d.active_revision_id=r.id AND d.tombstoned=0
@@ -849,9 +851,19 @@ public sealed class SqliteSearchStore : ISearchStore
         return candidates;
     }
 
-    public async Task<IReadOnlyList<PassageInfo>> ReadPassagesAsync(Guid projectId,
+    public Task<IReadOnlyList<PassageInfo>> ReadPassagesAsync(Guid projectId,
         IReadOnlyCollection<Guid> passageIds, int contextBefore, int contextAfter,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        ReadPassagesCoreAsync(projectId, passageIds, contextBefore, contextAfter, null, cancellationToken);
+
+    public Task<IReadOnlyList<PassageInfo>> ReadPassagesAsync(Guid projectId,
+        IReadOnlyCollection<Guid> passageIds, int contextBefore, int contextAfter, long expectedGeneration,
+        CancellationToken cancellationToken = default) =>
+        ReadPassagesCoreAsync(projectId, passageIds, contextBefore, contextAfter, expectedGeneration, cancellationToken);
+
+    private async Task<IReadOnlyList<PassageInfo>> ReadPassagesCoreAsync(Guid projectId,
+        IReadOnlyCollection<Guid> passageIds, int contextBefore, int contextAfter, long? expectedGeneration,
+        CancellationToken cancellationToken)
     {
         if (passageIds.Count is < 1 or > 50)
         {
@@ -862,7 +874,9 @@ public sealed class SqliteSearchStore : ISearchStore
         contextAfter = Math.Clamp(contextAfter, 0, 3);
         await using var connection = await OpenRequiredAsync(cancellationToken).ConfigureAwait(false);
         using var transaction = connection.BeginTransaction(deferred: true);
-        _ = await ReadGenerationAsync(connection, transaction, projectId, cancellationToken).ConfigureAwait(false);
+        var generation = await ReadGenerationAsync(connection, transaction, projectId, cancellationToken).ConfigureAwait(false);
+        if (expectedGeneration is not null && generation != expectedGeneration)
+            throw new ContextMoleException("index_changed", "The index changed after search. Repeat the search.", true);
         var requested = passageIds.ToHashSet();
         var found = new Dictionary<Guid, PassageInfo>();
         var attachmentChains = new Dictionary<Guid, IReadOnlyList<string>>();
@@ -884,7 +898,7 @@ public sealed class SqliteSearchStore : ISearchStore
             command.CommandText = """
                 SELECT p.id,d.id,c.id,p.ordinal,p.display_text,d.path,d.file_name,d.extension,d.modified_utc,
                        p.location_kind,p.page,p.sheet,p.cell_range,p.slide,p.structure_path,p.email_part,p.image_frame,
-                       p.extraction_method,p.ocr_confidence
+                       p.extraction_method,p.ocr_confidence,p.section_id,p.section_offset,p.location_json
                 FROM passages p
                 JOIN document_revisions r ON r.id=p.revision_id AND r.status='active'
                 JOIN documents d ON d.id=r.document_id AND d.active_revision_id=r.id AND d.tombstoned=0
@@ -915,32 +929,40 @@ public sealed class SqliteSearchStore : ISearchStore
                 }
                 found[row.PassageId] = new PassageInfo(row.PassageId, row.DocumentId, row.ContentId, row.Ordinal,
                     row.Text, row.SourcePath, row.FileName, row.FileType, row.ModifiedUtc, row.Location, chain,
-                    row.Method, row.OcrConfidence, requested.Contains(row.PassageId));
+                    row.Method, row.OcrConfidence, requested.Contains(row.PassageId))
+                { SectionId = row.SectionId, SectionOffset = row.SectionOffset };
             }
         }
 
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-        return found.Values.OrderByDescending(item => item.Requested).ThenBy(item => item.ContentId).ThenBy(item => item.Ordinal).ToArray();
+        return found.Values.OrderBy(item => item.ContentId).ThenBy(item => item.Ordinal).ToArray();
     }
 
     public async Task<DocumentInfo?> GetDocumentInfoAsync(Guid projectId, Guid documentId, Guid? contentId,
         CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenRequiredAsync(cancellationToken).ConfigureAwait(false);
-        if (contentId is not null && !await ContentBelongsToDocumentAsync(connection, documentId, contentId.Value, cancellationToken).ConfigureAwait(false))
-        {
-            return null;
-        }
+        using var transaction = connection.BeginTransaction(deferred: true);
 
         await using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT d.id,d.project_id,d.path,d.file_name,d.extension,d.size,d.modified_utc,d.sha256,d.active_revision_id,d.available,
-              (SELECT COUNT(*) FROM passages p WHERE p.revision_id=d.active_revision_id),
-              (SELECT COUNT(*) FROM content_nodes c WHERE c.revision_id=d.active_revision_id AND c.depth>0)
-            FROM documents d WHERE d.id=$document AND d.project_id=$project AND d.tombstoned=0;
+              (SELECT COUNT(*) FROM passages p WHERE p.revision_id=d.active_revision_id AND ($content IS NULL OR p.content_id=$content)),
+              (WITH RECURSIVE descendants(id) AS (
+                SELECT id FROM content_nodes WHERE id=$content
+                UNION ALL SELECT node.id FROM content_nodes node JOIN descendants parent ON node.parent_id=parent.id
+              ) SELECT COUNT(*) FROM content_nodes c WHERE c.revision_id=d.active_revision_id AND c.depth>0
+                AND ($content IS NULL OR (c.id IN (SELECT id FROM descendants) AND c.id<>$content))),
+              selected.id,selected.name,selected.mime_type
+            FROM documents d LEFT JOIN content_nodes selected ON selected.revision_id=d.active_revision_id AND
+              (($content IS NOT NULL AND selected.id=$content) OR ($content IS NULL AND selected.parent_id IS NULL))
+            WHERE d.id=$document AND d.project_id=$project AND d.tombstoned=0
+              AND ($content IS NULL OR selected.id IS NOT NULL);
             """;
         command.Parameters.AddWithValue("$document", documentId.ToString());
         command.Parameters.AddWithValue("$project", projectId.ToString());
+        command.Parameters.AddWithValue("$content", (object?)contentId?.ToString() ?? DBNull.Value);
+        command.Transaction = transaction;
         DocumentInfo? info = null;
         await using (var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
         {
@@ -952,7 +974,12 @@ public sealed class SqliteSearchStore : ISearchStore
                     reader.GetString(3), reader.GetString(4), reader.GetInt64(5), DateTimeOffset.Parse(reader.GetString(6)),
                     reader.IsDBNull(7) ? null : reader.GetString(7), !reader.IsDBNull(8) && reader.GetInt32(10) > 0, available,
                     reader.IsDBNull(8) ? null : Guid.Parse(reader.GetString(8)), reader.GetInt32(10), reader.GetInt32(11),
-                    new Dictionary<ExtractionMethod, int>(), []);
+                    new Dictionary<ExtractionMethod, int>(), [])
+                {
+                    ContentId = reader.IsDBNull(12) ? null : Guid.Parse(reader.GetString(12)),
+                    ContentName = reader.IsDBNull(13) ? null : reader.GetString(13),
+                    ContentMimeType = reader.IsDBNull(14) ? null : reader.GetString(14)
+                };
             }
         }
 
@@ -965,13 +992,16 @@ public sealed class SqliteSearchStore : ISearchStore
         if (info.ActiveRevisionId is { } activeRevision)
         {
             await using var summaryCommand = connection.CreateCommand();
-            summaryCommand.CommandText = "SELECT extraction_method,COUNT(*) FROM passages WHERE revision_id=$revision GROUP BY extraction_method;";
+            summaryCommand.Transaction = transaction;
+            summaryCommand.CommandText = "SELECT extraction_method,COUNT(*) FROM passages WHERE revision_id=$revision AND ($content IS NULL OR content_id=$content) GROUP BY extraction_method;";
             summaryCommand.Parameters.AddWithValue("$revision", activeRevision.ToString());
+            summaryCommand.Parameters.AddWithValue("$content", (object?)contentId?.ToString() ?? DBNull.Value);
             await using var summaryReader = await summaryCommand.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
             while (await summaryReader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 summary[(ExtractionMethod)summaryReader.GetInt32(0)] = summaryReader.GetInt32(1);
         }
-        var errors = await LoadDocumentErrorsAsync(connection, projectId, documentId, cancellationToken).ConfigureAwait(false);
+        var errors = await LoadDocumentErrorsAsync(connection, projectId, documentId, cancellationToken, transaction, contentId).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         return info with { ExtractionSummary = summary, Errors = errors };
     }
 
@@ -1425,7 +1455,8 @@ public sealed class SqliteSearchStore : ISearchStore
                     ReadLocation(reader, 8), (ExtractionMethod)reader.GetInt32(16), reader.IsDBNull(17) ? null : reader.GetDouble(17),
                     reader.GetInt32(18), includeScore && !reader.IsDBNull(19) ? reader.GetDouble(19) : null,
                     reader.GetInt32(20), reader.GetString(21), reader.GetString(22), reader.GetString(23),
-                    reader.GetString(24), reader.IsDBNull(25) ? null : reader.GetString(25), reader.GetString(26)));
+                    reader.GetString(24), reader.IsDBNull(25) ? null : reader.GetString(25), reader.GetString(26),
+                    reader.IsDBNull(27) ? null : Guid.Parse(reader.GetString(27)), reader.GetInt32(28)));
             }
         }
 
@@ -1453,7 +1484,7 @@ public sealed class SqliteSearchStore : ISearchStore
                 KeywordScore: row.Score, Ordinal: row.Ordinal, BodySearchText: row.BodySearchText,
                 Title: row.Title, Heading: row.Heading, ContentName: row.ContentName,
                 ContentMimeType: row.ContentMimeType, ContentExtension: NormalizeContentExtension(row.ContentName),
-                EmailSubject: row.EmailSubject));
+                EmailSubject: row.EmailSubject) { SectionId = row.SectionId, SectionOffset = row.SectionOffset });
         }
 
         return result;
@@ -1605,9 +1636,15 @@ public sealed class SqliteSearchStore : ISearchStore
         Guid.Parse(reader.GetString(0)), Guid.Parse(reader.GetString(1)), Guid.Parse(reader.GetString(2)),
         reader.GetInt32(3), reader.GetString(4), reader.GetString(5), reader.GetString(6), reader.GetString(7),
         DateTimeOffset.Parse(reader.GetString(8)), ReadLocation(reader, 9), (ExtractionMethod)reader.GetInt32(17),
-        reader.IsDBNull(18) ? null : reader.GetDouble(18));
+        reader.IsDBNull(18) ? null : reader.GetDouble(18),
+        reader.IsDBNull(19) ? null : Guid.Parse(reader.GetString(19)), reader.GetInt32(20));
 
-    private static SourceLocation ReadLocation(SqliteDataReader reader, int start) => new(
+    private static SourceLocation ReadLocation(SqliteDataReader reader, int start)
+    {
+        for (var index = 0; index < reader.FieldCount; index++)
+            if (reader.GetName(index) == "location_json" && !reader.IsDBNull(index) && reader.GetString(index).Length > 0)
+                return JsonSerializer.Deserialize<SourceLocation>(reader.GetString(index), StorageJsonOptions)!;
+        return new(
         (LocationKind)reader.GetInt32(start),
         reader.IsDBNull(start + 1) ? null : reader.GetInt32(start + 1),
         reader.IsDBNull(start + 2) ? null : reader.GetString(start + 2),
@@ -1616,6 +1653,7 @@ public sealed class SqliteSearchStore : ISearchStore
         reader.IsDBNull(start + 5) ? null : reader.GetString(start + 5),
         reader.IsDBNull(start + 6) ? null : reader.GetString(start + 6),
         reader.IsDBNull(start + 7) ? null : reader.GetInt32(start + 7));
+    }
 
     private static async Task<bool> ContentBelongsToDocumentAsync(SqliteConnection connection, Guid documentId,
         Guid contentId, CancellationToken cancellationToken)
@@ -1628,12 +1666,15 @@ public sealed class SqliteSearchStore : ISearchStore
     }
 
     private static async Task<IReadOnlyList<ProjectErrorInfo>> LoadDocumentErrorsAsync(SqliteConnection connection,
-        Guid projectId, Guid documentId, CancellationToken cancellationToken)
+        Guid projectId, Guid documentId, CancellationToken cancellationToken, SqliteTransaction? transaction = null,
+        Guid? contentId = null)
     {
         await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT id,code,message,retryable,attempt,created_utc,source_path FROM project_errors WHERE project_id=$project AND document_id=$document ORDER BY id DESC LIMIT 100;";
+        command.Transaction = transaction;
+        command.CommandText = "SELECT id,code,message,retryable,attempt,created_utc,source_path FROM project_errors WHERE project_id=$project AND document_id=$document AND ($content IS NULL OR content_id=$content) ORDER BY id DESC LIMIT 100;";
         command.Parameters.AddWithValue("$project", projectId.ToString());
         command.Parameters.AddWithValue("$document", documentId.ToString());
+        command.Parameters.AddWithValue("$content", (object?)contentId?.ToString() ?? DBNull.Value);
         var errors = new List<ProjectErrorInfo>();
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
@@ -1685,9 +1726,9 @@ public sealed class SqliteSearchStore : ISearchStore
         string SourcePath, string FileName, string FileType, DateTimeOffset ModifiedUtc, SourceLocation Location,
         ExtractionMethod Method, double? OcrConfidence, int Depth, double? Score, int Ordinal,
         string BodySearchText, string Title, string Heading, string ContentName, string? ContentMimeType,
-        string EmailSubject);
+        string EmailSubject, Guid? SectionId, int SectionOffset);
 
     private sealed record PassageRow(Guid PassageId, Guid DocumentId, Guid ContentId, int Ordinal, string Text,
         string SourcePath, string FileName, string FileType, DateTimeOffset ModifiedUtc, SourceLocation Location,
-        ExtractionMethod Method, double? OcrConfidence);
+        ExtractionMethod Method, double? OcrConfidence, Guid? SectionId, int SectionOffset);
 }

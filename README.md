@@ -42,6 +42,8 @@ PDF OCR reuses the renderer and passes full-resolution pixels directly to the OC
 
 Repeatable extraction and OCR performance checks, with checked-in public fixtures, source/license notes and quality checks, are documented in [benchmarks/extraction](benchmarks/extraction/README.md). The optional [embedding benchmark](tools/EmbeddingPerformanceBenchmark.cs) compares batching on the same installed model and reports throughput, vector differences and labeled retrieval relevance. See [benchmark results and commands](benchmarks/README.md).
 
+The [search quality corpus and runner](benchmarks/search/README.md) exercise the actual SQLite and hybrid retrieval pipeline with labeled passage/section evidence, Recall/MRR/nDCG, response sizes, latency and preview/read consistency. Semantic preparation comparisons include an explicit context ablation and report regressions alongside improvements.
+
 On Windows, start-at-sign-in is enabled on first launch and can be disabled in Settings. Sign-in launches start quietly in the system tray; clicking the tray icon or choosing **Show Context Mole** restores the window. Installed builds check GitHub Releases for updates and offer to restart when an update is ready and indexing is idle.
 
 ## AI Connections
@@ -237,7 +239,9 @@ After any manual setup, reload the client, approve or trust the local server if 
 
 The first v0.2 startup discards pre-v0.2 derived passages, embeddings, and full-text rows, then rebuilds each retained project from its source files. Project and folder configuration is preserved. Search coverage can be temporarily incomplete while that one-time background reindex finishes.
 
-Its top-level arguments are `project_id`, `mode`, `semantic_query`, `clauses`, `minimum_should_match`, `field_weights`, `branch_weights`, `filters`, and `result_options`. `project_id` comes from `list_projects`; all other arguments are explicit search controls.
+The evidence/section schema upgrade also invalidates incompatible derived revisions and queues a complete rebuild. Source files, projects, folders, settings and downloaded models are retained. Paused projects rebuild when resumed. Extraction, chunking and semantic preparation are versioned as `layout-v2/spans-v2/body-context-v2`; the UI and MCP coverage fields report what is available during rebuilding. The broker protocol is version 3, and search-derived passage/section reads require the returned generation.
+
+Its top-level arguments are `project_id`, `mode`, `semantic_query`, `clauses`, `minimum_should_match`, `field_weights`, `branch_weights`, `filters`, `match_scope`, `retrieval_options`, `result_options`, and `cursor`. `project_id` comes from `list_projects`; all other arguments are explicit search controls.
 
 | Mode | Use it for | Required input |
 | --- | --- | --- |
@@ -251,7 +255,7 @@ Options that cannot affect the selected mode are rejected instead of being silen
 
 Each clause has a stable caller-defined `id`, `text`, an `occur` value (`must`, `should`, or `must_not`), a `match` value (`term`, `phrase`, or `prefix`), and optional `fields`. This allows exact requirements, optional ranking signals, and exclusions to be mixed in the same call. Clauses can also constrain candidates in semantic mode. A `term` or `prefix` contains one normalized token; a `phrase` contains one or more tokens in order. This is structured data, not a free-form `+term -term` syntax.
 
-Clause logic is evaluated per passage: every `must` clause and the requested number of `should` clauses must match the same indexed passage. When evidence may be spread across sections of one document or attachment, use separate or `content_ids`-focused searches, then inspect neighboring text with `read_passages` or the original structure with `materialize_content`.
+Clause logic follows `match_scope`: `passage` (default) requires one passage to satisfy the constraints; `section` permits requirements to be distributed across passages in one persisted logical section. A `must_not` clause excludes the entire selected scope. Phrase matching follows contiguous normalized tokens within one field. Sections use structural identity and occurrence, so repeated heading text does not combine unrelated sections. Use `read_section` with the returned `section_id` and `search_generation` to inspect complete section evidence.
 
 When `fields` is omitted, the clause searches every lexical field: `body`, `title`, `heading`, `filename`, `path`, `content_name`, `sheet`, and `email_subject`. `minimum_should_match` defaults to `1` when a request has only `should` clauses and to `0` when it also has a `must` clause. It can be set from zero through the number of `should` clauses. A request accepts at most 64 clauses; clause IDs must be unique and use 1–64 ASCII letters, numbers, dots, underscores, or hyphens. Clause text is limited to 512 characters and `semantic_query` to 4,096 characters.
 
@@ -266,13 +270,37 @@ The default lexical field weights are:
 
 Agents can override each field with a finite value from 0–10, including zero to disable its ranking contribution. Hybrid keyword and semantic branch weights both default to 1.0, accept finite values from 0–10, and are normalized before reciprocal-rank fusion. The internal fusion constant is intentionally fixed.
 
-### Filters, confidence, and grouped results
+### Filters, similarity, budgets, and paginated results
 
 Filters can target stable `document_ids` or returned `content_ids`, authorized `path_prefixes`, inclusive modified-time bounds, and `attachment_scope` (`any`, `root_only`, or `attachments_only`). `root_extensions` filter the source document; `content_extensions` independently filter the root or nested content node. This distinction can, for example, find a PDF attachment inside a `.msg` email. A call accepts up to 100 document IDs, 100 content IDs, 50 path prefixes, and 50 values in each extension list.
 
-Semantic recall is permissive by default. Matches below `semantic_confidence_threshold` (0.25 by default, configurable from -1 to 1) remain in the response with their raw `semantic_score` and `low_confidence: true`. Set `strict_semantic_threshold: true` only when excluding borderline leads is worth the risk of false negatives. When only part of a project has embeddings compatible with the active model, semantic retrieval searches that compatible subset and reports `semantic_partial_coverage`; hybrid keyword retrieval still covers the entire searchable index. If no compatible semantic embeddings are available, `semantic` returns no matches plus a structured `semantic_unavailable` warning; `hybrid` returns keyword matches when possible and reports `fallback_keyword`.
+Semantic recall is permissive by default. Matches below `semantic_similarity_threshold` (0.25 by default, configurable from -1 to 1) remain in the response with their raw `semantic_similarity` and `below_similarity_threshold: true`. Set `strict_semantic_threshold: true` only when excluding borderline leads is worth the risk of false negatives. When only part of a project has embeddings compatible with the active model, semantic retrieval searches that compatible subset and reports `semantic_partial_coverage`; hybrid keyword retrieval still covers the entire searchable index. If no compatible semantic embeddings are available, `semantic` returns no matches plus a structured `semantic_unavailable` warning; `hybrid` returns keyword matches when possible and reports `fallback_keyword`.
 
-Results are grouped by stable `content_id`, so an attachment or archive entry is separate from its container. The defaults return 10 groups, one consolidated preview per group, and at most two groups from one root document. Agents can set `group_limit` from 1–50, `previews_per_group` from 1–10, and `max_groups_per_document` from 1–50. Responses include stable document, content, and passage IDs; provenance and attachment chains; typed locations; keyword, semantic, rank-fusion, and confidence signals; matched clause IDs and fields; unique evaluated match counts; separate keyword, optional-keyword-boost, and semantic inspection depths; collapsed counts; and compact `suppressed_sources` summaries. Branch depths deliberately are not summed because the same passage can appear in more than one branch. Check `candidate_limit_reached` before treating those counts or summaries as exhaustive: when it is `true`, retrieval stopped after it had enough groups, so additional lower-ranked matches or sources may exist. Raise the group limits or focus a follow-up with `filters.content_ids` when those omitted candidates could matter.
+`retrieval_options.candidate_limit` defaults to 1,000 per enabled branch and accepts 1–10,000, independently of output size. Branches are main keyword, optional keyword boost, and semantic. The semantic budget bounds retained/hydrated candidates; the current flat vector implementation still scans all eligible vectors. `candidate_limit_reached` and `stop_reason: "candidate_budget"` identify a bounded candidate pool. Counts describe evaluated matches, not an exhaustive corpus total.
+
+`branches` reports activation, completion, inspected candidates, matched candidates, budget limits and exhaustion separately for each branch. Lexical candidate counts are passages or sections according to `match_scope`; semantic counts are retained passages before any section grouping. Exhaustion describes the candidate branch, while `has_more` describes remaining fixed-ranked result pages.
+
+Compact `clause_evidence` selects one complete supporting occurrence per positive clause, retaining every passage needed for a phrase across chunk boundaries. `evidence_passage_ids` combines that proof with the best semantic anchor. Full detail returns all matching evidence IDs and bounded match counts; compact output stays small when a common term repeats throughout a long document.
+
+A group's `semantic_similarity` and `semantic_anchor_passage_id` identify its best vector evidence even when its displayed lexical preview uses a different passage. Preview similarity applies only to that preview's own passage. `below_similarity_threshold` is null when no semantic score exists.
+
+Passage results group by `content_id`; section results group by logical `section_id`. Default pages contain up to 10 groups, one anchor preview per group, and up to two groups per root document. `group_limit` accepts 1–50, `previews_per_group` 1–10, and `max_groups_per_document` 1–50. Groups withheld by the per-page diversity cap remain eligible for later pages. Each preview is a literal slice of exactly its `passage_id`; `excerpt_start`, `excerpt_length`, and match spans use UTF-16 positions in `read_passages.text`. Metadata-only matches identify their matching field. Compact output prioritizes title, source, location, IDs, excerpt, evidence, and similarity. `result_options.detail: "full"` adds raw ranking and extraction diagnostics. Cosine similarity is neither confidence nor a probability of relevance; `below_similarity_threshold` is null for results without a semantic score.
+
+When `has_more` is true, continue using only `project_id` and `cursor` copied from `next_cursor`. The broker caches fixed ranked result records for ten minutes with a 64 MiB total memory budget. Continuations do not repeat retrieval. Expiry or eviction returns `cursor_expired`; changes to the searched project or semantic policy require restarting the search. Other projects' updates cannot reorder a cached page. Supply `expected_search_generation` to `read_passages` and `read_section` to guard subsequent reads.
+
+```json
+{
+  "project_id": "11111111-1111-1111-1111-111111111111",
+  "mode": "keyword",
+  "match_scope": "section",
+  "clauses": [
+    { "id": "renewal", "text": "renewal", "occur": "must", "fields": ["body"] },
+    { "id": "notice", "text": "notice period", "occur": "must", "match": "phrase", "fields": ["body"] }
+  ],
+  "retrieval_options": { "candidate_limit": 3000 },
+  "result_options": { "group_limit": 3, "previews_per_group": 2, "detail": "compact" }
+}
+```
 
 The examples below show only tool arguments. Replace the sample project and returned IDs with values from `list_projects` and `search_project`.
 
@@ -383,7 +411,7 @@ Target `filename` with a phrase, then compare the returned `file_name` value whe
 
 ### Keep borderline semantic leads, then optionally tighten
 
-Start with the recall-oriented default and inspect `results[].previews[].semantic_score` and `low_confidence`:
+Start with the recall-oriented default and inspect `results[].previews[].semantic_similarity` and `below_similarity_threshold`:
 
 ```json
 {
@@ -401,7 +429,7 @@ Only if the task benefits from precision over recall, repeat it with strict filt
   "mode": "semantic",
   "semantic_query": "informal concern about launch readiness",
   "result_options": {
-    "semantic_confidence_threshold": 0.32,
+    "semantic_similarity_threshold": 0.32,
     "strict_semantic_threshold": true
   }
 }
@@ -444,7 +472,8 @@ Use returned passage IDs to read stored neighboring text:
     "33333333-3333-3333-3333-333333333333"
   ],
   "context_before": 1,
-  "context_after": 2
+  "context_after": 2,
+  "expected_search_generation": 42
 }
 ```
 

@@ -16,19 +16,23 @@ public partial class ProjectEditorWindow : Window
 {
     private readonly ObservableCollection<string> _folders = [];
     private readonly HashSet<string> _originalFolderKeys = new(PathComparer());
+    private readonly Func<ProjectEditorResult, Task>? _persist;
+    private bool _saving;
 
     public ProjectEditorWindow() : this(null)
     {
     }
 
-    public ProjectEditorWindow(ProjectSummary? project)
+    public ProjectEditorWindow(ProjectSummary? project, Func<ProjectEditorResult, Task>? persist = null)
     {
         InitializeComponent();
+        _persist = persist;
+        Closing += (_, args) => args.Cancel = _saving;
         ProjectNameBox.Text = project?.Name ?? string.Empty;
         foreach (var folder in project?.Folders ?? [])
         {
             _folders.Add(folder.Path);
-            _originalFolderKeys.Add(CanonicalPath(folder.Path));
+            _originalFolderKeys.Add(ProjectValidation.FolderKey(folder.Path));
         }
         FoldersList.ItemsSource = _folders;
         Title = project is null ? "Add project" : "Edit project";
@@ -71,48 +75,57 @@ public partial class ProjectEditorWindow : Window
 
     private void Cancel(object? sender, RoutedEventArgs args) => Close(null);
 
-    private void Save(object? sender, RoutedEventArgs args)
+    private async void Save(object? sender, RoutedEventArgs args)
     {
+        if (_saving) return;
         if (!ValidateInput()) return;
-        Close(new ProjectEditorResult(ProjectNameBox.Text!.Trim(), _folders.ToArray()));
+        var result = new ProjectEditorResult(ProjectValidation.NormalizeName(ProjectNameBox.Text!), _folders.ToArray());
+        _saving = true;
+        EditorForm.IsEnabled = false;
+        SaveButton.IsEnabled = false;
+        CancelButton.IsEnabled = false;
+        SaveButton.Content = "Saving…";
+        ValidationBlock.Text = string.Empty;
+        try
+        {
+            if (_persist is not null) await _persist(result);
+            _saving = false;
+            Close(result);
+        }
+        catch (Exception exception)
+        {
+            ValidationBlock.Text = exception.Message;
+        }
+        finally
+        {
+            _saving = false;
+            EditorForm.IsEnabled = true;
+            SaveButton.IsEnabled = true;
+            CancelButton.IsEnabled = true;
+            SaveButton.Content = "Save project";
+        }
     }
 
     private bool ValidateInput()
     {
         var error = string.Empty;
-        if (string.IsNullOrWhiteSpace(ProjectNameBox.Text)) error = "Enter a project name.";
-        else if (_folders.Count == 0) error = "Select at least one folder.";
-        else
+        try
         {
-            var canonical = _folders.Select(path => Path.TrimEndingDirectorySeparator(Path.GetFullPath(path))).ToArray();
-            var appData = Path.TrimEndingDirectorySeparator(Program.Services.GetRequiredService<IAppPaths>().DataDirectory);
-            if (canonical.Any(path => string.Equals(path, appData, PathComparison()) || IsWithin(path, appData) || IsWithin(appData, path)))
-                error = "The application data directory and its parent folders cannot be indexed.";
-            else if (canonical.Any(path => !Directory.Exists(path) && !_originalFolderKeys.Contains(path)))
-                error = "Newly added folders must be available.";
-            else if (canonical.Any(path =>
-                     {
-                         if (!Directory.Exists(path)) return false;
-                         var info = new DirectoryInfo(path);
-                         return (info.Attributes & FileAttributes.ReparsePoint) != 0 && !string.IsNullOrEmpty(info.LinkTarget);
-                     }))
-                error = "Symbolic-link roots cannot be indexed.";
-            for (var left = 0; left < canonical.Length && error.Length == 0; left++)
-                for (var right = left + 1; right < canonical.Length; right++)
-                {
-                    if (string.Equals(canonical[left], canonical[right], PathComparison()) || IsWithin(canonical[left], canonical[right]) || IsWithin(canonical[right], canonical[left]))
-                    {
-                        error = "Folders in one project cannot be duplicated or nested.";
-                        break;
-                    }
-                }
+            ProjectValidation.NormalizeName(ProjectNameBox.Text ?? string.Empty);
+        }
+        catch (ContextMoleException exception) { error = exception.Message; }
+        if (error.Length == 0)
+        {
+            try
+            {
+                ProjectValidation.NormalizeFolders(_folders.ToArray(),
+                    Program.Services.GetRequiredService<IAppPaths>().DataDirectory, _originalFolderKeys);
+            }
+            catch (ContextMoleException exception) { error = exception.Message; }
         }
         ValidationBlock.Text = error;
         return error.Length == 0;
     }
 
-    private static bool IsWithin(string child, string parent) => child.StartsWith(parent + Path.DirectorySeparatorChar, PathComparison());
-    private static string CanonicalPath(string path) => Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
     private static StringComparer PathComparer() => OperatingSystem.IsWindows() || OperatingSystem.IsMacOS() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
-    private static StringComparison PathComparison() => OperatingSystem.IsWindows() || OperatingSystem.IsMacOS() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
 }

@@ -10,7 +10,7 @@ public static class BrokerProtocol
 {
     // Isolate the shared desktop runtime from legacy brokers that may still run
     // against an MSIX-private database and authentication token after an update.
-    public const int MajorVersion = 2;
+    public const int MajorVersion = 3;
     public const int MinorVersion = 0;
     public const int MaximumFrameBytes = 32 * 1024 * 1024;
     public static readonly TimeSpan DefaultStartupTimeout = TimeSpan.FromSeconds(10);
@@ -51,6 +51,7 @@ public static class BrokerToolMethods
     public const string ListProjects = "list_projects";
     public const string SearchProject = "search_project";
     public const string ReadPassages = "read_passages";
+    public const string ReadSection = "read_section";
     public const string GetDocumentInfo = "get_document_info";
     public const string ListDocuments = "list_documents";
     public const string ListAttachments = "list_attachments";
@@ -122,7 +123,10 @@ public sealed record BrokerReadPassagesRequest(
     Guid ProjectId,
     IReadOnlyList<Guid> PassageIds,
     int ContextBefore,
-    int ContextAfter);
+    int ContextAfter,
+    [property: JsonRequired] long ExpectedSearchGeneration);
+public sealed record BrokerReadSectionRequest(Guid ProjectId, Guid SectionId, long ExpectedSearchGeneration,
+    int Limit = 20, string? Cursor = null);
 public sealed record BrokerGetDocumentInfoRequest(Guid ProjectId, Guid DocumentId, Guid? ContentId);
 public sealed record BrokerListDocumentsRequest(
     Guid ProjectId,

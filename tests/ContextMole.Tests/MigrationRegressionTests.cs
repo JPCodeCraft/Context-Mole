@@ -23,6 +23,7 @@ public sealed class MigrationRegressionTests
     [InlineData(5)]
     [InlineData(6)]
     [InlineData(7)]
+    [InlineData(8)]
     public async Task StartupUpgradesToCurrentAndRepeatedStartupDoesNotReapply(int version)
     {
         using var paths = new MigrationTestPaths();
@@ -35,8 +36,8 @@ public sealed class MigrationRegressionTests
             Assert.True(await new SqliteSearchStore(paths).IsInitializedAsync(Token));
             await writer.StopAsync(Token);
         }
-        Assert.Equal(7L, await ScalarAsync(paths, "SELECT MAX(version) FROM schema_migrations;"));
-        Assert.Equal(Enumerable.Range(version + 1, 7 - version),
+        Assert.Equal(8L, await ScalarAsync(paths, "SELECT MAX(version) FROM schema_migrations;"));
+        Assert.Equal(Enumerable.Range(version + 1, 8 - version),
             log.Entries.Where(entry => entry.Message.StartsWith("Applying database migration", StringComparison.Ordinal))
                 .Select(entry => Convert.ToInt32(entry.Properties["MigrationVersion"])));
         Assert.Contains(log.Entries, entry => entry.Properties.GetValueOrDefault("DatabasePath") as string == paths.DatabasePath);
@@ -49,6 +50,72 @@ public sealed class MigrationRegressionTests
         }
         Assert.DoesNotContain(repeatedLog.Entries, entry => entry.Message.StartsWith("Applying database migration", StringComparison.Ordinal));
         Assert.Contains(repeatedLog.Entries, entry => entry.Message.Contains("already current", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task EvidenceMigrationRequeuesDerivedRevisionsAndPreservesPausedProjectsAndAssets()
+    {
+        using var paths = new MigrationTestPaths();
+        await CreateLegacyAsync(paths, 7);
+        var source = Path.Combine(paths.SourceDirectory, "source.txt");
+        await File.WriteAllTextAsync(source, "original source", Token);
+        Directory.CreateDirectory(paths.AssetsDirectory);
+        var model = Path.Combine(paths.AssetsDirectory, "model.bin");
+        await File.WriteAllBytesAsync(model, [1, 2, 3, 4], Token);
+        var settings = Path.Combine(paths.DataDirectory, "embedding-model.txt");
+        await File.WriteAllTextAsync(settings, "Granite311M", Token);
+        var project = Guid.NewGuid(); var folder = Guid.NewGuid(); var document = Guid.NewGuid();
+        var revision = Guid.NewGuid(); var content = Guid.NewGuid(); var passage = Guid.NewGuid();
+        await using (var connection = await OpenAsync(paths))
+        {
+            await using var seed = connection.CreateCommand();
+            seed.CommandText = """
+                INSERT INTO projects(id,name,name_key,state,search_generation,created_utc,updated_utc)
+                  VALUES($project,'Preserved paused','PRESERVED PAUSED',1,11,$now,$now);
+                INSERT INTO project_folders(id,project_id,path,path_key,created_utc)
+                  VALUES($folder,$project,$folder_path,$folder_path,$now);
+                INSERT INTO documents(id,project_id,folder_id,path,path_key,file_name,extension,size,modified_utc,
+                  observation_epoch,tombstoned,available,created_utc,updated_utc)
+                  VALUES($document,$project,$folder,$path,$path,'source.txt','.txt',15,$now,5,0,1,$now,$now);
+                INSERT INTO document_revisions(id,document_id,sha256,status,created_utc,activated_utc)
+                  VALUES($revision,$document,'old-hash','active',$now,$now);
+                UPDATE documents SET active_revision_id=$revision,sha256='old-hash' WHERE id=$document;
+                INSERT INTO content_nodes(id,revision_id,ordinal,name,relationship,depth,status)
+                  VALUES($content,$revision,0,'source.txt','root',0,'indexed');
+                INSERT INTO passages(id,revision_id,content_id,ordinal,display_text,search_text,body_text,location_kind,extraction_method)
+                  VALUES($passage,$revision,$content,0,'old evidence','old evidence','old evidence',0,0);
+                INSERT INTO passages_fts(rowid,body_text) SELECT rowid,body_text FROM passages;
+                INSERT INTO embeddings(passage_rowid,passage_id,revision_id,vector,policy_key)
+                  SELECT rowid,$passage,$revision,$vector,'old-policy' FROM passages;
+                """;
+            seed.Parameters.AddWithValue("$project", project.ToString()); seed.Parameters.AddWithValue("$folder", folder.ToString());
+            seed.Parameters.AddWithValue("$document", document.ToString()); seed.Parameters.AddWithValue("$revision", revision.ToString());
+            seed.Parameters.AddWithValue("$content", content.ToString()); seed.Parameters.AddWithValue("$passage", passage.ToString());
+            seed.Parameters.AddWithValue("$folder_path", paths.SourceDirectory); seed.Parameters.AddWithValue("$path", source);
+            seed.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O")); seed.Parameters.AddWithValue("$vector", new byte[1536]);
+            await seed.ExecuteNonQueryAsync(Token);
+        }
+        using (var writer = new DatabaseWriterService(paths))
+        {
+            await writer.StartAsync(Token);
+            var store = new SqliteSearchStore(paths);
+            var summary = Assert.Single(await store.ListProjectsAsync(Token));
+            Assert.Equal(project, summary.Id);
+            Assert.Equal(ProjectState.Paused, summary.State);
+            Assert.Equal(12, summary.SearchGeneration);
+            Assert.Equal(paths.SourceDirectory, Assert.Single(summary.Folders).Path);
+            Assert.Equal(1, summary.PendingCount);
+            Assert.Equal(0, summary.IndexedCount);
+            Assert.Null(await writer.LeaseNextJobAsync(TimeSpan.FromMinutes(1), Token));
+            await writer.StopAsync(Token);
+        }
+        Assert.Equal(0L, await ScalarAsync(paths, "SELECT COUNT(*) FROM document_revisions;"));
+        Assert.Equal(0L, await ScalarAsync(paths, "SELECT COUNT(*) FROM passages_fts;"));
+        Assert.Equal(0L, await ScalarAsync(paths, "SELECT COUNT(*) FROM embeddings;"));
+        Assert.Equal(6L, await ScalarAsync(paths, "SELECT expected_epoch FROM index_jobs WHERE state='queued';"));
+        Assert.Equal("original source", await File.ReadAllTextAsync(source, Token));
+        Assert.Equal(new byte[] { 1, 2, 3, 4 }, await File.ReadAllBytesAsync(model, Token));
+        Assert.Equal("Granite311M", await File.ReadAllTextAsync(settings, Token));
     }
 
     [Fact]
@@ -104,20 +171,20 @@ public sealed class MigrationRegressionTests
             Assert.Equal(paths.SourceDirectory, Assert.Single(summary.Folders).Path);
             await retry.StopAsync(Token);
         }
-        Assert.Equal(7L, await ScalarAsync(paths, "SELECT MAX(version) FROM schema_migrations;"));
+        Assert.Equal(8L, await ScalarAsync(paths, "SELECT MAX(version) FROM schema_migrations;"));
         Assert.Equal("source remains unchanged", await File.ReadAllTextAsync(source, Token));
-        Assert.Single(retryLog.Entries, entry => entry.Message.StartsWith("Applying database migration", StringComparison.Ordinal));
+        Assert.Equal(2, retryLog.Entries.Count(entry => entry.Message.StartsWith("Applying database migration", StringComparison.Ordinal)));
     }
 
     [Theory]
-    [InlineData("INSERT INTO schema_migrations VALUES(8,'future');", "version 8")]
+    [InlineData("INSERT INTO schema_migrations VALUES(9,'future');", "version 9")]
     [InlineData("DELETE FROM schema_migrations WHERE version=3;", "gaps")]
     [InlineData("DROP TABLE schema_migrations;", "missing")]
     [InlineData("DROP TABLE schema_migrations; CREATE TABLE schema_migrations(wrong TEXT);", "malformed")]
     public async Task InvalidOrNewerHistoriesAreRejectedWithoutChangingDatabase(string damage, string expected)
     {
         using var paths = new MigrationTestPaths();
-        await CreateLegacyAsync(paths, 7);
+        await CreateLegacyAsync(paths, 8);
         await ExecuteAsync(paths, damage);
         var before = await File.ReadAllBytesAsync(paths.DatabasePath, Token);
         using var writer = new DatabaseWriterService(paths);
@@ -143,7 +210,7 @@ public sealed class MigrationRegressionTests
         var old = await Assert.ThrowsAsync<ContextMoleException>(() => store.IsInitializedAsync(Token));
         Assert.Equal("schema_incompatible", old.Code);
         Assert.Contains("version 5", old.Message);
-        Assert.Contains("expected version 7", old.Message);
+        Assert.Contains("expected version 8", old.Message);
         var inventory = await Assert.ThrowsAsync<ContextMoleException>(() =>
             store.ListDocumentsAsync(new DocumentListRequest(Guid.NewGuid()), Token));
         Assert.Equal(old.Code, inventory.Code);
@@ -198,7 +265,7 @@ public sealed class MigrationRegressionTests
         if (state == "old")
         {
             Assert.Contains("version 5", error.Message);
-            Assert.Contains("expected version 7", error.Message);
+            Assert.Contains("expected version 8", error.Message);
         }
         if (state == "corrupt") Assert.IsType<SqliteException>(error.InnerException);
     }

@@ -7,9 +7,29 @@
              x:DataType="vm:MainViewModel">
   <ScrollViewer>
     <StackPanel Classes="pageContent">
+      <Border IsVisible="{Binding IsProjectLoadPending}" Classes="card" MinHeight="150">
+        <StackPanel Spacing="12">
+          <TextBlock Text="Loading local projects…" Classes="sectionTitle" AutomationProperties.LiveSetting="Polite" />
+          <ProgressBar IsIndeterminate="True" Height="5" AutomationProperties.Name="Loading project status" />
+        </StackPanel>
+      </Border>
+      <Border IsVisible="{Binding HasProjectLoadError}" Classes="card">
+        <StackPanel Spacing="10">
+          <TextBlock Text="Projects could not be loaded" Classes="sectionTitle" />
+          <TextBlock Text="{Binding ProjectLoadError}" TextWrapping="Wrap" AutomationProperties.LiveSetting="Assertive" />
+          <Button Content="Try again" Click="ReloadProjects" HorizontalAlignment="Left" />
+        </StackPanel>
+      </Border>
+      <Border IsVisible="{Binding IsProjectActionBusy}" Classes="card">
+        <StackPanel Spacing="10">
+          <TextBlock Text="{Binding ProjectActionMessage}" TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
+          <ProgressBar IsIndeterminate="True" Height="4" AutomationProperties.Name="Project action in progress" />
+        </StackPanel>
+      </Border>
       <Border IsVisible="{Binding HasNoSelection}" Classes="card" MinHeight="260">
         <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="9" MaxWidth="420">
           <Button Width="48" Height="48" Classes="addProjectButton" Click="AddProject"
+                  IsEnabled="{Binding CanRunProjectAction}"
                   HorizontalAlignment="Center"
                   ToolTip.Tip="Add project" AutomationProperties.Name="Add project">
             <TextBlock Text="+" Foreground="{DynamicResource AccentBrush}" FontSize="27"
@@ -45,6 +65,7 @@
                   <TextBlock Text="{Binding PhaseDetails}" Classes="quiet" TextWrapping="Wrap" />
                 </StackPanel>
                 <WrapPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right"
+                           IsEnabled="{Binding AreActionsEnabled}"
                            VerticalAlignment="Center">
                   <Button Content="{Binding PauseActionLabel}" Click="TogglePause" Margin="0,0,8,8" />
                   <Button Content="Reindex" Click="ReindexProject" IsEnabled="{Binding CanReindex}"
@@ -58,29 +79,37 @@
                 <Border Classes="metricCard" Margin="0,0,9,0">
                   <StackPanel Spacing="5">
                     <TextBlock Text="TOTAL FILES" Classes="eyebrow" TextWrapping="Wrap" MinHeight="26" />
-                    <TextBlock Text="{Binding DocumentCount, StringFormat={}{0:N0}}" Classes="metricValue"
-                               ToolTip.Tip="Unique files currently discovered across this project's folders." />
+                    <Viewbox Stretch="Uniform" StretchDirection="DownOnly" Height="31" HorizontalAlignment="Left">
+                      <TextBlock Text="{Binding DocumentCount, StringFormat={}{0:N0}}" Classes="metricValue"
+                                 ToolTip.Tip="Unique files currently discovered across this project's folders." />
+                    </Viewbox>
                   </StackPanel>
                 </Border>
                 <Border Classes="metricCard" Margin="0,0,9,0">
                   <StackPanel Spacing="5">
                     <TextBlock Text="UP TO DATE" Classes="eyebrow" TextWrapping="Wrap" MinHeight="26" />
-                    <TextBlock Text="{Binding ReadyCount, StringFormat={}{0:N0}}" Classes="metricValue"
-                               ToolTip.Tip="Files successfully indexed with no pending updates or current issues." />
+                    <Viewbox Stretch="Uniform" StretchDirection="DownOnly" Height="31" HorizontalAlignment="Left">
+                      <TextBlock Text="{Binding ReadyCount, StringFormat={}{0:N0}}" Classes="metricValue"
+                                 ToolTip.Tip="Files successfully indexed with no pending updates or current issues." />
+                    </Viewbox>
                   </StackPanel>
                 </Border>
                 <Border Classes="metricCard" Margin="0,0,9,0">
                   <StackPanel Spacing="5">
                     <TextBlock Text="PROCESSING" Classes="eyebrow" TextWrapping="Wrap" MinHeight="26" />
-                    <TextBlock Text="{Binding ProcessingCount, StringFormat={}{0:N0}}" Classes="metricValue"
-                               ToolTip.Tip="Files currently being processed. Files waiting for processor capacity are counted in Queued." />
+                    <Viewbox Stretch="Uniform" StretchDirection="DownOnly" Height="31" HorizontalAlignment="Left">
+                      <TextBlock Text="{Binding ProcessingCount, StringFormat={}{0:N0}}" Classes="metricValue"
+                                 ToolTip.Tip="Files currently being processed. Files waiting for processor capacity are counted in Queued." />
+                    </Viewbox>
                   </StackPanel>
                 </Border>
                 <Border Classes="metricCard" Margin="0,0,9,0">
                   <StackPanel Spacing="5">
                     <TextBlock Text="QUEUED" Classes="eyebrow" TextWrapping="Wrap" MinHeight="26" />
-                    <TextBlock Text="{Binding QueuedCount, StringFormat={}{0:N0}}" Classes="metricValue"
-                               ToolTip.Tip="Files waiting for processing, including scheduled retries. A previous indexed version may remain searchable." />
+                    <Viewbox Stretch="Uniform" StretchDirection="DownOnly" Height="31" HorizontalAlignment="Left">
+                      <TextBlock Text="{Binding QueuedCount, StringFormat={}{0:N0}}" Classes="metricValue"
+                                 ToolTip.Tip="Files waiting for processing, including scheduled retries. A previous indexed version may remain searchable." />
+                    </Viewbox>
                     <TextBlock IsVisible="{Binding HasQueueBreakdown}"
                                Text="{Binding QueuedBreakdownDisplay}" Classes="quiet" FontSize="10" TextWrapping="Wrap" />
                   </StackPanel>
@@ -88,9 +117,11 @@
                 <Border Classes="metricCard" Classes.hasErrors="{Binding HasAttentionFiles}">
                   <StackPanel Spacing="5">
                     <TextBlock Text="NEEDS ATTENTION" Classes="eyebrow" TextWrapping="Wrap" MinHeight="26" />
-                    <TextBlock Text="{Binding AttentionCount, StringFormat={}{0:N0}}" Classes="metricValue"
-                               Classes.hasErrors="{Binding HasAttentionFiles}"
-                               ToolTip.Tip="Files with current issues and no retry queued or running. Review the issues below, then retry when the problem is fixed." />
+                    <Viewbox Stretch="Uniform" StretchDirection="DownOnly" Height="31" HorizontalAlignment="Left">
+                      <TextBlock Text="{Binding AttentionCount, StringFormat={}{0:N0}}" Classes="metricValue"
+                                 Classes.hasErrors="{Binding HasAttentionFiles}"
+                                 ToolTip.Tip="Files with current issues and no retry queued or running. Review the issues below, then retry when the problem is fixed." />
+                    </Viewbox>
                   </StackPanel>
                 </Border>
               </UniformGrid>
@@ -116,17 +147,17 @@
                 </StackPanel>
               </Border>
 
-              <Border IsVisible="{Binding HasMixedSemanticIndex}" Classes="card semanticCoverageWarning">
+              <Border Classes="card" Classes.semanticCoverageWarning="{Binding HasSemanticCoverageWarning}">
                 <Grid ColumnDefinitions="*,Auto" ColumnSpacing="18">
                   <StackPanel Spacing="6">
-                    <StackPanel Orientation="Horizontal" Spacing="10">
+                    <WrapPanel Orientation="Horizontal">
                       <TextBlock Text="Meaning-based search coverage" Classes="sectionTitle" />
-                      <Border Background="{DynamicResource WarningSubtleBrush}" CornerRadius="8" Padding="8,2">
-                        <TextBlock Text="{Binding SemanticIndexStatusLabel}"
-                                   Foreground="{DynamicResource WarningBrush}" FontSize="10"
-                                   FontWeight="SemiBold" />
+                      <Border Classes="statusBadge" Margin="10,2,0,0" Classes.ready="{Binding IsSemanticCoverageComplete}"
+                              Classes.warning="{Binding HasSemanticCoverageWarning}" VerticalAlignment="Center">
+                        <TextBlock Text="{Binding SemanticIndexStatusLabel}" Classes="statusText"
+                                   Classes.ready="{Binding IsSemanticCoverageComplete}" Classes.warning="{Binding HasSemanticCoverageWarning}" />
                       </Border>
-                    </StackPanel>
+                    </WrapPanel>
                     <TextBlock Text="{Binding SemanticIndexStatusMessage}" Classes="muted"
                                TextWrapping="Wrap" MaxWidth="720" />
                   </StackPanel>
@@ -142,6 +173,7 @@
                       Classes="card">
                 <StackPanel Spacing="12">
                   <ToggleButton Classes="sectionToggle"
+                                AutomationProperties.Name="Expand or collapse indexing activity"
                                 IsChecked="{Binding $parent[UserControl].((vm:MainViewModel)DataContext).IsActiveIndexingExpanded, Mode=TwoWay}">
                     <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="12">
                       <StackPanel Spacing="3">
@@ -182,10 +214,9 @@
                             <TextBlock Grid.Row="2" Grid.ColumnSpan="2" Text="{Binding StageDisplay}"
                                        Foreground="{DynamicResource AccentBrush}" FontSize="12"
                                        FontWeight="SemiBold" Margin="0,9,0,5" />
-                            <ProgressBar Grid.Row="3" Grid.ColumnSpan="2" Minimum="0" Maximum="100"
-                                         Value="{Binding PipelinePosition}" Height="5"
+                            <ProgressBar Grid.Row="3" Grid.ColumnSpan="2" Height="5"
                                          IsIndeterminate="{Binding IsProgressIndeterminate}"
-                                         AutomationProperties.Name="File indexing progress" />
+                                         AutomationProperties.Name="File indexing activity; completion time is unknown" />
                           </Grid>
                         </Border>
                       </DataTemplate>
@@ -201,7 +232,7 @@
                       <TextBlock Text="File types" Classes="sectionTitle" />
                       <TextBlock Text="Files currently included in this project." Classes="quiet" FontSize="12" />
                     </StackPanel>
-                    <TextBlock IsVisible="{Binding HasNoFileTypeCounts}" Text="File-type totals will appear after discovery begins."
+                      <TextBlock IsVisible="{Binding HasNoFileTypeCounts}" Text="File-type totals are not available yet."
                                Classes="muted" TextWrapping="Wrap" />
                     <ItemsControl IsVisible="{Binding HasFileTypeCounts}" ItemsSource="{Binding FileTypeCounts}">
                       <ItemsControl.ItemsPanel>

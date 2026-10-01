@@ -72,9 +72,10 @@
                                    FontSize="11" />
                       </StackPanel>
                     </StackPanel>
-                    <ProgressBar Minimum="0" Maximum="{Binding DocumentCount}" Value="{Binding IndexedCount}"
+                    <ProgressBar Minimum="0" Maximum="{Binding ProgressMaximum}" Value="{Binding ReadyCount}"
+                                 IsIndeterminate="{Binding IsDiscovering}" ToolTip.Tip="{Binding ProgressDescription}"
                                  Classes.paused="{Binding IsPaused}" Height="4"
-                                 AutomationProperties.Name="Project indexing progress" />
+                                 AutomationProperties.Name="{Binding ProgressDescription}" />
                   </StackPanel>
                 </Grid>
               </Border>
@@ -85,10 +86,13 @@
         <StackPanel Grid.Row="4" Spacing="10" Margin="3,12,3,0">
           <Border Background="{DynamicResource SurfaceBrush}" CornerRadius="8" Padding="10,9">
             <Grid ColumnDefinitions="Auto,*" ColumnSpacing="8">
-              <Border Width="7" Height="7" CornerRadius="4" Background="{DynamicResource BorderStrongBrush}"
+              <Border Classes="statusDot" Classes.busy="{Binding IsStatusBusy}" Classes.ready="{Binding IsStatusReady}"
+                      Classes.warning="{Binding IsStatusWarning}" Classes.error="{Binding IsStatusError}"
+                      Width="7" Height="7" CornerRadius="4"
                       VerticalAlignment="Top" Margin="0,4,0,0" />
               <TextBlock Grid.Column="1" Text="{Binding StatusMessage}" Classes="quiet" FontSize="11"
-                         TextWrapping="Wrap" MaxHeight="48" AutomationProperties.LiveSetting="Polite" />
+                         TextWrapping="Wrap" ToolTip.Tip="{Binding StatusDetails}"
+                         AutomationProperties.HelpText="{Binding StatusDetails}" AutomationProperties.LiveSetting="Polite" />
             </Grid>
           </Border>
           <Button Classes="ghost compact" Content="Quit Context Mole" HorizontalContentAlignment="Left"
@@ -107,7 +111,7 @@
       </Grid>
     </Border>
 
-    <Grid Grid.Column="1" RowDefinitions="Auto,Auto,*">
+    <Grid Grid.Column="1" RowDefinitions="Auto,Auto,Auto,*">
       <Border Grid.Row="0" Background="{DynamicResource AppBackgroundBrush}"
               BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,0,0,1" Padding="30,21">
         <Grid ColumnDefinitions="*,Auto" ColumnSpacing="20">
@@ -120,6 +124,7 @@
             <TextBlock Text="Preferences apply globally across every project." Classes="muted" />
           </StackPanel>
           <Button Grid.Column="1" IsVisible="{Binding IsProjectsSection}" Classes="primary"
+                  IsEnabled="{Binding CanRunProjectAction}"
                   Content="Add project" Click="AddProject" VerticalAlignment="Center" />
         </Grid>
       </Border>
@@ -134,12 +139,31 @@
         </Grid>
       </Border>
 
-      <views:ProjectsView Grid.Row="2" IsVisible="{Binding IsProjectsSection}" />
-      <views:SettingsView Grid.Row="2" IsVisible="{Binding IsSettingsSection}" />
+      <Border Grid.Row="2" Classes="notificationBanner" Classes.error="{Binding IsNotificationError}" IsVisible="{Binding HasNotification}"
+              BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,0,0,1" Padding="30,10">
+        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
+          <StackPanel Spacing="3" VerticalAlignment="Center">
+            <TextBlock Text="{Binding NotificationLabel}" FontWeight="SemiBold" FontSize="12" />
+            <TextBlock Text="{Binding NotificationMessage}" TextWrapping="Wrap"
+                       AutomationProperties.LiveSetting="Polite" />
+          </StackPanel>
+          <Button Grid.Column="1" Classes="ghost compact" Content="Dismiss" Click="DismissNotification"
+                  AutomationProperties.Name="Dismiss operation message" />
+        </Grid>
+      </Border>
+      <views:ProjectsView Grid.Row="3" IsVisible="{Binding IsProjectsSection}" />
+      <views:SettingsView Grid.Row="3" IsVisible="{Binding IsSettingsSection}" />
     </Grid>
   </Grid>
 
   <Window.Styles>
+    <Style Selector="Border.notificationBanner"><Setter Property="Background" Value="{DynamicResource SurfaceRaisedBrush}" /></Style>
+    <Style Selector="Border.notificationBanner.error"><Setter Property="Background" Value="{DynamicResource DangerSubtleBrush}" /></Style>
+    <Style Selector="Border.statusDot"><Setter Property="Background" Value="{DynamicResource BorderStrongBrush}" /></Style>
+    <Style Selector="Border.statusDot.busy"><Setter Property="Background" Value="{DynamicResource AccentBrush}" /></Style>
+    <Style Selector="Border.statusDot.ready"><Setter Property="Background" Value="{DynamicResource SuccessBrush}" /></Style>
+    <Style Selector="Border.statusDot.warning"><Setter Property="Background" Value="{DynamicResource WarningBrush}" /></Style>
+    <Style Selector="Border.statusDot.error"><Setter Property="Background" Value="{DynamicResource DangerBrush}" /></Style>
     <Style Selector="Button.navButton">
       <Setter Property="MinHeight" Value="41" />
       <Setter Property="Padding" Value="12,9" />

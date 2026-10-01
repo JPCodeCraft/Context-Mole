@@ -24,6 +24,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\tools\BenchmarkSupport\ContextMole.BenchmarkSupport.csproj" />
     <ProjectReference Include="..\..\src\App.UI\ContextMole.App.UI.csproj" />
     <ProjectReference Include="..\..\src\Broker\ContextMole.Broker.csproj" />
     <ProjectReference Include="..\..\src\Broker.Protocol\ContextMole.Broker.Protocol.csproj" />

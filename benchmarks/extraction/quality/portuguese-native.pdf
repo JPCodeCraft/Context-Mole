@@ -1,0 +1,32 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Count 1 /Kids [4 0 R] >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 700] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
+endobj
+5 0 obj
+<< /Length 316 >>
+stream
+BT /F1 12 Tf 40 600 Td (A aprova\347\343o em S\343o Paulo exige aten\347\343o ao prazo e \340 cau\347\343o do contrato.) Tj 0 -24 Td (O fornecedor mant\351m os registros de entrega e a documenta\347\343o inter-) Tj 0 -24 Td (nacional assinada. A informa\347\343o permanece leg\355vel ap\363s a extra\347\343o.) Tj ET
+endstream
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000212 00000 n 
+0000000338 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+705
+%%EOF
