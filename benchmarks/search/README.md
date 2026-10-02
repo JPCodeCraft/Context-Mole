@@ -10,10 +10,9 @@ assets and does not change application settings or download models.
 ```powershell
 dotnet run --file tools/SearchQualityBenchmark.cs -- --output artifacts/search-quality-lexical.json
 dotnet run --file tools/SearchQualityBenchmark.cs -- --semantic --model Granite97M --output artifacts/search-quality-semantic.json
-dotnet run --file tools/SearchQualityBenchmark.cs -- --semantic --model Granite311M --output artifacts/search-quality-311m.json
 ```
 
-The default run requires no model. Semantic runs require the selected pinned
+The default run requires no model. Current semantic runs support only corrected Granite 97M and require its pinned
 Granite assets in the normal application data directory, or an existing directory
 selected with `CONTEXTMOLE_DATA_DIR`. The corpus has 10 documents, 13 logical
 sections and 13 labeled queries. It covers distributed section requirements,
@@ -40,7 +39,7 @@ Semantic runs compare three explicit representations on identical chunk partitio
   title/heading context, and semantic-ineligible boilerplate.
 
 Both complete raw and prepared representations must fit the production 512-token
-limit including BOS. The runner splits a long fixture at shared model-aware source
+limit including model-specific special tokens. The runner splits a long fixture at shared model-aware source
 boundaries, retains complete section text and passage offsets, and rejects inputs
 that exceed the limit. This isolates representation changes from silent truncation.
 The raw representation is a constructed baseline, not a replay of an earlier build.
@@ -70,7 +69,7 @@ Recall@5 was 1 in every row. Bytes are mean serialized UTF-8 response sizes.
 
 The model-free lexical run verified 17 preview anchors. Semantic runs verified
 110 raw, 111 body/context and 107 prepared anchors; every lexical/hybrid profile
-verified 17. All complete embedding representations fit 512 tokens including BOS.
+verified 17. These historical representations fit 512 tokens under the then-implemented BOS-only accounting.
 
 All 13 lexical and hybrid queries recovered the labeled first result, with
 Recall@5, MRR@5 and nDCG@5 equal to 1. Semantic Recall@5 remained 1, while changing
@@ -86,3 +85,36 @@ Neither competing section has removable signature/disclaimer content. The
 context from cleanup and reproduced the same regression. Therefore these results do not support a claim that
 preparation universally improves semantic relevance. Continue to track the
 per-query regression before changing context or section vector aggregation.
+
+
+## Large shared-section regression
+
+`tools/SearchEvaluationStressBenchmark.cs` measures a deliberately pathological
+clause-evaluation workload: 200 candidates share one 280,015-character section,
+with one required, one optional and one exclusion clause. Each of three trials
+creates a fresh request-local matcher and includes its first scan. The result
+reports elapsed time and cumulative thread-local managed allocations, not peak
+resident memory or complete search latency. Run the same file against each source
+revision, with no competing inference workload, for a comparable measurement.
+
+```sh
+dotnet run --file tools/SearchEvaluationStressBenchmark.cs -- --output artifacts/search-section-stress.json
+```
+
+The harness discovers the optional prepared matcher by reflection, so copying the
+same file into an older checkout tests the original public evaluator without
+modifying that checkout's product code. Reflection-call overhead remains in the
+prepared-matcher measurement. A separate deterministic differential audit and
+`SearchEvaluationRegressionTests` check exact clause decisions, metadata matches
+and literal source spans; this stress workload alone does not establish relevance.
+
+### Historical input format correction
+
+The saved Windows 2026-10-01 and original frozen-v3 Linux 97M measurements used the
+legacy BOS-only input implementation. The pinned 97M tokenizer requires
+BOS plus text plus EOS; that suffix was omitted. Those measured historical
+results remain unchanged and must not be described as publisher-faithful 97M
+results. Current corrected runs use the sole supported 97M tokenizer template,
+BOS/text/EOS. Completed 311M comparisons are historical records only; current runners cannot select or load 311M. Complete token counting also changes the bounded
+metadata budget slightly, so new comparisons measure the corrected token/input
+pipeline rather than a pure EOS-only causal ablation.

@@ -2,6 +2,7 @@ using System.Diagnostics;
 
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Input.Platform;
 using Avalonia.Interactivity;
 
 using ContextMole.App.UI.ViewModels;
@@ -14,8 +15,8 @@ namespace ContextMole.App.UI.Views;
 
 public partial class SettingsView : UserControl
 {
+    private const string ReleaseNotesUrl = "https://github.com/JPCodeCraft/Context-Mole/releases";
     private const string ManualSetupUrl = "https://github.com/JPCodeCraft/Context-Mole#manual-mcp-setup";
-    private bool _changingEmbeddingModel;
 
     public SettingsView()
     {
@@ -73,57 +74,29 @@ public partial class SettingsView : UserControl
         await RunUiActionAsync(() => ViewModel.SetCpuUsageProfileAsync(profile));
     }
 
+    private void CancelOcrSetup(object? sender, RoutedEventArgs args) => ViewModel.CancelOcrSetup();
+
+    private async void CheckApplicationUpdates(object? sender, RoutedEventArgs args) =>
+        await RunUiActionAsync(ViewModel.CheckApplicationUpdatesAsync);
+
+    private async void CopyConfigurationPath(object? sender, RoutedEventArgs args)
+    {
+        if (sender is not Button { CommandParameter: AiConnectionItemViewModel connection } ||
+            TopLevel.GetTopLevel(this)?.Clipboard is not { } clipboard) return;
+        await RunUiActionAsync(() => clipboard.SetTextAsync(connection.ConfigPath));
+    }
+
+    private async void OpenReleaseNotes(object? sender, RoutedEventArgs args)
+    {
+        await RunUiActionAsync(() =>
+        {
+            Process.Start(new ProcessStartInfo(ReleaseNotesUrl) { UseShellExecute = true })?.Dispose();
+            return Task.CompletedTask;
+        });
+    }
+
     private async void RetryOcrSetup(object? sender, RoutedEventArgs args) =>
         await RunUiActionAsync(() => ViewModel.RetryOcrSetupAsync());
-
-    private async void EmbeddingModelChanged(object? sender, SelectionChangedEventArgs args)
-    {
-        if (_changingEmbeddingModel ||
-            sender is not ComboBox { SelectedItem: GraniteEmbeddingModelDefinition model } comboBox ||
-            model.Choice == ViewModel.SelectedEmbeddingModel.Choice) return;
-
-        _changingEmbeddingModel = true;
-        var previous = ViewModel.SelectedEmbeddingModel;
-        var installer = Program.Services.GetRequiredService<GraniteModelInstaller>();
-        try
-        {
-            var confirmed = await ConfirmWindow.AskAsync(
-                Owner,
-                "Switch embedding model?",
-                $"Switching from {previous.DisplayName} to {model.DisplayName} rebuilds meaning-based search for active projects. This can take a while for large projects.\n\n" +
-                "Compatible files become available as the rebuild progresses. Keyword search stays available. Paused projects update after you resume them.",
-                "Switch model");
-            if (!confirmed)
-            {
-                comboBox.SelectedItem = previous;
-                return;
-            }
-
-            if (!installer.IsModelInstalled(model.Choice))
-            {
-                var installed = await new ModelSetupWindow(installer, model).ShowDialog<bool>(Owner);
-                if (!installed)
-                {
-                    comboBox.SelectedItem = previous;
-                    return;
-                }
-            }
-
-            await ViewModel.SetEmbeddingModelAsync(model);
-        }
-        catch (Exception exception)
-        {
-            comboBox.SelectedItem = ViewModel.SelectedEmbeddingModel;
-            var message = installer.IsModelInstalled(model.Choice)
-                ? exception.Message
-                : $"{exception.Message}\n\nSelect {model.DisplayName} again to verify and repair its local files.";
-            await ConfirmWindow.ShowErrorAsync(Owner, message);
-        }
-        finally
-        {
-            _changingEmbeddingModel = false;
-        }
-    }
 
     private async void StartWithWindowsChanged(object? sender, RoutedEventArgs args)
     {
@@ -141,24 +114,20 @@ public partial class SettingsView : UserControl
 
     private async void SetupSemanticSearch(object? sender, RoutedEventArgs args)
     {
+        if (!ViewModel.CanSetUpSemanticSearch) return;
         var installer = Program.Services.GetRequiredService<GraniteModelInstaller>();
         if (!installer.IsSupported) return;
         var model = ViewModel.SelectedEmbeddingModel;
         try
         {
-            if (!installer.IsModelInstalled(model.Choice) || ViewModel.IsSemanticSearchUnavailable)
-            {
-                var installed = await new ModelSetupWindow(installer, model).ShowDialog<bool>(Owner);
-                if (!installed) return;
-            }
-
-            await ViewModel.SetEmbeddingModelAsync(model);
+            await ViewModel.SetUpSemanticSearchAsync(selected =>
+                new ModelSetupWindow(installer, selected).ShowDialog<bool>(Owner));
         }
         catch (Exception exception)
         {
             var message = installer.IsModelInstalled(model.Choice)
                 ? exception.Message
-                : $"{exception.Message}\n\nUse Download selected model again to verify and repair its local files.";
+                : $"{exception.Message}\n\nUse the selected model's setup button again to verify and repair its local files.";
             await ConfirmWindow.ShowErrorAsync(Owner, message);
         }
     }

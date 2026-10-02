@@ -68,11 +68,10 @@ public sealed class GraniteModelInstaller : IDisposable
 
     public bool IsModelInstalled(EmbeddingModelChoice choice)
     {
+        if (!GraniteEmbeddingModels.IsSupported(choice)) return false;
         var model = GraniteEmbeddingModels.Get(choice);
         var directory = GraniteModelInstallation.GetDirectory(_paths, model);
-        var useQuantized = System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture ==
-            System.Runtime.InteropServices.Architecture.X64 && Avx2.IsSupported &&
-            !File.Exists(Path.Combine(directory, "quantization-disabled"));
+        var useQuantized = GraniteEmbeddingProfiles.UseQuantized(directory, model);
         var modelPath = Path.Combine(directory, useQuantized ? "model_quint8_avx2.onnx" : "model.onnx");
         return File.Exists(Path.Combine(directory, "tokenizer.json")) && File.Exists(modelPath) &&
                GraniteModelInstallation.IsComplete(_paths, model) &&
@@ -81,13 +80,20 @@ public sealed class GraniteModelInstaller : IDisposable
 
     public bool HasModelAssets(EmbeddingModelChoice choice)
     {
+        if (!GraniteEmbeddingModels.IsSupported(choice)) return false;
         var model = GraniteEmbeddingModels.Get(choice);
         var directory = GraniteModelInstallation.GetDirectory(_paths, model);
-        var useQuantized = System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture ==
-            System.Runtime.InteropServices.Architecture.X64 && Avx2.IsSupported &&
-            !File.Exists(Path.Combine(directory, "quantization-disabled"));
+        var useQuantized = GraniteEmbeddingProfiles.UseQuantized(directory, model);
         var modelPath = Path.Combine(directory, useQuantized ? "model_quint8_avx2.onnx" : "model.onnx");
         return File.Exists(Path.Combine(directory, "tokenizer.json")) && File.Exists(modelPath);
+    }
+
+    public bool NeedsTokenizationValidation(EmbeddingModelChoice choice)
+    {
+        if (!GraniteEmbeddingModels.IsSupported(choice)) return false;
+        var model = GraniteEmbeddingModels.Get(choice);
+        return GraniteEmbeddingProfiles.NeedsTokenizationValidation(
+            GraniteModelInstallation.GetDirectory(_paths, model), model);
     }
 
     public void MarkModelForRepair(EmbeddingModelChoice choice, string reason) =>
@@ -106,6 +112,8 @@ public sealed class GraniteModelInstaller : IDisposable
         CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+        if (!GraniteEmbeddingModels.IsSupported(choice))
+            throw new ContextMoleException("model_not_supported", "Only Granite Multilingual 97M can be installed.");
         var model = GraniteEmbeddingModels.Get(choice);
         if (model.RequiresGemmaTerms && !gemmaTermsAccepted && !HasRecordedTermsAcceptance)
             throw new ContextMoleException("terms_not_accepted", "The Gemma terms must be accepted before installing this tokenizer.");
@@ -132,8 +140,9 @@ public sealed class GraniteModelInstaller : IDisposable
             GraniteValidationResult? validation = null;
             if (useQuantized)
             {
-                progress?.Report(new ModelInstallProgress("validating", "Comparing optimized and full-precision models"));
+                progress?.Report(new ModelInstallProgress("waiting_cpu", "Waiting for processor capacity"));
                 using var cpuCapacity = await _cpuBudget.AcquireFullCapacityAsync(operationToken).ConfigureAwait(false);
+                progress?.Report(new ModelInstallProgress("validating", "Comparing optimized and full-precision models"));
                 validation = await Task.Run(
                     () => GraniteEmbeddingDiagnostics.ValidateProfiles(_paths, model, cpuCapacity.ThreadCount, operationToken),
                     operationToken).ConfigureAwait(false);
@@ -269,8 +278,8 @@ public sealed class GraniteModelInstaller : IDisposable
         }
 
         await WriteAtomicTextAsync(Path.Combine(_paths.AssetsDirectory, "THIRD-PARTY-NOTICES.txt"),
-            "IBM Granite Embedding models: Apache License 2.0.\n" +
-            $"The Granite 311M tokenizer is subject to the Gemma Terms of Use: {GemmaTermsUrl}\n",
+            "IBM Granite Embedding 97M: Apache License 2.0.\n" +
+            $"Any retained legacy Granite 311M tokenizer files remain subject to the Gemma Terms of Use: {GemmaTermsUrl}\n",
             cancellationToken).ConfigureAwait(false);
         await WriteAtomicTextAsync(Path.Combine(modelDirectory, GraniteModelInstallation.CompletionMarker),
             model.Revision, cancellationToken).ConfigureAwait(false);
@@ -288,7 +297,8 @@ public sealed class GraniteModelInstaller : IDisposable
               "quantized_milliseconds_per_vector": {{validation.QuantizedMillisecondsPerVector.ToString("R", CultureInfo.InvariantCulture)}},
               "fp32_milliseconds_per_vector": {{validation.Fp32MillisecondsPerVector.ToString("R", CultureInfo.InvariantCulture)}},
               "peak_working_set_bytes": {{validation.PeakWorkingSetBytes}},
-              "decision": {{JsonSerializer.Serialize(validation.Decision)}}
+              "decision": {{JsonSerializer.Serialize(validation.Decision)}},
+              "tokenization_version": {{JsonSerializer.Serialize(validation.TokenizationVersion)}}
             }
             """, cancellationToken);
 

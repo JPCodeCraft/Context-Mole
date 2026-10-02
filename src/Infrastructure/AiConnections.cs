@@ -10,7 +10,8 @@ public enum AiConnectionState
     Conflict,
     ServerUnavailable,
     Broken,
-    ManualSetup
+    ManualSetup,
+    UnsupportedPlatform
 }
 
 public sealed record AiClientDefinition(
@@ -190,7 +191,7 @@ public sealed class AiConnectionsService
         }
         catch (PlatformNotSupportedException exception)
         {
-            return new InvalidAiClientConnection(client, exception.Message, AiConnectionState.ServerUnavailable);
+            return new InvalidAiClientConnection(client, exception.Message, AiConnectionState.UnsupportedPlatform);
         }
         catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
         {

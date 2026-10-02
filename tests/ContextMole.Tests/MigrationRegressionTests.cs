@@ -14,7 +14,7 @@ using Microsoft.Extensions.Logging;
 namespace ContextMole.Tests;
 
 [Collection(nameof(SqliteIntegrationCollection))]
-public sealed class MigrationRegressionTests
+public sealed partial class MigrationRegressionTests
 {
     private static CancellationToken Token => TestContext.Current.CancellationToken;
 
@@ -36,8 +36,8 @@ public sealed class MigrationRegressionTests
             Assert.True(await new SqliteSearchStore(paths).IsInitializedAsync(Token));
             await writer.StopAsync(Token);
         }
-        Assert.Equal(8L, await ScalarAsync(paths, "SELECT MAX(version) FROM schema_migrations;"));
-        Assert.Equal(Enumerable.Range(version + 1, 8 - version),
+        Assert.Equal(9L, await ScalarAsync(paths, "SELECT MAX(version) FROM schema_migrations;"));
+        Assert.Equal(Enumerable.Range(version + 1, 9 - version),
             log.Entries.Where(entry => entry.Message.StartsWith("Applying database migration", StringComparison.Ordinal))
                 .Select(entry => Convert.ToInt32(entry.Properties["MigrationVersion"])));
         Assert.Contains(log.Entries, entry => entry.Properties.GetValueOrDefault("DatabasePath") as string == paths.DatabasePath);
@@ -53,7 +53,7 @@ public sealed class MigrationRegressionTests
     }
 
     [Fact]
-    public async Task EvidenceMigrationRequeuesDerivedRevisionsAndPreservesPausedProjectsAndAssets()
+    public async Task EvidenceMigrationRetainsDerivedRevisionsAndPreservesPausedProjectsAndAssets()
     {
         using var paths = new MigrationTestPaths();
         await CreateLegacyAsync(paths, 7);
@@ -105,13 +105,14 @@ public sealed class MigrationRegressionTests
             Assert.Equal(12, summary.SearchGeneration);
             Assert.Equal(paths.SourceDirectory, Assert.Single(summary.Folders).Path);
             Assert.Equal(1, summary.PendingCount);
-            Assert.Equal(0, summary.IndexedCount);
+            Assert.Equal(1, summary.IndexedCount);
             Assert.Null(await writer.LeaseNextJobAsync(TimeSpan.FromMinutes(1), Token));
             await writer.StopAsync(Token);
         }
-        Assert.Equal(0L, await ScalarAsync(paths, "SELECT COUNT(*) FROM document_revisions;"));
-        Assert.Equal(0L, await ScalarAsync(paths, "SELECT COUNT(*) FROM passages_fts;"));
-        Assert.Equal(0L, await ScalarAsync(paths, "SELECT COUNT(*) FROM embeddings;"));
+        Assert.Equal(1L, await ScalarAsync(paths, "SELECT COUNT(*) FROM document_revisions;"));
+        Assert.Equal(1L, await ScalarAsync(paths, "SELECT COUNT(*) FROM passages_fts;"));
+        Assert.Equal(1L, await ScalarAsync(paths, "SELECT COUNT(*) FROM sections_fts;"));
+        Assert.Equal(1L, await ScalarAsync(paths, "SELECT COUNT(*) FROM embeddings;"));
         Assert.Equal(6L, await ScalarAsync(paths, "SELECT expected_epoch FROM index_jobs WHERE state='queued';"));
         Assert.Equal("original source", await File.ReadAllTextAsync(source, Token));
         Assert.Equal(new byte[] { 1, 2, 3, 4 }, await File.ReadAllBytesAsync(model, Token));
@@ -171,13 +172,13 @@ public sealed class MigrationRegressionTests
             Assert.Equal(paths.SourceDirectory, Assert.Single(summary.Folders).Path);
             await retry.StopAsync(Token);
         }
-        Assert.Equal(8L, await ScalarAsync(paths, "SELECT MAX(version) FROM schema_migrations;"));
+        Assert.Equal(9L, await ScalarAsync(paths, "SELECT MAX(version) FROM schema_migrations;"));
         Assert.Equal("source remains unchanged", await File.ReadAllTextAsync(source, Token));
-        Assert.Equal(2, retryLog.Entries.Count(entry => entry.Message.StartsWith("Applying database migration", StringComparison.Ordinal)));
+        Assert.Equal(3, retryLog.Entries.Count(entry => entry.Message.StartsWith("Applying database migration", StringComparison.Ordinal)));
     }
 
     [Theory]
-    [InlineData("INSERT INTO schema_migrations VALUES(9,'future');", "version 9")]
+    [InlineData("INSERT INTO schema_migrations VALUES(10,'future');", "version 10")]
     [InlineData("DELETE FROM schema_migrations WHERE version=3;", "gaps")]
     [InlineData("DROP TABLE schema_migrations;", "missing")]
     [InlineData("DROP TABLE schema_migrations; CREATE TABLE schema_migrations(wrong TEXT);", "malformed")]
@@ -210,7 +211,7 @@ public sealed class MigrationRegressionTests
         var old = await Assert.ThrowsAsync<ContextMoleException>(() => store.IsInitializedAsync(Token));
         Assert.Equal("schema_incompatible", old.Code);
         Assert.Contains("version 5", old.Message);
-        Assert.Contains("expected version 8", old.Message);
+        Assert.Contains("expected version 9", old.Message);
         var inventory = await Assert.ThrowsAsync<ContextMoleException>(() =>
             store.ListDocumentsAsync(new DocumentListRequest(Guid.NewGuid()), Token));
         Assert.Equal(old.Code, inventory.Code);
@@ -265,7 +266,7 @@ public sealed class MigrationRegressionTests
         if (state == "old")
         {
             Assert.Contains("version 5", error.Message);
-            Assert.Contains("expected version 8", error.Message);
+            Assert.Contains("expected version 9", error.Message);
         }
         if (state == "corrupt") Assert.IsType<SqliteException>(error.InnerException);
     }
@@ -367,6 +368,8 @@ public sealed class MigrationRegressionTests
             Pooling = false
         }.ToString());
         await connection.OpenAsync(Token);
+        connection.CreateFunction<string?, string>("lexical", value => LexicalText.Canonicalize(value));
+        connection.CreateFunction<string, string>("name_key", TextNormalization.NameKey);
         return connection;
     }
 

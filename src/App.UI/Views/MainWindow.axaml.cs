@@ -2,6 +2,7 @@ using Avalonia;
 using Avalonia.Animation;
 using Avalonia.Animation.Easings;
 using Avalonia.Controls;
+using Avalonia.Input.Platform;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Media;
@@ -36,6 +37,9 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        // Handle reorder shortcuts before ListBox consumes arrow keys for focus navigation.
+        ProjectList.AddHandler(Avalonia.Input.InputElement.KeyDownEvent, ProjectListKeyDown,
+            Avalonia.Interactivity.RoutingStrategies.Tunnel, handledEventsToo: true);
         Activated += (_, _) =>
         {
             if (DataContext is MainViewModel viewModel) viewModel.RefreshOnWindowFocus();
@@ -60,6 +64,56 @@ public partial class MainWindow : Window
     private void ShowProjects(object? sender, RoutedEventArgs args) => ViewModel.ShowProjects();
 
     private void ShowSettings(object? sender, RoutedEventArgs args) => ViewModel.ShowSettings();
+
+    private void ShowAiConnections(object? sender, RoutedEventArgs args) => ViewModel.ShowAiConnections();
+
+    private void MoveProjectUp(object? sender, RoutedEventArgs args) => MoveSelectedProject(-1);
+    private void MoveProjectDown(object? sender, RoutedEventArgs args) => MoveSelectedProject(1);
+
+    private void MoveSelectedProject(int direction)
+    {
+        if (ViewModel.SelectedProject is not { } project || !ViewModel.MoveSelectedProject(direction)) return;
+        ProjectList.SelectedItem = project;
+        ProjectList.ScrollIntoView(project);
+        // A moved ListBox container can be recycled, which otherwise sends focus to navigation.
+        Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+        {
+            if (ViewModel.SelectedProject is { } selected && selected.Id != project.Id) return;
+            ViewModel.SelectedProject = project;
+            ProjectList.SelectedItem = project;
+            ProjectList.ScrollIntoView(project);
+            if (ProjectList.ContainerFromItem(project) is Control item) item.Focus();
+            else ProjectList.Focus();
+        }, Avalonia.Threading.DispatcherPriority.Loaded);
+    }
+
+    private void ProjectListKeyDown(object? sender, KeyEventArgs args)
+    {
+        if (args.KeyModifiers != (KeyModifiers.Control | KeyModifiers.Shift) || args.Key is not (Key.Up or Key.Down)) return;
+        MoveSelectedProject(args.Key == Key.Up ? -1 : 1);
+        args.Handled = true;
+    }
+
+    private async void RetryProjectStatus(object? sender, RoutedEventArgs args)
+    {
+        if (sender is Button button) button.IsEnabled = false;
+        try { await ViewModel.RefreshAsync(); }
+        catch { /* The persistent stale-data card already carries the exact error and recovery action. */ }
+        finally { if (sender is Button retry) retry.IsEnabled = true; }
+    }
+
+    private async void CopyStarterPrompt(object? sender, RoutedEventArgs args)
+    {
+        if (ViewModel.SelectedProject is not { } project || Clipboard is not { } clipboard) return;
+        try
+        {
+            await clipboard.SetTextAsync($"List my Context Mole projects, then search the project named {project.Name} for [your topic]. Return passages with their source filenames.");
+        }
+        catch (Exception exception)
+        {
+            await ConfirmWindow.ShowErrorAsync(this, $"Could not copy the starter question: {exception.Message}");
+        }
+    }
 
     private void DismissNotification(object? sender, RoutedEventArgs args) => ViewModel.DismissNotification();
 

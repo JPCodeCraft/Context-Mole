@@ -20,12 +20,20 @@ namespace ContextMole.App.UI;
 
 internal static class Program
 {
+    internal static string StartupRecoveryPath => Path.Combine(AppContext.BaseDirectory, "docs", "LEGACY-INDEX-UPGRADES.md");
     private static IHost? _host;
     private static SingleInstanceLock? _instanceLock;
+    private static string[] _startupArguments = [];
+    private static readonly CancellationTokenSource StartupCancellation = new();
+    private static Task? _startupTask;
+    public static event Action<string>? StartupProgressChanged;
 
     public static IServiceProvider Services => _host?.Services ?? throw new InvalidOperationException("The application host has not started.");
     public static bool LaunchInBackground { get; private set; }
     public static string? StartupFailureMessage { get; private set; }
+    public static string? StartupDatabasePath { get; private set; }
+    public static string? StartupLogsDirectory { get; private set; }
+    public static RetiredModelCacheCleanupResult RetiredModelCleanupResult { get; private set; } = RetiredModelCacheCleanupResult.Empty;
 
     [STAThread]
     public static void Main(string[] args)
@@ -34,32 +42,9 @@ internal static class Program
         LaunchInBackground = args.Any(argument =>
             string.Equals(argument, WindowsStartupRegistration.BackgroundArgument, StringComparison.OrdinalIgnoreCase));
 
-        IAppPaths? paths = null;
+        _startupArguments = args;
         try
         {
-            try
-            {
-                paths = new AppPaths();
-                StartHost(args, paths);
-            }
-            catch (OperationCanceledException)
-            {
-                Log.Information("Application startup canceled");
-                Environment.ExitCode = 1;
-                return;
-            }
-            catch (Exception exception)
-            {
-                Console.Error.WriteLine($"Context Mole could not start: {exception.Message}");
-                Log.Fatal(exception, "Application startup failed at {DatabasePath}; logs {LogsDirectory}",
-                    paths?.DatabasePath, paths?.LogsDirectory);
-                StartupFailureMessage = $"Context Mole could not initialize.\n\n{exception.Message}\n\n" +
-                    $"Database: {paths?.DatabasePath ?? "Unavailable"}\n" +
-                    $"Logs: {paths?.LogsDirectory ?? "Logging could not be initialized"}\n\n" +
-                    "Close the app and retry after resolving the error. The database has not been recreated.";
-                Environment.ExitCode = 1;
-                ShutdownHostAsync(closeLog: false).GetAwaiter().GetResult();
-            }
             BuildAvaloniaApp().StartWithClassicDesktopLifetime(args, Avalonia.Controls.ShutdownMode.OnExplicitShutdown);
         }
         catch (Exception exception)
@@ -70,12 +55,54 @@ internal static class Program
         }
         finally
         {
+            CancelStartup();
+            try { _startupTask?.GetAwaiter().GetResult(); }
+            catch (OperationCanceledException) { }
             ShutdownHostAsync().GetAwaiter().GetResult();
         }
     }
 
-    private static void StartHost(string[] args, IAppPaths paths)
+    public static void CancelStartup() => StartupCancellation.Cancel();
+
+    public static Task InitializeHostAsync() => _startupTask ??= Task.Run(async () =>
     {
+        IAppPaths? paths = null;
+        try
+        {
+            StartupProgressChanged?.Invoke("Opening your local data directory…");
+            StartupCancellation.Token.ThrowIfCancellationRequested();
+            paths = new AppPaths();
+            StartupDatabasePath = paths.DatabasePath;
+            StartupLogsDirectory = paths.LogsDirectory;
+            await StartHostAsync(_startupArguments, paths, StartupCancellation.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (StartupCancellation.IsCancellationRequested)
+        {
+            Log.Information("Application startup canceled");
+            throw;
+        }
+        catch (Exception exception)
+        {
+            Console.Error.WriteLine($"Context Mole could not start: {exception.Message}");
+            Log.Fatal(exception, "Application startup failed at {DatabasePath}; logs {LogsDirectory}",
+                paths?.DatabasePath, paths?.LogsDirectory);
+            StartupFailureMessage = FormatStartupFailure(exception.Message, paths?.DatabasePath, paths?.LogsDirectory);
+            Environment.ExitCode = 1;
+            await ShutdownHostAsync(closeLog: false).ConfigureAwait(false);
+        }
+    });
+
+    internal static string FormatStartupFailure(string cause, string? databasePath, string? logsDirectory) =>
+        $"Context Mole could not initialize.\n\n{cause}\n\n" +
+        $"Database: {databasePath ?? "Unavailable"}\n" +
+        $"Logs: {logsDirectory ?? "Logging could not be initialized"}\n\n" +
+        "Keep this database; do not delete it or reinstall to recreate it. Existing indexed evidence has not been replaced. " +
+        "Close Context Mole before making a backup, and keep any database WAL/SHM companion files. " +
+        "Review the log details to resolve the error, then retry. Use Read recovery guide for the bundled upgrade and backup instructions.";
+
+    private static async Task StartHostAsync(string[] args, IAppPaths paths, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
         _instanceLock = SingleInstanceLock.Acquire(paths);
         var builder = Host.CreateApplicationBuilder(args);
         builder.Logging.ClearProviders();
@@ -108,8 +135,16 @@ internal static class Program
         builder.Services.AddSingleton<ProjectOrderService>();
         builder.Services.AddSingleton<ViewModels.MainViewModel>();
         _host = builder.Build();
-        _host.StartAsync().GetAwaiter().GetResult();
+        // Only the native UI upgrades its app-managed model cache. Broker/settings/tool
+        // metadata readers do not clean caches, including historical benchmark assets.
+        StartupProgressChanged?.Invoke("Checking the app-managed model cache…");
+        cancellationToken.ThrowIfCancellationRequested();
+        RetiredModelCleanupResult = RunRetiredModelCleanup(_host.Services.GetRequiredService<RetiredModelCacheCleanup>());
+        StartupProgressChanged?.Invoke("Opening the local index and applying any required upgrades. Existing indexed evidence is being preserved…");
+        await _host.StartAsync(cancellationToken).ConfigureAwait(false);
     }
+
+    internal static RetiredModelCacheCleanupResult RunRetiredModelCleanup(RetiredModelCacheCleanup cleanup) => cleanup.TryCleanup();
 
     public static async Task ShutdownHostAsync(bool closeLog = true)
     {

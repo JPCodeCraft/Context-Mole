@@ -53,6 +53,8 @@ public sealed class IndexingActivityTracker
     private readonly Dictionary<Guid, ActiveActivity> _active = [];
     private readonly Dictionary<Guid, CompletedTiming> _completedByProject = [];
     private readonly HashSet<Guid> _discovering = [];
+    private readonly Dictionary<Guid, HashSet<Guid>> _projectFolders = [];
+    private readonly HashSet<(Guid ProjectId, Guid FolderId)> _initialScans = [];
     private readonly Dictionary<(Guid ProjectId, Guid FolderId), ProjectFolderIssue> _folderIssues = [];
 
     public IndexingActivityTracker(TimeProvider? timeProvider = null) => _time = timeProvider ?? TimeProvider.System;
@@ -89,6 +91,37 @@ public sealed class IndexingActivityTracker
     public bool IsDiscovering(Guid projectId)
     {
         lock (_gate) return _discovering.Contains(projectId);
+    }
+
+    /// <summary>
+    /// True once every currently configured folder has had an initial scan attempt. An unavailable
+    /// folder settles with a folder issue, rather than implying its retained evidence was verified.
+    /// </summary>
+    public bool IsInitialScanComplete(Guid projectId, IReadOnlyList<ProjectFolderInfo>? currentFolders = null)
+    {
+        lock (_gate) return _projectFolders.TryGetValue(projectId, out var folders) &&
+            (currentFolders is null ? folders : currentFolders.Select(folder => folder.Id))
+                .All(folder => _initialScans.Contains((projectId, folder)));
+    }
+
+    internal void RetainProjects(IReadOnlyList<ProjectSummary> projects)
+    {
+        lock (_gate)
+        {
+            var projectIds = projects.Select(project => project.Id).ToHashSet();
+            foreach (var removed in _projectFolders.Keys.Where(id => !projectIds.Contains(id)).ToArray())
+                _projectFolders.Remove(removed);
+            foreach (var project in projects)
+                _projectFolders[project.Id] = project.Folders.Select(folder => folder.Id).ToHashSet();
+            _initialScans.RemoveWhere(item => !_projectFolders.TryGetValue(item.ProjectId, out var folders) ||
+                !folders.Contains(item.FolderId));
+            _discovering.RemoveWhere(id => !projectIds.Contains(id));
+        }
+    }
+
+    internal void CompleteInitialScan(Guid projectId, Guid folderId)
+    {
+        lock (_gate) _initialScans.Add((projectId, folderId));
     }
 
     internal void SetDiscovering(Guid projectId, bool discovering)

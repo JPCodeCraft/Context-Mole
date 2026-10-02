@@ -164,7 +164,7 @@ public sealed class ProjectStateAndRecoveryTests
     }
 
     [Fact]
-    public async Task ANewAttemptClearsItsOldFailureAndFingerprintVerificationSkipsExtraction()
+    public async Task ANewAttemptRetainsItsOldFailureUntilVerifiedUnchangedFingerprintSkipsExtraction()
     {
         var token = TestContext.Current.CancellationToken;
         await using var db = await StorageTestDatabase.CreateAsync(token);
@@ -181,7 +181,7 @@ public sealed class ProjectStateAndRecoveryTests
         Assert.Single(await db.Store.ListProjectErrorsAsync(project, 25, token));
         await db.Writer.ObserveFileAsync(observation, token);
         check = Assert.IsType<IndexJobLease>(await db.Writer.LeaseNextJobAsync(TimeSpan.FromMinutes(1), token));
-        Assert.Empty(await db.Store.ListProjectErrorsAsync(project, 25, token));
+        Assert.Single(await db.Store.ListProjectErrorsAsync(project, 25, token));
         var info = await db.Store.GetDocumentInfoAsync(project, indexed.DocumentId, null, token);
         var begin = await db.Writer.BeginRevisionAsync(check, info!.Sha256!, file.Length, modified, token);
         Assert.False(begin.ShouldExtract);

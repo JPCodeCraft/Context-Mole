@@ -469,7 +469,8 @@
           "Microsoft.Extensions.Hosting.Abstractions": "[10.0.11, )",
           "Microsoft.ML.OnnxRuntime": "[1.29.0, )",
           "SkiaSharp": "[4.150.1, )",
-          "Tokenizers.HuggingFace": "[3.23.1, )"
+          "Tokenizers.HuggingFace": "[3.23.1, )",
+          "Tomlyn": "[2.10.1, )"
         }
       },
       "contextmole.search": {
@@ -629,6 +630,12 @@
         "dependencies": {
           "Google.Protobuf": "3.34.1"
         }
+      },
+      "Tomlyn": {
+        "type": "CentralTransitive",
+        "requested": "[2.10.1, )",
+        "resolved": "2.10.1",
+        "contentHash": "ykjOY3IpYmC4SpPcAZRTl/w2jTmhPMDydHq8xcV7tTBAQ22nKBsOkPqauIrZlMjHm03cmKfV23UOPscKp+J4Og=="
       }
     },
     "net10.0/linux-x64": {

@@ -92,7 +92,7 @@ public sealed class StorageTests
     }
 
     [Fact]
-    public async Task VersionSixDerivedIndexIsDiscardedAndRebuiltWithoutTouchingSources()
+    public async Task VersionSixEvidenceIsRetainedUntilRebuiltWithoutTouchingSources()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         using var paths = new StorageTestPaths();
@@ -177,26 +177,27 @@ public sealed class StorageTests
         {
             var store = new SqliteSearchStore(paths);
             var query = StructuredSearchQuery.BuildFtsQuery([new SearchClause("legacy", "legacy")], 1);
-            Assert.Empty((await store.KeywordSearchAsync(projectId, query, 10, null,
-                cancellationToken)).Candidates);
+            Assert.Equal(passageId, Assert.Single((await store.KeywordSearchAsync(projectId, query, 10, null,
+                cancellationToken)).Candidates).PassageId);
             Assert.True(File.Exists(source));
             Assert.Equal("legacy evidence remains", await File.ReadAllTextAsync(source, cancellationToken));
             var project = Assert.Single(await store.ListProjectsAsync(cancellationToken));
             Assert.Equal(1, project.PendingCount);
-            Assert.Equal(0, (await store.LoadVectorSnapshotMetadataAsync(projectId, cancellationToken)).EntryCount);
+            Assert.Equal(0, (await store.LoadVectorSnapshotMetadataAsync(projectId,
+                StorageTestDatabase.TestEmbeddingPolicy, cancellationToken)).EntryCount);
 
             await using var verify = new SqliteConnection($"Data Source={paths.DatabasePath};Mode=ReadOnly");
             await verify.OpenAsync(cancellationToken);
             await using var schema = verify.CreateCommand();
             schema.CommandText = "SELECT MAX(version) FROM schema_migrations;";
-            Assert.Equal(8L, Convert.ToInt64(await schema.ExecuteScalarAsync(cancellationToken)));
+            Assert.Equal(9L, Convert.ToInt64(await schema.ExecuteScalarAsync(cancellationToken)));
             await using var derivedRows = verify.CreateCommand();
             derivedRows.CommandText = "SELECT (SELECT COUNT(*) FROM document_revisions),(SELECT COUNT(*) FROM passages),(SELECT COUNT(*) FROM embeddings);";
             await using var derivedReader = await derivedRows.ExecuteReaderAsync(cancellationToken);
             Assert.True(await derivedReader.ReadAsync(cancellationToken));
-            Assert.Equal(0, derivedReader.GetInt32(0));
-            Assert.Equal(0, derivedReader.GetInt32(1));
-            Assert.Equal(0, derivedReader.GetInt32(2));
+            Assert.Equal(1, derivedReader.GetInt32(0));
+            Assert.Equal(1, derivedReader.GetInt32(1));
+            Assert.Equal(1, derivedReader.GetInt32(2));
             await using var job = verify.CreateCommand();
             job.CommandText = "SELECT kind,state FROM index_jobs WHERE document_id=$document;";
             job.Parameters.AddWithValue("$document", documentId.ToString());

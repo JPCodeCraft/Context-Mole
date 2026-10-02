@@ -21,6 +21,7 @@ public sealed class ProjectItemViewModel : ViewModelBase
     private int _attentionCount;
     private int _errorFileCount;
     private int _errorCount;
+    private int _excludedPathCount;
     private bool _isDiscovering;
     private bool _isErrorsExpanded = true;
     private bool _isErrorsLoading;
@@ -34,14 +35,35 @@ public sealed class ProjectItemViewModel : ViewModelBase
     private bool _isSemanticCoverageLoading = true;
     private string? _semanticCoverageError;
     private bool _actionsBusy;
+    private bool _isReadinessStale;
+    private DateTimeOffset? _lastChecked;
+    private bool _isInitialScanComplete;
+    private string _issueQuery = string.Empty;
+    private string _issueCodeFilter = string.Empty;
+    private int _issueImpactFilterIndex;
+    private bool _showHiddenIssues;
+    private ProjectIssueListResponse? _issuePage;
+    private string? _nextIssueCursor;
+    private bool _issuesChangedDuringPaging;
+    private readonly List<string?> _issueCursors = [null];
+    private int _issuePageIndex;
+    private long _issueQueryVersion;
+    private string? _issueLoadError;
+    private IReadOnlyList<Guid> _undoAcknowledgements = [];
+    private string _issueActionMessage = string.Empty;
+    private IReadOnlyList<ExcludedFileInfo> _allExcludedFiles = [];
+    private int _excludedPageIndex;
+    private string _excludedQuery = string.Empty;
 
     public ProjectItemViewModel(ProjectSummary project)
     {
         Id = project.Id;
+        _isInitialScanComplete = project.DocumentCount > 0 || project.LastCompletedUtc is not null;
         UpdateFrom(project);
     }
 
     public Guid Id { get; }
+    public override string ToString() => Name;
     public const int ErrorPageSize = 25;
     public ObservableCollection<ProjectErrorItemViewModel> RecentErrors { get; } = [];
 
@@ -63,6 +85,7 @@ public sealed class ProjectItemViewModel : ViewModelBase
     public int AttentionCount { get => _attentionCount; private set => SetProperty(ref _attentionCount, value); }
     public int ErrorFileCount { get => _errorFileCount; private set => SetProperty(ref _errorFileCount, value); }
     public int ErrorCount { get => _errorCount; private set => SetProperty(ref _errorCount, value); }
+    public int ExcludedPathCount { get => _excludedPathCount; private set => SetProperty(ref _excludedPathCount, value); }
     public DateTimeOffset? LastCompletedUtc { get => _lastCompletedUtc; private set => SetProperty(ref _lastCompletedUtc, value); }
     public string? CurrentFile { get => _currentFile; private set => SetProperty(ref _currentFile, value); }
     public ProjectWorkSummary Work { get => _work; private set => SetProperty(ref _work, value); }
@@ -93,7 +116,8 @@ public sealed class ProjectItemViewModel : ViewModelBase
     private string? RetryingSourcePath => _runtimeWork?.ActiveItems
         .FirstOrDefault(item => item.IsRetrying)?.SourcePath;
 
-    public string Phase => State == ProjectState.Paused
+    public string Phase => _isReadinessStale ? "Status unavailable"
+        : State == ProjectState.Paused
         ? _runtimeWork?.ActiveItems.Count > 0 ? "Pausing" : "Paused"
         : _isDiscovering ? "Finding files"
         : RunningRetryCount > 0 ? "Retrying"
@@ -102,14 +126,18 @@ public sealed class ProjectItemViewModel : ViewModelBase
         : EffectiveWorkPhase == ProjectWorkPhase.RetryScheduled ? "Retry scheduled"
         : EffectiveWorkPhase == ProjectWorkPhase.Queued ? "Queued"
         : ErrorCount > 0 || AttentionCount > 0 || HasFolderIssues ? "Needs attention"
-        : "Ready";
+        : !_isInitialScanComplete ? "Awaiting first scan"
+        : DocumentCount == 0 ? "No supported files" : "Ready";
 
     public string PhaseDetails => Phase switch
     {
-        "Pausing" => "Stopping active work. Interrupted files will be queued for resume.",
+        "Status unavailable" => "Current readiness could not be verified. Counts and search coverage below are from the last successful check.",
+        "Awaiting first scan" => "Waiting for the first folder scan. No supported-file or search-coverage result has been verified yet.",
+        "No supported files" => "The folder scan completed, but no supported files were found. Choose a different folder or add supported files.",
+        "Pausing" => "Stopping active extraction. Folder discovery and removal checks continue; interrupted files are queued for resume.",
         "Paused" => PendingCount > 0
-            ? $"{PendingCount:N0} {(PendingCount == 1 ? "file will" : "files will")} continue when indexing resumes. Searchable files remain available."
-            : "Indexing is paused. Folder changes will be checked when indexing resumes.",
+            ? $"{PendingCount:N0} {(PendingCount == 1 ? "file will" : "files will")} continue when indexing resumes. Changes are still detected and queued; saved evidence stays searchable unless its source is removed."
+            : "Extraction is paused. Folder changes are still detected and queued, and removed sources leave search. Other saved evidence stays searchable.",
         "Finding files" => "Checking folders for new, changed, and removed files. Counts update as files are found.",
         "Retrying" => RetryingSourcePath is null
             ? "A failed file is being retried now."
@@ -133,7 +161,7 @@ public sealed class ProjectItemViewModel : ViewModelBase
     };
 
     public bool IsPaused => State == ProjectState.Paused;
-    public bool IsReady => Phase == "Ready";
+    public bool IsReady => !_isReadinessStale && Phase == "Ready";
     public bool IsRetrying => Phase == "Retrying";
     public bool IsRetryScheduled => Phase == "Retry scheduled";
     public bool IsRetryStatus => IsRetrying || IsRetryScheduled;
@@ -150,7 +178,8 @@ public sealed class ProjectItemViewModel : ViewModelBase
     public bool ShowSemanticRepairButton => HasMixedSemanticIndex && !IsSemanticRepairQueued;
     public bool CanRepairSemanticIndex => AreActionsEnabled && ShowSemanticRepairButton && State == ProjectState.Active &&
                                           _semanticModelAvailable;
-    public string SemanticIndexStatusLabel => _isSemanticCoverageLoading ? "CHECKING"
+    public string SemanticIndexStatusLabel => _isReadinessStale ? "LAST CHECK · STALE"
+        : _isSemanticCoverageLoading ? "CHECKING"
         : _semanticCoverageError is not null ? "UNABLE TO CHECK"
         : !_semanticModelAvailable ? "KEYWORD ONLY"
         : _semanticIndex is null || _semanticIndex.TotalDocumentCount == 0 ? "NO INDEXED FILES"
@@ -160,6 +189,7 @@ public sealed class ProjectItemViewModel : ViewModelBase
     {
         get
         {
+            if (_isReadinessStale) return "Current meaning-based coverage could not be verified. The last known counts may have changed.";
             if (_isSemanticCoverageLoading) return "Checking meaning-based coverage for the current index and selected model…";
             if (_semanticCoverageError is not null) return $"Coverage could not be checked. {_semanticCoverageError}";
             if (!_semanticModelAvailable) return "Keyword search remains available. Set up a semantic model in Settings to add meaning-based search.";
@@ -177,6 +207,10 @@ public sealed class ProjectItemViewModel : ViewModelBase
                 return $"{coverage} Repair is queued for {metadata.RepairQueuedDocumentCount}; " +
                        $"{remaining} still {(remaining == 1 ? "needs" : "need")} repair.";
             }
+            var legacy = metadata.ReextractionRequiredDocumentCount;
+            if (legacy > 0)
+                return $"{coverage} {legacy} {(legacy == 1 ? "legacy file needs" : "legacy files need")} source re-extraction; " +
+                       $"{metadata.EmbeddingRepairEligibleDocumentCount} can reuse extracted text for embedding repair. Complete search coverage queues the appropriate work.";
             return $"{coverage} {excluded} {(excluded == 1 ? "file needs" : "files need")} compatible embeddings.";
         }
     }
@@ -184,7 +218,7 @@ public sealed class ProjectItemViewModel : ViewModelBase
         ? "Resume indexing before repairing semantic coverage."
         : !_semanticModelAvailable
             ? "The selected semantic model must be available before repair can be queued."
-            : "Queue only files with missing, incomplete, or outdated embeddings.";
+            : "Queue compatible embedding repair, including source re-extraction where legacy text preparation needs upgrading.";
     public string ReindexToolTip => IsPaused
         ? "Resume indexing before rebuilding this project."
         : "Rebuild the local index from the watched folders.";
@@ -224,6 +258,7 @@ public sealed class ProjectItemViewModel : ViewModelBase
         {
             if (!SetProperty(ref _isErrorsLoading, value)) return;
             NotifyErrorPagingChanged();
+            NotifyIssuePresentation();
         }
     }
     public int ErrorPageIndex => _errorPageIndex;
@@ -237,16 +272,21 @@ public sealed class ProjectItemViewModel : ViewModelBase
     public string SidebarErrorCountDisplay => ErrorCount == 1 ? "1 issue" : $"{ErrorCount:N0} issues";
     public string ErrorCountDisplay => ErrorCount == 1 ? "1 current issue" : $"{ErrorCount:N0} current issues";
     public string RecentErrorsSummary => ErrorFileCount > 0
-        ? $"{ErrorCountDisplay} affecting {ErrorFileCount:N0} {(ErrorFileCount == 1 ? "file" : "files")}. Resolved issues disappear automatically."
-        : $"{ErrorCountDisplay}. Resolved issues disappear automatically.";
+        ? $"{ErrorCountDisplay} affecting {ErrorFileCount:N0} {(ErrorFileCount == 1 ? "file" : "files")}. Hidden issues still affect coverage. Issues clear only when their cause is resolved."
+        : $"{ErrorCountDisplay}. Hidden issues still affect coverage. Issues clear only when their cause is resolved.";
     public string ErrorPageDisplay => IsErrorsLoading && RecentErrors.Count == 0 ? "Loading current issues…"
         : RecentErrors.Count == 0 ? "Refreshing current issues…"
         : $"{ErrorPageOffset + 1:N0}–{ErrorPageOffset + RecentErrors.Count:N0} of {Math.Max(ErrorCount, ErrorPageOffset + RecentErrors.Count):N0} issues";
-    public string SearchableSummary => $"{SearchableCount:N0} {(SearchableCount == 1 ? "file is" : "files are")} searchable now. Previous indexed versions stay available while updates are processed.";
+    public string SearchableSummary => _isReadinessStale
+        ? $"Last verified: {SearchableCount:N0} files with searchable content. Current coverage is unavailable."
+        : $"{SearchableCount:N0} {(SearchableCount == 1 ? "file is" : "files are")} searchable now. " +
+          (IndexedCount > SearchableCount ? $"{IndexedCount - SearchableCount:N0} completed files contain no searchable passages. " : string.Empty) +
+          "Searchable content can be partial or from a previous indexed version while updates are processed.";
     public string LastCompletedDisplay => LastCompletedUtc?.ToLocalTime().ToString("g") ?? "Not yet completed";
     public string ProjectDetailsDisplay => LastCompletedUtc is null
-        ? $"{FolderCountDisplay} · Not indexed yet"
-        : $"{FolderCountDisplay} · Last completed {LastCompletedDisplay}";
+        ? $"{FolderCountDisplay} · Not indexed yet{ExcludedPathsDisplay}"
+        : $"{FolderCountDisplay} · Last completed {LastCompletedDisplay}{ExcludedPathsDisplay}";
+    private string ExcludedPathsDisplay => ExcludedPathCount > 0 ? $" · {ExcludedPathCount:N0} exact paths excluded" : string.Empty;
 
     public void UpdateFrom(ProjectSummary project)
     {
@@ -291,7 +331,11 @@ public sealed class ProjectItemViewModel : ViewModelBase
 
         Name = project.Name;
         State = project.State;
-        if (!Folders.SequenceEqual(project.Folders)) Folders = project.Folders.ToArray();
+        if (!Folders.SequenceEqual(project.Folders))
+        {
+            Folders = project.Folders.ToArray();
+            if (_allExcludedFiles.Count > 0) UpdateExcludedPage();
+        }
         var generationChanged = SearchGeneration != project.SearchGeneration;
         SearchGeneration = project.SearchGeneration;
         DocumentCount = project.DocumentCount;
@@ -302,11 +346,14 @@ public sealed class ProjectItemViewModel : ViewModelBase
         AttentionCount = project.AttentionCount;
         ErrorFileCount = project.ErrorFileCount;
         ErrorCount = project.ErrorCount;
+        ExcludedPathCount = project.ExcludedPathCount;
         LastCompletedUtc = project.LastCompletedUtc;
         CurrentFile = project.CurrentFile;
         Work = project.Work;
         if (generationChanged)
         {
+            // Keep the current file keyset and root objects while refreshed details are read.
+            // An unrelated published revision must not interrupt ongoing issue triage.
             // Detail rows belong to the published generation that produced them.
             _semanticIndex = null;
             _semanticCoverageError = null;
@@ -326,12 +373,17 @@ public sealed class ProjectItemViewModel : ViewModelBase
             RecentErrors.Clear();
             OnPropertyChanged(nameof(HasRecentErrors));
         }
+        if (ErrorCount == 0 && IssueGroups.Count > 0)
+        {
+            ResetIssuePages();
+        }
         if (ErrorCount == 0 && RecentErrors.Count > 0)
         {
             RecentErrors.Clear();
             OnPropertyChanged(nameof(HasRecentErrors));
         }
         NotifyErrorPagingChanged();
+        NotifyIssuePresentation();
 
         if (!string.Equals(previousPhase, Phase, StringComparison.Ordinal)) OnPropertyChanged(nameof(Phase));
         if (!string.Equals(previousPhaseDetails, PhaseDetails, StringComparison.Ordinal)) OnPropertyChanged(nameof(PhaseDetails));
@@ -375,7 +427,7 @@ public sealed class ProjectItemViewModel : ViewModelBase
             OnPropertyChanged(nameof(QueuedBreakdownDisplay));
     }
 
-    public void UpdateRuntime(IndexingTimingSnapshot runtime, bool isDiscovering = false)
+    public void UpdateRuntime(IndexingTimingSnapshot runtime, bool isDiscovering = false, bool isInitialScanComplete = true)
     {
         ArgumentNullException.ThrowIfNull(runtime);
         if (runtime.ActiveItems.Any(item => item.ProjectId != Id))
@@ -398,6 +450,7 @@ public sealed class ProjectItemViewModel : ViewModelBase
 
         _runtimeWork = runtime;
         _isDiscovering = isDiscovering;
+        _isInitialScanComplete = isInitialScanComplete;
         OnPropertyChanged(nameof(IsDiscovering));
 
         if (!string.Equals(previousPhase, Phase, StringComparison.Ordinal)) OnPropertyChanged(nameof(Phase));
@@ -488,6 +541,7 @@ public sealed class ProjectItemViewModel : ViewModelBase
         OnPropertyChanged(nameof(CanReindex));
         OnPropertyChanged(nameof(CanRetryFailedFiles));
         OnPropertyChanged(nameof(CanRepairSemanticIndex));
+        OnPropertyChanged(nameof(CanRetryVisibleIssueFiles));
     }
 
     public void BeginSemanticIndexRefresh()
@@ -537,6 +591,162 @@ public sealed class ProjectItemViewModel : ViewModelBase
         OnPropertyChanged(nameof(NeedsAttention));
     }
 
+    public ObservableCollection<ProjectIssueGroupViewModel> IssueGroups { get; } = [];
+    public ObservableCollection<ExcludedFileItemViewModel> ExcludedFiles { get; } = [];
+    public string IssueQuery { get => _issueQuery; set { if (SetProperty(ref _issueQuery, value)) ResetIssuePages(); } }
+    public string IssueCodeFilter { get => _issueCodeFilter; set { if (SetProperty(ref _issueCodeFilter, value)) ResetIssuePages(); } }
+    public int IssueImpactFilterIndex { get => _issueImpactFilterIndex; set { if (SetProperty(ref _issueImpactFilterIndex, value)) ResetIssuePages(); } }
+    public bool ShowHiddenIssues { get => _showHiddenIssues; set { if (SetProperty(ref _showHiddenIssues, value)) ResetIssuePages(); } }
+    public ProjectIssueImpact IssueImpactFilter => (ProjectIssueImpact)Math.Clamp(IssueImpactFilterIndex, 0, 3);
+    public ProjectIssueVisibility IssueVisibility => ShowHiddenIssues ? ProjectIssueVisibility.All : ProjectIssueVisibility.Visible;
+    public string? IssueCursor => _issueCursors[_issuePageIndex];
+    public long IssueQueryVersion => _issueQueryVersion;
+    public int HiddenIssueCount => _issuePage?.HiddenIssueCount ?? 0;
+    public int HiddenIssueFileCount => _issuePage?.HiddenFileCount ?? 0;
+    public bool HasHiddenIssues => HiddenIssueCount > 0;
+    public string HiddenIssuesDisplay => $"Show hidden ({HiddenIssueCount:N0} {(HiddenIssueCount == 1 ? "component" : "components")} / {HiddenIssueFileCount:N0} {(HiddenIssueFileCount == 1 ? "file" : "files")})";
+    public bool HasIssueCard => HasErrors || HasIssueLoadError;
+    public bool HasIssueGroups => IssueGroups.Count > 0;
+    public bool HasNoMatchingIssueGroups => !IsErrorsLoading && IssueLoadError is null && !HasIssueGroups;
+    public bool HasIssueLoadError => IssueLoadError is not null;
+    public string? IssueLoadError { get => _issueLoadError; private set { SetProperty(ref _issueLoadError, value); NotifyIssuePresentation(); } }
+    public string NoMatchingIssuesMessage => _issuePageIndex > 0
+        ? "No remaining matching files on this page. Use Previous or Refresh issues to review the latest list."
+        : HasHiddenIssues && string.IsNullOrWhiteSpace(IssueQuery) && string.IsNullOrWhiteSpace(IssueCodeFilter) && IssueImpactFilter == ProjectIssueImpact.All && !ShowHiddenIssues
+        ? "All matching current issues are hidden. They still affect readiness and coverage. Show hidden to review or restore them."
+        : "No files match these issue filters. Try a different path, cause, or impact, or show hidden issues.";
+    public string GroupedIssuesSummary => _issuePage is null ? RecentErrorsSummary :
+        $"{_issuePage.TotalIssueCount:N0} current issue components affecting {_issuePage.TotalFileCount:N0} file / operation groups · " +
+        $"{_issuePage.HiddenIssueCount:N0} components hidden. Hiding acknowledges an issue; it does not resolve it or change search.";
+    public string IssuePageDisplay => IsErrorsLoading ? "Loading current issues…" :
+        $"File page {_issuePageIndex + 1} · {IssueGroups.Count:N0} shown of {_issuePage?.FilteredFileCount ?? 0:N0} matching files · path order";
+    public bool IssuesChangedDuringPaging => _issuesChangedDuringPaging;
+    public bool CanPreviousIssuePage => !IsErrorsLoading && _issuePageIndex > 0;
+    public bool CanNextIssuePage => !IsErrorsLoading && _nextIssueCursor is not null;
+    public bool CanRetryVisibleIssueFiles => CanReindex && IssueGroups.Any(group => group.CanRetry && !group.IsHidden);
+    public IReadOnlyList<Guid> VisibleRetryDocumentIds => IssueGroups.Where(group => group.CanRetry && !group.IsHidden)
+        .Select(group => group.DocumentId!.Value).Distinct().ToArray();
+    public bool HasUndoIssueHide => _undoAcknowledgements.Count > 0;
+    public IReadOnlyList<Guid> UndoAcknowledgements => _undoAcknowledgements;
+    public string IssueActionMessage { get => _issueActionMessage; private set => SetProperty(ref _issueActionMessage, value); }
+    public bool HasIssueActionMessage => IssueActionMessage.Length > 0;
+    public string ExcludedQuery { get => _excludedQuery; set { if (SetProperty(ref _excludedQuery, value)) { _excludedPageIndex = 0; UpdateExcludedPage(); } } }
+    private IReadOnlyList<ExcludedFileInfo> FilteredExcludedFiles => string.IsNullOrWhiteSpace(ExcludedQuery) ? _allExcludedFiles :
+        _allExcludedFiles.Where(file => file.SourcePath.Contains(ExcludedQuery, StringComparison.OrdinalIgnoreCase)).ToArray();
+    public int MatchingExcludedFileCount => FilteredExcludedFiles.Count;
+    public bool HasNoMatchingExcludedFiles => HasExcludedFiles && MatchingExcludedFileCount == 0;
+    public int ExcludedFileCount => _allExcludedFiles.Count;
+    public bool HasExcludedFiles => ExcludedFileCount > 0;
+    public string ExcludedFilesSummary => $"{ExcludedFileCount:N0} exact root paths excluded from indexing and search. Renamed paths are eligible again.";
+    public bool CanPreviousExcludedPage => _excludedPageIndex > 0;
+    public bool CanNextExcludedPage => (_excludedPageIndex + 1) * ErrorPageSize < MatchingExcludedFileCount;
+    public string ExcludedPageDisplay => $"Excluded path page {_excludedPageIndex + 1} · {ExcludedFiles.Count:N0} shown of {MatchingExcludedFileCount:N0} matching paths";
+    public bool IsReadinessStale => _isReadinessStale;
+    public string LastCheckedDisplay => _lastChecked is { } checkedAt ? $"Last verified {checkedAt.ToLocalTime():g}" : "Not verified yet";
+
+    public ProjectIssueListRequest CreateIssueRequest() => new(Id, IssueQuery, Code: string.IsNullOrWhiteSpace(IssueCodeFilter) ? null : IssueCodeFilter.Trim(), Impact: IssueImpactFilter,
+        Visibility: IssueVisibility, Limit: ErrorPageSize, Cursor: IssueCursor);
+
+    public void UpdateIssueGroups(ProjectIssueListResponse page)
+    {
+        if (page.ProjectId != Id) throw new ArgumentException("Issue page must belong to this project.", nameof(page));
+        _issuePage = page;
+        if (page.HiddenIssueCount == 0 && HasUndoIssueHide) ClearIssueUndo();
+        _issuesChangedDuringPaging |= page.IssuesChangedDuringPaging;
+        _nextIssueCursor = page.NextCursor;
+        for (var targetIndex = 0; targetIndex < page.Groups.Count; targetIndex++)
+        {
+            var source = page.Groups[targetIndex];
+            if (targetIndex < IssueGroups.Count && IssueGroups[targetIndex].SourcePath == source.SourcePath)
+            {
+                IssueGroups[targetIndex].UpdateFrom(source);
+                continue;
+            }
+            var existingIndex = -1;
+            for (var index = targetIndex + 1; index < IssueGroups.Count; index++)
+                if (IssueGroups[index].SourcePath == source.SourcePath) { existingIndex = index; break; }
+            if (existingIndex >= 0)
+            {
+                IssueGroups.Move(existingIndex, targetIndex);
+                IssueGroups[targetIndex].UpdateFrom(source);
+            }
+            else IssueGroups.Insert(targetIndex, new(source));
+        }
+        while (IssueGroups.Count > page.Groups.Count) IssueGroups.RemoveAt(IssueGroups.Count - 1);
+        IssueLoadError = null;
+        NotifyIssuePresentation();
+    }
+
+    public void MoveIssuePage(int direction)
+    {
+        if (direction < 0 && CanPreviousIssuePage) _issuePageIndex--;
+        else if (direction > 0 && CanNextIssuePage)
+        {
+            if (_issueCursors.Count > _issuePageIndex + 1) _issueCursors.RemoveRange(_issuePageIndex + 1, _issueCursors.Count - _issuePageIndex - 1);
+            _issueCursors.Add(_nextIssueCursor); _issuePageIndex++;
+        }
+        _issueQueryVersion++;
+        NotifyIssuePresentation();
+    }
+
+    public void ResetIssuePages()
+    {
+        _issueCursors.Clear(); _issueCursors.Add(null); _issuePageIndex = 0; _nextIssueCursor = null;
+        _issuesChangedDuringPaging = false;
+        _issueQueryVersion++; IssueGroups.Clear(); NotifyIssuePresentation();
+    }
+    public void FailIssueRefresh(string message) { IssueLoadError = message; NotifyIssuePresentation(); }
+    public void RecordIssueHide(HideProjectIssuesResult result)
+    {
+        _undoAcknowledgements = result.AcknowledgementIds;
+        SetIssueActionMessage($"Hidden {result.HiddenIssueCount:N0} current components. Discovery, retry and search are unchanged; new material failures appear again.");
+        OnPropertyChanged(nameof(HasUndoIssueHide));
+    }
+    public void ClearIssueUndo() { _undoAcknowledgements = []; OnPropertyChanged(nameof(HasUndoIssueHide)); }
+    public void SetIssueActionMessage(string message) { IssueActionMessage = message; OnPropertyChanged(nameof(HasIssueActionMessage)); }
+    public void UpdateExcludedFiles(IReadOnlyList<ExcludedFileInfo> files)
+    {
+        if (_allExcludedFiles.SequenceEqual(files)) return;
+        _allExcludedFiles = files;
+        _excludedPageIndex = Math.Min(_excludedPageIndex, Math.Max(0, (MatchingExcludedFileCount - 1) / ErrorPageSize));
+        UpdateExcludedPage();
+    }
+    public void MoveExcludedPage(int direction)
+    {
+        _excludedPageIndex = Math.Clamp(_excludedPageIndex + direction, 0, Math.Max(0, (MatchingExcludedFileCount - 1) / ErrorPageSize));
+        UpdateExcludedPage();
+    }
+    private void UpdateExcludedPage()
+    {
+        ExcludedFiles.Clear();
+        foreach (var file in FilteredExcludedFiles.Skip(_excludedPageIndex * ErrorPageSize).Take(ErrorPageSize))
+            ExcludedFiles.Add(new(file, Folders.Any(folder => IsWithinFolder(file.SourcePath, folder.Path))));
+        foreach (var name in new[] { nameof(ExcludedFileCount), nameof(HasExcludedFiles), nameof(ExcludedFilesSummary),
+                     nameof(CanPreviousExcludedPage), nameof(CanNextExcludedPage), nameof(ExcludedPageDisplay),
+                     nameof(MatchingExcludedFileCount), nameof(HasNoMatchingExcludedFiles) }) OnPropertyChanged(name);
+    }
+    private static bool IsWithinFolder(string path, string folder)
+    {
+        var comparison = OperatingSystem.IsWindows() || OperatingSystem.IsMacOS() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        var prefix = folder.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        return path.StartsWith(prefix, comparison);
+    }
+    public void SetFreshness(bool isStale, DateTimeOffset? lastChecked)
+    {
+        if (_isReadinessStale == isStale && _lastChecked == lastChecked) return;
+        _isReadinessStale = isStale; _lastChecked = lastChecked;
+        foreach (var name in new[] { nameof(IsReadinessStale), nameof(LastCheckedDisplay), nameof(Phase), nameof(PhaseDetails),
+                     nameof(IsReady), nameof(SearchableSummary) }) OnPropertyChanged(name);
+        NotifySemanticCoverageChanged();
+    }
+    private void NotifyIssuePresentation()
+    {
+        foreach (var name in new[] { nameof(HiddenIssueCount), nameof(HiddenIssueFileCount), nameof(HasHiddenIssues),
+                     nameof(HiddenIssuesDisplay), nameof(HasIssueGroups), nameof(HasNoMatchingIssueGroups), nameof(HasIssueLoadError),
+                     nameof(HasIssueCard), nameof(NoMatchingIssuesMessage), nameof(GroupedIssuesSummary), nameof(IssuePageDisplay),
+                     nameof(CanPreviousIssuePage), nameof(CanNextIssuePage), nameof(CanRetryVisibleIssueFiles), nameof(IssuesChangedDuringPaging) }) OnPropertyChanged(name);
+    }
+
     public ProjectSummary ToSummary() => new(Id, Name, State, Folders, SearchGeneration, DocumentCount,
         PendingCount, IndexedCount, ErrorCount, LastCompletedUtc, CurrentFile)
     {
@@ -544,7 +754,8 @@ public sealed class ProjectItemViewModel : ViewModelBase
         SearchableCount = SearchableCount,
         ReadyCount = ReadyCount,
         AttentionCount = AttentionCount,
-        ErrorFileCount = ErrorFileCount
+        ErrorFileCount = ErrorFileCount,
+        ExcludedPathCount = ExcludedPathCount
     };
 
     private int IndexOfError(long id, int startIndex)

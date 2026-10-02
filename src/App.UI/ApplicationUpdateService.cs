@@ -23,6 +23,7 @@ internal sealed record ApplicationUpdateSnapshot(
     string Message)
 {
     public bool HasPendingPackage => State == ApplicationUpdateState.Ready;
+    public DateTimeOffset? LastAttemptUtc { get; init; }
 
     public static ApplicationUpdateSnapshot Disabled { get; } = new(
         ApplicationUpdateState.Disabled,
@@ -45,6 +46,7 @@ internal sealed class ApplicationUpdateService : IDisposable
     private VelopackAsset? _pendingAsset;
     private ApplicationUpdateSnapshot _snapshot = ApplicationUpdateSnapshot.Disabled;
     private int _started;
+    private DateTimeOffset? _lastAttemptUtc;
 
     public ApplicationUpdateService(ILogger<ApplicationUpdateService> logger)
     {
@@ -93,8 +95,24 @@ internal sealed class ApplicationUpdateService : IDisposable
         catch (Exception exception)
         {
             _logger.LogWarning(exception, "Automatic application updates could not be initialized.");
-            PublishError();
+            PublishError(exception);
         }
+    }
+
+    public bool CanCheckNow => OperatingSystem.IsWindows() && Snapshot.State != ApplicationUpdateState.Disabled;
+
+    public Task CheckNowAsync()
+    {
+        if (!CanCheckNow || Snapshot.State is ApplicationUpdateState.Checking or ApplicationUpdateState.Downloading)
+            return Task.CompletedTask;
+        if (_updateManager is null || _lifetime is null)
+        {
+            // Initialization itself may have failed before a periodic monitor could be created.
+            Interlocked.Exchange(ref _started, 0);
+            Start();
+            return Task.CompletedTask;
+        }
+        return CheckAndDownloadAsync(_lifetime.Token);
     }
 
     public void Stop()
@@ -175,6 +193,7 @@ internal sealed class ApplicationUpdateService : IDisposable
                 return;
             }
 
+            _lastAttemptUtc = DateTimeOffset.UtcNow;
             Publish(new ApplicationUpdateSnapshot(
                 ApplicationUpdateState.Checking,
                 GetCurrentVersion(),
@@ -212,7 +231,7 @@ internal sealed class ApplicationUpdateService : IDisposable
         catch (Exception exception)
         {
             _logger.LogWarning(exception, "Automatic application update check or download failed.");
-            PublishError();
+            PublishError(exception);
         }
         finally
         {
@@ -240,18 +259,27 @@ internal sealed class ApplicationUpdateService : IDisposable
             $"Version {pending.Version} is ready to install."));
     }
 
-    private void PublishError()
+    private void PublishError(Exception exception)
     {
-        Publish(new ApplicationUpdateSnapshot(
-            ApplicationUpdateState.Error,
-            GetCurrentVersion(),
-            null,
-            0,
-            "The automatic update check failed. The app will try again later."));
+        var previous = Snapshot;
+        _lastAttemptUtc ??= DateTimeOffset.UtcNow;
+        Publish(CreateErrorSnapshot(GetCurrentVersion(), previous.State == ApplicationUpdateState.Downloading
+            ? previous.AvailableVersion : null, exception.Message, _lastAttemptUtc.Value));
+    }
+
+    internal static ApplicationUpdateSnapshot CreateErrorSnapshot(string? currentVersion, string? availableVersion,
+        string cause, DateTimeOffset attemptUtc)
+    {
+        cause = cause.Length > 500 ? cause[..500] + "…" : cause;
+        var action = availableVersion is null ? "Could not check for updates" : $"Could not download version {availableVersion}";
+        return new(ApplicationUpdateState.Error, currentVersion, availableVersion, 0,
+            $"{action}: {cause} Check your connection, then try again. The app also checks every 6 hours.")
+        { LastAttemptUtc = attemptUtc };
     }
 
     private void Publish(ApplicationUpdateSnapshot snapshot)
     {
+        snapshot = snapshot with { LastAttemptUtc = snapshot.LastAttemptUtc ?? _lastAttemptUtc };
         ApplicationUpdateState previousState;
         lock (_sync)
         {

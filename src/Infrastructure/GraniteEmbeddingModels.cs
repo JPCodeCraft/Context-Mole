@@ -16,32 +16,27 @@ public sealed record GraniteEmbeddingModelDefinition(
     int Dimensions,
     string Pooling,
     string Normalization,
-    bool RequiresGemmaTerms)
+    bool RequiresGemmaTerms,
+    long? EosTokenId = null,
+    string? TokenizationVersion = null)
 {
     public override string ToString() => DisplayName;
+
+    public EmbeddingPolicy CreatePolicy(bool quantized)
+    {
+        GraniteEmbeddingModels.EnsureSupported(this);
+        return new(ModelId, Revision,
+            quantized ? QuantizedSha : Fp32Sha, TokenizerSha, quantized ? "quint8-avx2" : "fp32",
+            SourceDimensions, Dimensions, Pooling, Normalization, TokenizationVersion: TokenizationVersion);
+    }
 }
 
 public static class GraniteEmbeddingModels
 {
-    public const EmbeddingModelChoice DefaultChoice = EmbeddingModelChoice.Granite311M;
+    public const EmbeddingModelChoice DefaultChoice = EmbeddingModelChoice.Granite97M;
 
     public static IReadOnlyList<GraniteEmbeddingModelDefinition> All { get; } =
     [
-        new(
-            EmbeddingModelChoice.Granite311M,
-            "Granite Multilingual 311M",
-            "Best search quality",
-            "ibm-granite/granite-embedding-311m-multilingual-r2",
-            "44399559930365213510b1ee2eb15ded83374f0e",
-            "0087c868b33bad550a78a08d19798cfd7f713cde4f020803b8f51f405503e15f",
-            "f1fdd44e7e1ac51f12ab7957c7bd092e064d596c288513bf9d326842f669edee",
-            "75f9f258bf5013f5fe8a4dad61dd0fd16ac0cbaa7a106e3d3f41c2d04a42d541",
-            2,
-            768,
-            384,
-            "cls",
-            "l2-after-matryoshka",
-            true),
         new(
             EmbeddingModelChoice.Granite97M,
             "Granite Multilingual 97M",
@@ -56,10 +51,30 @@ public static class GraniteEmbeddingModels
             384,
             "cls",
             "l2",
-            false)
+            false,
+            179938,
+            "bos-eos-v1")
     ];
 
     public static GraniteEmbeddingModelDefinition Get(EmbeddingModelChoice choice) =>
         All.FirstOrDefault(model => model.Choice == choice)
-        ?? throw new ArgumentOutOfRangeException(nameof(choice));
+        ?? throw new ArgumentOutOfRangeException(nameof(choice), choice,
+            "Only Granite Multilingual 97M is supported. Legacy choices are retained only for settings decoding.");
+
+    public static bool IsSupported(EmbeddingModelChoice choice) => choice == DefaultChoice;
+
+    public static void EnsureSupported(GraniteEmbeddingModelDefinition model)
+    {
+        if (!IsSupported(model.Choice) || model != Get(DefaultChoice))
+            throw new ContextMoleException("model_not_supported",
+                "Only the pinned Granite Multilingual 97M model can be installed or used for embeddings.");
+    }
+
+    internal static void EnsureCurrentPolicy(EmbeddingPolicy policy)
+    {
+        var model = Get(DefaultChoice);
+        if (policy.Key != model.CreatePolicy(false).Key && policy.Key != model.CreatePolicy(true).Key)
+            throw new ContextMoleException("model_policy_mismatch",
+                "The broker returned an unsupported embedding policy. Upgrade the app and broker together; only corrected Granite 97M embeddings are accepted.");
+    }
 }

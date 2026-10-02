@@ -76,7 +76,10 @@ def download(dataset, revision, relative, destination, expected=None, offline=Fa
     if offline:
         raise InputError(f"Offline input missing: {destination}")
     url = f"https://huggingface.co/datasets/{dataset}/resolve/{revision}/{urllib.parse.quote(relative, safe='/')}"
-    data = verify(request(url), expected, relative)
+    try:
+        data = verify(request(url), expected, relative)
+    except urllib.error.URLError as error:
+        raise InputError(f"Download failed for {relative} at the pinned dataset revision: {error}") from error
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_suffix(destination.suffix + ".partial")
     temporary.write_bytes(data)
@@ -226,18 +229,20 @@ def vidore_manifest(entry, documents, pages, queries, qrels, subset):
             for key, page in sorted(selected_pages.items())], "queries": selected_queries}
 
 
-def prepare_vidore(entry, cache, subset, offline):
+def prepare_vidore(entry, cache, subset, offline, workers=4):
     data = {config: viewer_rows(entry, config, cache, offline) for config in
             ["documents_metadata", "corpus", "queries", "qrels"]}
     manifest = vidore_manifest(entry, data["documents_metadata"], data["corpus"], data["queries"], data["qrels"], subset)
     destination = cache / subset
-    for doc in manifest["documents"]:
+    def fetch(doc):
         download(entry["dataset"], entry["revision"], doc["file"], safe_path(destination, doc["file"]), doc["sha256"], offline)
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        list(pool.map(fetch, manifest["documents"]))
     write_json(destination / "manifest.json", manifest)
     print(f"ViDoRe {subset}: {len(manifest['documents'])} PDFs, {len(manifest['pages'])} pages, {len(manifest['queries'])} queries", flush=True)
 
 
-def prepare_olmocr(entry, cache, subset, offline):
+def prepare_olmocr(entry, cache, subset, offline, workers=4):
     checks = []
     categories = {}
     for item in entry["annotations"]:
@@ -251,12 +256,15 @@ def prepare_olmocr(entry, cache, subset, offline):
                 categories[row["pdf"]] = item["category"]
     destination = cache / subset
     documents = []
-    for key, category in sorted(categories.items()):
+    def fetch(item):
+        key, category = item
         path = "bench_data/pdfs/" + key
         expected = entry["pdf_sha256"][key]
         data = download(entry["dataset"], entry["revision"], path,
                         safe_path(destination, "pdfs/" + key), expected, offline)
-        documents.append({"id": key, "file": "pdfs/" + key, "sha256": digest(data), "category": category})
+        return {"id": key, "file": "pdfs/" + key, "sha256": digest(data), "category": category}
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        documents = list(pool.map(fetch, sorted(categories.items())))
     check_data = b"".join(canonical(row) + b"\n" for row in checks)
     (destination / "checks.jsonl").write_bytes(check_data)
     manifest = {"version": 1, "dataset": entry["dataset"], "revision": entry["revision"], "selection": subset,
@@ -272,7 +280,10 @@ def main(argv=None):
     parser.add_argument("--dataset", choices=["all", "olmocr", "vidore"], default="all")
     parser.add_argument("--subset", choices=["smoke", "full"], default="smoke")
     parser.add_argument("--offline", action="store_true", help="Verify/rebuild manifests from cached inputs without network")
+    parser.add_argument("--workers", type=int, default=4, help="Concurrent PDF downloads (1-8); hashes and manifest ordering remain deterministic")
     args = parser.parse_args(argv)
+    if not 1 <= args.workers <= 8:
+        raise InputError("--workers must be between 1 and 8.")
     repo = Path(__file__).resolve().parent.parent
     cache = args.cache.resolve()
     if cache.is_relative_to(repo):
@@ -284,7 +295,7 @@ def main(argv=None):
         entry = lock[name]
         if not args.offline:
             download(entry["dataset"], entry["revision"], "README.md", cache / name / entry["revision"] / "DATASET-CARD.md", entry["card_sha256"])
-        prepare(entry, cache / name / entry["revision"], args.subset, args.offline)
+        prepare(entry, cache / name / entry["revision"], args.subset, args.offline, args.workers)
     return 0
 
 

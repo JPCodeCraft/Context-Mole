@@ -27,7 +27,9 @@ public static partial class LexicalText
                 var gap = value[previousEnd..match.Index];
                 // Join only a hyphen at a line break followed by a lowercase letter.
                 if (HyphenatedGap().IsMatch(gap) && char.IsLower(match.Value, 0) &&
-                    char.IsLetter(value[previousEnd - 1]))
+                    (char.IsLetter(value[previousEnd - 1]) ||
+                     CharUnicodeInfo.GetUnicodeCategory(value, previousEnd - 1) is UnicodeCategory.NonSpacingMark or
+                         UnicodeCategory.SpacingCombiningMark or UnicodeCategory.EnclosingMark))
                 {
                     tokens[^1] = new LexicalToken(previous.Value + token, previous.Start,
                         match.Index + match.Length - previous.Start);
@@ -61,6 +63,6 @@ public static partial class LexicalText
     [GeneratedRegex(@"[\p{L}\p{M}\p{N}_]+")]
     private static partial Regex SourceTokens();
 
-    [GeneratedRegex(@"^-[ \t]*\r?\n\s*$")]
+    [GeneratedRegex(@"^[-\u2010\u00AD][ \t]*(?:\r\n|\r|\n|\u2028)[ \t]*\z")]
     private static partial Regex HyphenatedGap();
 }

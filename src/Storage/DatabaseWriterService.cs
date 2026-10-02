@@ -12,7 +12,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace ContextMole.Storage;
 
-public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
+public sealed partial class DatabaseWriterService : BackgroundService, IIndexWriter
 {
     private static readonly JsonSerializerOptions StorageJsonOptions = new()
     {
@@ -63,6 +63,7 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
             await using var connection = CreateConnection();
             await connection.OpenAsync(stoppingToken).ConfigureAwait(false);
             connection.CreateFunction<string?, string>("lexical", value => LexicalText.Canonicalize(value));
+            connection.CreateFunction<string, string>("name_key", TextNormalization.NameKey);
             await Schema.MigrateAsync(connection, _logger, stoppingToken).ConfigureAwait(false);
             _logger.LogInformation("Database ready at {DatabasePath}, schema version {SchemaVersion}", _paths.DatabasePath, Schema.CurrentVersion);
             _ready.TrySetResult();
@@ -182,6 +183,8 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                 "UPDATE projects SET name=$name,name_key=$key,updated_utc=$now,search_generation=search_generation+$generation WHERE id=$id;",
                 [new("$name", name), new("$key", TextNormalization.NameKey(name)), new("$now", now),
                  new("$generation", removed.Length > 0 ? 1 : 0), new("$id", request.ProjectId.ToString())], token).ConfigureAwait(false);
+            if (removed.Length > 0)
+                await PruneIssueLifecyclesAsync(connection, transaction, request.ProjectId, token).ConfigureAwait(false);
             await transaction.CommitAsync(token).ConfigureAwait(false);
             return null;
         }, cancellationToken);
@@ -282,19 +285,21 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
             select.Transaction = transaction;
             select.CommandText =
                 """
-                SELECT d.id,d.observation_epoch,r.id
+                SELECT d.id,d.observation_epoch,r.id,r.preparation_version
                 FROM documents d
                 JOIN document_revisions r ON r.id=d.active_revision_id AND r.status='active'
                 WHERE d.project_id=$project AND d.tombstoned=0
+                  AND NOT EXISTS(SELECT 1 FROM file_exclusions x WHERE x.project_id=d.project_id AND x.path_key=d.path_key)
                   AND ($retry_failed=1 OR COALESCE((
-                    SELECT CASE WHEN j.kind=$embedding_refresh AND j.state='failed'
-                                      AND j.target_policy_key=$policy_key THEN 1 ELSE 0 END
+                    SELECT CASE WHEN j.state='failed' AND
+                        ((j.kind=$embedding_refresh AND j.target_policy_key=$policy_key) OR
+                         (r.preparation_version<>$preparation AND j.kind<>$embedding_refresh AND j.target_policy_key=$preparation_key)) THEN 1 ELSE 0 END
                     FROM index_jobs j
                     WHERE j.project_id=$project AND j.document_id=d.id
                     ORDER BY j.updated_utc DESC,j.id DESC LIMIT 1
                   ),0)=0)
                   AND (
-                    r.embedding_policy_json IS NULL OR r.embedding_policy_json<>$policy
+                    r.preparation_version<>$preparation OR r.embedding_policy_json IS NULL OR r.embedding_policy_json<>$policy
                     OR EXISTS(
                       SELECT 1 FROM embeddings e
                       WHERE e.revision_id=r.id AND e.policy_key<>$policy_key
@@ -307,15 +312,17 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
             select.Parameters.AddWithValue("$project", projectId.ToString());
             select.Parameters.AddWithValue("$policy", policyJson);
             select.Parameters.AddWithValue("$policy_key", targetPolicy.Key);
+            select.Parameters.AddWithValue("$preparation", targetPolicy.PreparationVersion);
+            select.Parameters.AddWithValue("$preparation_key", "preparation:" + IndexPreparation.Version);
             select.Parameters.AddWithValue("$retry_failed", retryFailed ? 1 : 0);
             select.Parameters.AddWithValue("$embedding_refresh", (int)IndexJobKind.EmbeddingRefresh);
-            var documents = new List<(Guid Id, long Epoch, Guid RevisionId)>();
+            var documents = new List<(Guid Id, long Epoch, Guid RevisionId, bool NeedsReextraction)>();
             await using (var reader = await select.ExecuteReaderAsync(token).ConfigureAwait(false))
             {
                 while (await reader.ReadAsync(token).ConfigureAwait(false))
                 {
                     documents.Add((Guid.Parse(reader.GetString(0)), reader.GetInt64(1),
-                        Guid.Parse(reader.GetString(2))));
+                        Guid.Parse(reader.GetString(2)), reader.GetString(3) != targetPolicy.PreparationVersion));
                 }
             }
 
@@ -323,7 +330,8 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
             foreach (var document in documents)
             {
                 await UpsertOpenJobAsync(connection, transaction, projectId, document.Id, document.Epoch,
-                    IndexJobKind.EmbeddingRefresh, now, token, targetPolicy.Key).ConfigureAwait(false);
+                    document.NeedsReextraction ? IndexJobKind.Reindex : IndexJobKind.EmbeddingRefresh,
+                    now, token, targetPolicy.Key).ConfigureAwait(false);
             }
 
             await transaction.CommitAsync(token).ConfigureAwait(false);
@@ -331,7 +339,10 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
         }, cancellationToken);
 
     public Task<RetryFailedFilesResult> RetryFailedFilesAsync(Guid projectId,
-        CancellationToken cancellationToken = default) =>
+        CancellationToken cancellationToken = default) => RetryFailedFilesCoreAsync(projectId, null, cancellationToken);
+
+    private Task<RetryFailedFilesResult> RetryFailedFilesCoreAsync(Guid projectId, Guid? documentId,
+        CancellationToken cancellationToken) =>
         EnqueueAsync(async (connection, token) =>
         {
             using var transaction = connection.BeginTransaction();
@@ -356,6 +367,9 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                 )
                 SELECT d.id,d.observation_epoch,
                   CASE WHEN latest.state='failed' AND latest.kind=$embedding_refresh
+                    AND NOT EXISTS(SELECT 1 FROM project_errors e WHERE e.project_id=$project
+                      AND e.document_id=d.id AND e.code<>'embedding_refresh_failed')
+                    AND EXISTS(SELECT 1 FROM document_revisions r WHERE r.id=d.active_revision_id AND r.preparation_version=$preparation)
                     THEN $embedding_refresh ELSE $reindex END,
                   latest.target_policy_key,
                   EXISTS(
@@ -365,7 +379,8 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                   )
                 FROM documents d
                 LEFT JOIN latest_jobs latest ON latest.document_id=d.id
-                WHERE d.project_id=$project AND d.tombstoned=0
+                WHERE d.project_id=$project AND d.tombstoned=0 AND ($document IS NULL OR d.id=$document)
+                  AND NOT EXISTS(SELECT 1 FROM file_exclusions x WHERE x.project_id=d.project_id AND x.path_key=d.path_key)
                   AND (
                   EXISTS(SELECT 1 FROM project_errors e WHERE e.project_id=$project AND e.document_id=d.id)
                   OR COALESCE(latest.state,'')='failed'
@@ -373,8 +388,10 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                 ORDER BY d.path_key,d.id;
                 """;
             select.Parameters.AddWithValue("$project", projectId.ToString());
+            select.Parameters.AddWithValue("$document", (object?)documentId?.ToString() ?? DBNull.Value);
             select.Parameters.AddWithValue("$embedding_refresh", (int)IndexJobKind.EmbeddingRefresh);
             select.Parameters.AddWithValue("$reindex", (int)IndexJobKind.Reindex);
+            select.Parameters.AddWithValue("$preparation", IndexPreparation.Version);
             var documents = new List<(Guid Id, long Epoch, IndexJobKind Kind, string? TargetPolicyKey,
                 bool AlreadyPending)>();
             await using (var reader = await select.ExecuteReaderAsync(token).ConfigureAwait(false))
@@ -440,16 +457,44 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
             var now = DateTimeOffset.UtcNow.ToString("O");
             using var transaction = connection.BeginTransaction();
             await EnsureFolderBelongsToProjectAsync(connection, transaction, observation.ProjectId, observation.FolderId, token).ConfigureAwait(false);
+            if (await IsExcludedPathAsync(connection, transaction, observation.ProjectId, pathKey, token).ConfigureAwait(false))
+            {
+                await using var excluded = connection.CreateCommand();
+                excluded.Transaction = transaction;
+                excluded.CommandText = "SELECT id,observation_epoch FROM documents WHERE project_id=$project AND path_key=$path;";
+                excluded.Parameters.AddWithValue("$project", observation.ProjectId.ToString());
+                excluded.Parameters.AddWithValue("$path", pathKey);
+                await using var row = await excluded.ExecuteReaderAsync(token).ConfigureAwait(false);
+                var result = await row.ReadAsync(token).ConfigureAwait(false)
+                    ? new ObservationResult(Guid.Parse(row.GetString(0)), row.GetInt64(1), false) { IsExcluded = true }
+                    : new ObservationResult(Guid.Empty, 0, false) { IsExcluded = true };
+                await row.DisposeAsync().ConfigureAwait(false);
+                await transaction.CommitAsync(token).ConfigureAwait(false);
+                return result;
+            }
 
             Guid documentId;
             long epoch;
             long priorSize = -1;
             DateTimeOffset? priorModified = null;
             var tombstoned = false;
+            var preparationChanged = false;
             await using (var select = connection.CreateCommand())
             {
                 select.Transaction = transaction;
-                select.CommandText = "SELECT id,size,modified_utc,observation_epoch,tombstoned FROM documents WHERE project_id=$project AND path_key=$path;";
+                select.CommandText = """
+                    SELECT d.id,d.size,d.modified_utc,d.observation_epoch,d.tombstoned,
+                           r.preparation_version,
+                           EXISTS(SELECT 1 FROM index_jobs j WHERE j.document_id=d.id
+                               AND j.expected_epoch=d.observation_epoch AND j.kind IN ($index,$reindex)
+                               AND (j.state IN ('queued','retry_wait','running') OR
+                                    (j.state='failed' AND j.target_policy_key=$preparation)))
+                    FROM documents d LEFT JOIN document_revisions r ON r.id=d.active_revision_id
+                    WHERE d.project_id=$project AND d.path_key=$path;
+                    """;
+                select.Parameters.AddWithValue("$index", (int)IndexJobKind.Index);
+                select.Parameters.AddWithValue("$reindex", (int)IndexJobKind.Reindex);
+                select.Parameters.AddWithValue("$preparation", "preparation:" + IndexPreparation.Version);
                 select.Parameters.AddWithValue("$project", observation.ProjectId.ToString());
                 select.Parameters.AddWithValue("$path", pathKey);
                 await using var reader = await select.ExecuteReaderAsync(token).ConfigureAwait(false);
@@ -460,6 +505,11 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                     priorModified = DateTimeOffset.Parse(reader.GetString(2));
                     epoch = reader.GetInt64(3);
                     tombstoned = reader.GetInt64(4) != 0;
+                    // A new preparation policy needs fresh extraction/chunking, not just new
+                    // vectors over stale search text. Preserve the active revision until commit.
+                    // Do not restart an admitted job or repeatedly reopen a failed upgrade.
+                    preparationChanged = !reader.IsDBNull(5) &&
+                        reader.GetString(5) != IndexPreparation.Version && reader.GetInt64(6) == 0;
                 }
                 else
                 {
@@ -468,7 +518,7 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                 }
             }
 
-            var changed = observation.Force || observation.VerifyContent || tombstoned || epoch == 0 ||
+            var changed = observation.Force || observation.VerifyContent || preparationChanged || tombstoned || epoch == 0 ||
                 priorSize != observation.Size || priorModified != observation.ModifiedUtc;
             if (epoch == 0)
             {
@@ -495,6 +545,7 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                     """
                     UPDATE documents SET folder_id=$folder,path=$path,path_key=$path_key,file_name=$name,extension=$extension,
                         size=$size,modified_utc=$modified,observation_epoch=$epoch,tombstoned=0,available=1,
+                        failure_source_fingerprint=CASE WHEN size<>$size OR modified_utc<>$modified THEN NULL ELSE failure_source_fingerprint END,
                         last_seen_token=COALESCE($seen,last_seen_token),updated_utc=$now WHERE id=$id;
                     """,
                     [new("$folder", observation.FolderId.ToString()), new("$path", path), new("$path_key", pathKey),
@@ -507,7 +558,7 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
             if (changed)
             {
                 await UpsertOpenJobAsync(connection, transaction, observation.ProjectId, documentId, epoch,
-                    observation.Force ? IndexJobKind.Reindex : IndexJobKind.Index, now, token).ConfigureAwait(false);
+                    observation.Force || preparationChanged ? IndexJobKind.Reindex : IndexJobKind.Index, now, token).ConfigureAwait(false);
             }
 
             await transaction.CommitAsync(token).ConfigureAwait(false);
@@ -522,6 +573,13 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
             var newKey = PathKey(canonicalNew);
             var now = DateTimeOffset.UtcNow.ToString("O");
             using var transaction = connection.BeginTransaction();
+            if (await IsExcludedPathAsync(connection, transaction, projectId, newKey, token).ConfigureAwait(false))
+            {
+                await TombstonePathAsync(connection, transaction, projectId, folderId, oldKey, token).ConfigureAwait(false);
+                await RemoveExcludedEvidenceAsync(connection, transaction, projectId, newKey, token).ConfigureAwait(false);
+                await transaction.CommitAsync(token).ConfigureAwait(false);
+                return null;
+            }
             Guid? documentId = null;
             Guid? activeRevision = null;
             long nextEpoch = 0;
@@ -577,8 +635,11 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                     "UPDATE projects SET search_generation=search_generation+1,updated_utc=$now WHERE id=$project;",
                     [new("$now", now), new("$project", projectId.ToString())], token).ConfigureAwait(false);
                 if (documentId is { } renamedDocument)
+                {
+                    await RefreshIssueRootIdentityAsync(connection, transaction, projectId, renamedDocument, canonicalNew, token).ConfigureAwait(false);
                     await UpsertOpenJobAsync(connection, transaction, projectId, renamedDocument, nextEpoch,
                         IndexJobKind.Reindex, now, token).ConfigureAwait(false);
+                }
             }
 
             await transaction.CommitAsync(token).ConfigureAwait(false);
@@ -664,6 +725,7 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                 JOIN documents d ON d.id=j.document_id
                 WHERE j.state IN ('queued','retry_wait') AND j.not_before_utc<=$now
                   AND p.state=$active AND d.tombstoned=0
+                  AND NOT EXISTS(SELECT 1 FROM file_exclusions x WHERE x.project_id=d.project_id AND x.path_key=d.path_key)
                 ORDER BY j.created_utc,j.id LIMIT 1;
                 """;
             select.Parameters.AddWithValue("$now", now.ToString("O"));
@@ -682,10 +744,15 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
             if (lease is not null)
             {
                 await ExecuteAsync(connection, transaction,
-                    "UPDATE index_jobs SET state='running',lease_until_utc=$lease,updated_utc=$now WHERE id=$id;",
-                    [new("$lease", now.Add(leaseDuration).ToString("O")), new("$now", now.ToString("O")), new("$id", lease.JobId.ToString())], token).ConfigureAwait(false);
-                await ClearPriorJobErrorsAsync(connection, transaction, lease.ProjectId, lease.DocumentId, token)
-                    .ConfigureAwait(false);
+                    """
+                    UPDATE index_jobs SET state='running',lease_until_utc=$lease,updated_utc=$now,
+                        target_policy_key=CASE WHEN kind=$embedding_refresh THEN target_policy_key ELSE $preparation END
+                    WHERE id=$id;
+                    """,
+                    [new("$lease", now.Add(leaseDuration).ToString("O")), new("$now", now.ToString("O")),
+                     new("$embedding_refresh", (int)IndexJobKind.EmbeddingRefresh),
+                     new("$preparation", "preparation:" + IndexPreparation.Version),
+                     new("$id", lease.JobId.ToString())], token).ConfigureAwait(false);
             }
 
             await transaction.CommitAsync(token).ConfigureAwait(false);
@@ -718,6 +785,7 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                     JOIN projects p ON p.id=d.project_id
                     JOIN index_jobs j ON j.id=$job AND j.project_id=d.project_id AND j.document_id=d.id
                     WHERE d.id=$document AND d.project_id=$project AND d.tombstoned=0
+                      AND NOT EXISTS(SELECT 1 FROM file_exclusions x WHERE x.project_id=d.project_id AND x.path_key=d.path_key)
                       AND p.state=$active AND j.state='running';
                     """;
                 select.Parameters.AddWithValue("$job", job.JobId.ToString());
@@ -752,7 +820,10 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
             }
 
             var now = DateTimeOffset.UtcNow.ToString("O");
-            if (activeRevision is null && existingSha is null)
+            await ExecuteAsync(connection, transaction,
+                "UPDATE documents SET failure_source_fingerprint=$sha WHERE id=$document;",
+                [new("$sha", sha256.ToLowerInvariant()), new("$document", job.DocumentId.ToString())], token).ConfigureAwait(false);
+            if (job.Kind == IndexJobKind.Index && activeRevision is null && existingSha is null)
             {
                 var renameCandidates = new List<(Guid Id, string Path, Guid RevisionId, bool Tombstoned)>();
                 await using (var candidates = connection.CreateCommand())
@@ -763,6 +834,7 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                             (SELECT r.id FROM document_revisions r WHERE r.document_id=d.id ORDER BY r.activated_utc DESC,r.created_utc DESC LIMIT 1)),d.tombstoned
                         FROM documents d
                         WHERE d.project_id=$project AND d.id<>$document AND d.sha256=$sha
+                          AND NOT EXISTS(SELECT 1 FROM file_exclusions x WHERE x.project_id=d.project_id AND x.path_key=d.path_key)
                           AND (d.active_revision_id IS NOT NULL OR EXISTS(SELECT 1 FROM document_revisions r WHERE r.document_id=d.id));
                         """;
                     candidates.Parameters.AddWithValue("$project", job.ProjectId.ToString());
@@ -828,6 +900,7 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                         preserved.Parameters.AddWithValue("$document", preservedId.ToString());
                         preservedEpoch = Convert.ToInt64(await preserved.ExecuteScalarAsync(token).ConfigureAwait(false));
                     }
+                    await RefreshIssueRootIdentityAsync(connection, transaction, job.ProjectId, preservedId, currentPath, token).ConfigureAwait(false);
                     await UpsertOpenJobAsync(connection, transaction, job.ProjectId, preservedId, preservedEpoch,
                         IndexJobKind.Reindex, now, token).ConfigureAwait(false);
                     await transaction.CommitAsync(token).ConfigureAwait(false);
@@ -846,6 +919,7 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                     [new("$now", now), new("$id", job.JobId.ToString())], token).ConfigureAwait(false);
                 await ClearPriorJobErrorsAsync(connection, transaction, job.ProjectId, job.DocumentId, token)
                     .ConfigureAwait(false);
+                await PruneIssueLifecyclesAsync(connection, transaction, job.ProjectId, token).ConfigureAwait(false);
                 await transaction.CommitAsync(token).ConfigureAwait(false);
                 return new BeginRevisionResult(false, false, null, "The SHA-256 fingerprint is unchanged.");
             }
@@ -881,6 +955,7 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                     JOIN projects p ON p.id=d.project_id
                     JOIN index_jobs j ON j.id=$job AND j.project_id=d.project_id AND j.document_id=d.id
                     WHERE d.id=$document AND d.project_id=$project AND d.tombstoned=0
+                      AND NOT EXISTS(SELECT 1 FROM file_exclusions x WHERE x.project_id=d.project_id AND x.path_key=d.path_key)
                       AND p.state=$active AND j.state='running' AND j.kind<>$embedding_refresh;
                     """;
                 select.Parameters.AddWithValue("$job", request.JobId.ToString());
@@ -1031,8 +1106,10 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                 var matches = request.ContentNodes.Where(node => node.Name == error.ItemName).Take(2).ToArray();
                 await InsertErrorAsync(connection, transaction, request.ProjectId, request.DocumentId, error.Code,
                     error.ItemName is null ? error.Message : $"{error.ItemName}: {error.Message}", error.Retryable, 0, sourcePath, token,
-                    matches.Length == 1 ? matches[0].Id : null).ConfigureAwait(false);
+                    error.ContentId ?? (matches.Length == 1 ? matches[0].Id : null), error.ComponentKey,
+                    error.ItemName, request.Sha256).ConfigureAwait(false);
             }
+            await PruneIssueLifecyclesAsync(connection, transaction, request.ProjectId, token).ConfigureAwait(false);
 
             await transaction.CommitAsync(token).ConfigureAwait(false);
             return true;
@@ -1053,12 +1130,14 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                 select.Transaction = transaction;
                 select.CommandText =
                     """
-                    SELECT j.state,j.kind,j.expected_epoch,d.observation_epoch,d.active_revision_id
+                    SELECT j.state,j.kind,j.expected_epoch,d.observation_epoch,d.active_revision_id,r.preparation_version
                     FROM index_jobs j
                     JOIN projects p ON p.id=j.project_id
                     JOIN documents d ON d.id=j.document_id
+                    LEFT JOIN document_revisions r ON r.id=d.active_revision_id AND r.status='active'
                     WHERE j.id=$job AND j.project_id=$project AND j.document_id=$document
-                      AND d.tombstoned=0 AND p.state=$active;
+                      AND d.tombstoned=0 AND p.state=$active
+                      AND NOT EXISTS(SELECT 1 FROM file_exclusions x WHERE x.project_id=d.project_id AND x.path_key=d.path_key);
                     """;
                 select.Parameters.AddWithValue("$job", job.JobId.ToString());
                 select.Parameters.AddWithValue("$project", job.ProjectId.ToString());
@@ -1071,7 +1150,8 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                                 (IndexJobKind)reader.GetInt32(1) == IndexJobKind.EmbeddingRefresh &&
                                 reader.GetInt64(2) == job.ExpectedObservationEpoch &&
                                 reader.GetInt64(3) == job.ExpectedObservationEpoch &&
-                                !reader.IsDBNull(4);
+                                !reader.IsDBNull(4) && !reader.IsDBNull(5) &&
+                                string.Equals(reader.GetString(5), IndexPreparation.Version, StringComparison.Ordinal);
                     if (isCurrent) revisionId = Guid.Parse(reader.GetString(4));
                 }
             }
@@ -1117,13 +1197,14 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                 select.Transaction = transaction;
                 select.CommandText =
                     """
-                    SELECT j.state,j.kind,j.expected_epoch,d.observation_epoch,d.active_revision_id,r.status
+                    SELECT j.state,j.kind,j.expected_epoch,d.observation_epoch,d.active_revision_id,r.status,r.preparation_version
                     FROM index_jobs j
                     JOIN projects p ON p.id=j.project_id
                     JOIN documents d ON d.id=j.document_id
                     LEFT JOIN document_revisions r ON r.id=d.active_revision_id
                     WHERE j.id=$job AND j.project_id=$project AND j.document_id=$document
-                      AND d.tombstoned=0 AND p.state=$active;
+                      AND d.tombstoned=0 AND p.state=$active
+                      AND NOT EXISTS(SELECT 1 FROM file_exclusions x WHERE x.project_id=d.project_id AND x.path_key=d.path_key);
                     """;
                 select.Parameters.AddWithValue("$job", request.JobId.ToString());
                 select.Parameters.AddWithValue("$project", request.ProjectId.ToString());
@@ -1137,7 +1218,9 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                                 reader.GetInt64(2) == request.ExpectedObservationEpoch &&
                                 reader.GetInt64(3) == request.ExpectedObservationEpoch &&
                                 !reader.IsDBNull(4) && Guid.Parse(reader.GetString(4)) == request.RevisionId &&
-                                !reader.IsDBNull(5) && string.Equals(reader.GetString(5), "active", StringComparison.Ordinal);
+                                !reader.IsDBNull(5) && string.Equals(reader.GetString(5), "active", StringComparison.Ordinal) &&
+                                !reader.IsDBNull(6) && string.Equals(reader.GetString(6), request.Policy.PreparationVersion,
+                                    StringComparison.Ordinal);
                 }
             }
 
@@ -1197,8 +1280,7 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                 "DELETE FROM project_errors WHERE project_id=$project AND document_id=$document AND code='embedding_refresh_failed';",
                 [new("$project", request.ProjectId.ToString()), new("$document", request.DocumentId.ToString())], token)
                 .ConfigureAwait(false);
-            await ClearPriorJobErrorsAsync(connection, transaction, request.ProjectId, request.DocumentId, token)
-                .ConfigureAwait(false);
+            await PruneIssueLifecyclesAsync(connection, transaction, request.ProjectId, token).ConfigureAwait(false);
             await transaction.CommitAsync(token).ConfigureAwait(false);
             return true;
         }, cancellationToken);
@@ -1219,6 +1301,11 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                 _ => TimeSpan.FromHours(1)
             };
             using var transaction = connection.BeginTransaction();
+            if (await IsExcludedDocumentAsync(connection, transaction, job.ProjectId, job.DocumentId, token).ConfigureAwait(false))
+            {
+                await transaction.CommitAsync(token).ConfigureAwait(false);
+                return null;
+            }
             await using (var currentJob = connection.CreateCommand())
             {
                 currentJob.Transaction = transaction;
@@ -1254,9 +1341,11 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
             await ExecuteAsync(connection, transaction,
                 "DELETE FROM document_revisions WHERE document_id=$document AND status='staging';",
                 [new("$document", job.DocumentId.ToString())], token).ConfigureAwait(false);
-            await ClearPriorJobErrorsAsync(connection, transaction, job.ProjectId, job.DocumentId, token).ConfigureAwait(false);
+            await ClearPriorJobErrorsAsync(connection, transaction, job.ProjectId, job.DocumentId, token,
+                semanticOnly: job.Kind == IndexJobKind.EmbeddingRefresh).ConfigureAwait(false);
             await InsertErrorAsync(connection, transaction, job.ProjectId, job.DocumentId, code, message, retryable,
                 attempt, job.SourcePath, token).ConfigureAwait(false);
+            await PruneIssueLifecyclesAsync(connection, transaction, job.ProjectId, token).ConfigureAwait(false);
             await transaction.CommitAsync(token).ConfigureAwait(false);
             return null;
         }, cancellationToken);
@@ -1335,6 +1424,7 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
             [new("$now", now), new("$document", documentId.Value.ToString())], cancellationToken).ConfigureAwait(false);
         await ClearDocumentErrorsAsync(connection, transaction, projectId, documentId.Value, cancellationToken)
             .ConfigureAwait(false);
+        await PruneIssueLifecyclesAsync(connection, transaction, projectId, cancellationToken).ConfigureAwait(false);
         if (revisionId is not null)
         {
             await ExecuteAsync(connection, transaction, "UPDATE document_revisions SET status='superseded' WHERE id=$id;",
@@ -1349,6 +1439,8 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
         Guid documentId, long epoch, IndexJobKind kind, string now, CancellationToken cancellationToken,
         string? targetPolicyKey = null)
     {
+        if (await IsExcludedDocumentAsync(connection, transaction, projectId, documentId, cancellationToken).ConfigureAwait(false))
+            return;
         if (kind == IndexJobKind.EmbeddingRefresh)
         {
             await ExecuteAsync(connection, transaction,
@@ -1381,20 +1473,21 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
                 not_before_utc=CASE WHEN state='running' THEN not_before_utc ELSE $now END,
                 lease_until_utc=CASE WHEN state='running' THEN lease_until_utc ELSE NULL END,
                 last_error=CASE WHEN state='running' THEN last_error ELSE NULL END,
-                target_policy_key=NULL,
+                target_policy_key=$preparation,
                 updated_utc=$now
             WHERE document_id=$document AND state IN ('queued','retry_wait','running');
             """,
             [new("$kind", (int)kind), new("$reindex", (int)IndexJobKind.Reindex),
+             new("$preparation", "preparation:" + IndexPreparation.Version),
              new("$index", (object)(int)IndexJobKind.Index),
              new("$embedding_refresh", (int)IndexJobKind.EmbeddingRefresh), new("$epoch", epoch),
              new("$now", now), new("$document", documentId.ToString())], cancellationToken).ConfigureAwait(false);
         if (updated == 0)
         {
             await ExecuteAsync(connection, transaction,
-                "INSERT INTO index_jobs(id,project_id,document_id,kind,state,expected_epoch,not_before_utc,created_utc,updated_utc) VALUES($id,$project,$document,$kind,'queued',$epoch,$now,$now,$now);",
+                "INSERT INTO index_jobs(id,project_id,document_id,kind,state,expected_epoch,not_before_utc,created_utc,updated_utc,target_policy_key) VALUES($id,$project,$document,$kind,'queued',$epoch,$now,$now,$now,$preparation);",
                 [new("$id", Guid.CreateVersion7().ToString()), new("$project", projectId.ToString()),
-                 new("$document", documentId.ToString()), new("$kind", (int)kind), new("$epoch", epoch), new("$now", now)], cancellationToken).ConfigureAwait(false);
+                 new("$document", documentId.ToString()), new("$kind", (int)kind), new("$epoch", epoch), new("$now", now), new("$preparation", "preparation:" + IndexPreparation.Version)], cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -1512,16 +1605,46 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
 
     private static async Task InsertErrorAsync(SqliteConnection connection, SqliteTransaction transaction, Guid projectId,
         Guid? documentId, string code, string message, bool retryable, int attempt, string? sourcePath,
-        CancellationToken cancellationToken, Guid? contentId = null)
+        CancellationToken cancellationToken, Guid? contentId = null, string? componentKey = null,
+        string? componentName = null, string? sourceFingerprint = null)
     {
+        var rootKey = IssuePathKey(sourcePath ?? string.Empty);
+        if (documentId is { } id)
+        {
+            await using var document = connection.CreateCommand(); document.Transaction = transaction;
+            document.CommandText = "SELECT path_key,COALESCE(failure_source_fingerprint,'metadata:'||size||':'||modified_utc) FROM documents WHERE id=$document;";
+            document.Parameters.AddWithValue("$document", id.ToString());
+            await using var reader = await document.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                rootKey = reader.GetString(0);
+                sourceFingerprint ??= reader.GetString(1);
+            }
+        }
+        componentKey ??= contentId is { } content
+            ? await LoadComponentKeyAsync(connection, transaction, content, cancellationToken).ConfigureAwait(false)
+            : componentName is null ? "root" : "item:" + componentName;
+        sourceFingerprint = sourceFingerprint is null ? "unknown" : sourceFingerprint.StartsWith("metadata:", StringComparison.Ordinal)
+            ? sourceFingerprint : sourceFingerprint.ToLowerInvariant();
+        message = Limit(message.Trim(), 2000);
+        var signature = IssueSignature(rootKey, sourceFingerprint, componentKey, code, CanonicalIssueCause(message, componentName));
+        var now = DateTimeOffset.UtcNow.ToString("O");
         await ExecuteAsync(connection, transaction,
-            "INSERT INTO project_errors(project_id,document_id,code,message,retryable,attempt,source_path,created_utc,content_id) VALUES($project,$document,$code,$message,$retryable,$attempt,$path,$now,$content);",
+            """
+            INSERT INTO project_errors(project_id,document_id,code,message,retryable,attempt,source_path,created_utc,
+                content_id,root_path_key,component_key,component_name,source_fingerprint,signature)
+            VALUES($project,$document,$code,$message,$retryable,$attempt,$path,$now,
+                $content,$root,$component_key,$component_name,$fingerprint,$signature);
+            INSERT INTO issue_lifecycles VALUES($project,$signature,$now,$now,1)
+            ON CONFLICT(project_id,signature) DO UPDATE SET last_seen_utc=$now,occurrence_count=occurrence_count+1;
+            UPDATE projects SET error_total=error_total+1 WHERE id=$project;
+            """,
             [new("$project", projectId.ToString()), new("$document", (object?)documentId?.ToString() ?? DBNull.Value),
-             new("$code", code), new("$message", Limit(message, 2000)), new("$retryable", retryable ? 1 : 0),
-             new("$attempt", attempt), new("$path", (object?)sourcePath ?? DBNull.Value), new("$now", DateTimeOffset.UtcNow.ToString("O")),
-             new("$content", (object?)contentId?.ToString() ?? DBNull.Value)], cancellationToken).ConfigureAwait(false);
-        await ExecuteAsync(connection, transaction, "UPDATE projects SET error_total=error_total+1 WHERE id=$project;",
-            [new("$project", projectId.ToString())], cancellationToken).ConfigureAwait(false);
+             new("$code", code), new("$message", message), new("$retryable", retryable ? 1 : 0),
+             new("$attempt", attempt), new("$path", (object?)sourcePath ?? DBNull.Value), new("$now", now),
+             new("$content", (object?)contentId?.ToString() ?? DBNull.Value), new("$root", rootKey),
+             new("$component_key", componentKey), new("$component_name", (object?)componentName ?? DBNull.Value),
+             new("$fingerprint", sourceFingerprint), new("$signature", signature)], cancellationToken).ConfigureAwait(false);
     }
 
     private static Task<int> ClearDocumentErrorsAsync(SqliteConnection connection, SqliteTransaction transaction,
@@ -1530,9 +1653,13 @@ public sealed class DatabaseWriterService : BackgroundService, IIndexWriter
         [new("$project", projectId.ToString()), new("$document", documentId.ToString())], cancellationToken);
 
     private static Task<int> ClearPriorJobErrorsAsync(SqliteConnection connection, SqliteTransaction transaction,
-        Guid projectId, Guid documentId, CancellationToken cancellationToken) => ExecuteAsync(connection, transaction,
-        "DELETE FROM project_errors WHERE project_id=$project AND document_id=$document AND attempt>0;",
-        [new("$project", projectId.ToString()), new("$document", documentId.ToString())], cancellationToken);
+        Guid projectId, Guid documentId, CancellationToken cancellationToken, bool semanticOnly = false) => ExecuteAsync(connection, transaction,
+        """
+        DELETE FROM project_errors WHERE project_id=$project AND document_id=$document
+          AND (($semantic=1 AND code='embedding_refresh_failed') OR
+               ($semantic=0 AND attempt>0 AND code<>'embedding_refresh_failed'));
+        """,
+        [new("$project", projectId.ToString()), new("$document", documentId.ToString()), new("$semantic", semanticOnly ? 1 : 0)], cancellationToken);
 
     private static async Task<int> ExecuteAsync(SqliteConnection connection, SqliteTransaction? transaction, string sql,
         IReadOnlyList<SqliteParameter> parameters, CancellationToken cancellationToken)

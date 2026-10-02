@@ -18,6 +18,7 @@ public partial class ProjectEditorWindow : Window
     private readonly HashSet<string> _originalFolderKeys = new(PathComparer());
     private readonly Func<ProjectEditorResult, Task>? _persist;
     private bool _saving;
+    private bool _confirmingSave;
 
     public ProjectEditorWindow() : this(null)
     {
@@ -77,9 +78,23 @@ public partial class ProjectEditorWindow : Window
 
     private async void Save(object? sender, RoutedEventArgs args)
     {
-        if (_saving) return;
+        if (_saving || _confirmingSave) return;
         if (!ValidateInput()) return;
         var result = new ProjectEditorResult(ProjectValidation.NormalizeName(ProjectNameBox.Text!), _folders.ToArray());
+        var retainedKeys = result.Folders.Select(ProjectValidation.FolderKey).ToHashSet(PathComparer());
+        var removed = _originalFolderKeys.Where(key => !retainedKeys.Contains(key)).ToArray();
+        if (removed.Length > 0)
+        {
+            _confirmingSave = true;
+            try
+            {
+                if (!await ConfirmWindow.AskAsync(this, "Remove watched folders?",
+                    $"Saving removes {removed.Length} watched {(removed.Length == 1 ? "folder" : "folders")} from this project and removes their cached indexed evidence from search. " +
+                    "Original folders and files remain untouched. Other watched folders stay included.\n\n" + string.Join("\n", removed),
+                    "Save and remove folders", destructive: true)) return;
+            }
+            finally { _confirmingSave = false; }
+        }
         _saving = true;
         EditorForm.IsEnabled = false;
         SaveButton.IsEnabled = false;

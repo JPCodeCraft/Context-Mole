@@ -30,6 +30,10 @@ dotnet run --file tools/CpuUsagePolicySmoke.cs
 dotnet run --file tools/ExtractionRobustnessSmoke.cs
 dotnet run --file tools/EmlRegressionSmoke.cs
 
+# Frozen common-format extraction -> indexing -> search -> literal evidence
+dotnet run --file tools/MixedFormatSearchBenchmark.cs
+# Add --semantic --ocr --assets <installed-assets> for verified cached real models
+
 # SQLite WAL reader/writer concurrency and embedding-policy migration safety
 dotnet run --file tools/SqliteWalConcurrencySmoke.cs
 

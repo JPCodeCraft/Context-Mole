@@ -18,6 +18,7 @@ public static class InfrastructureServices
         services.AddSingleton<ISystemMemorySnapshotProvider, SystemMemorySnapshotProvider>();
         services.AddSingleton<IEmbeddingGenerator, GraniteEmbeddingGenerator>();
         services.AddSingleton<GraniteModelInstaller>();
+        services.AddSingleton<RetiredModelCacheCleanup>();
         if (includeOcr)
         {
             services.AddSingleton<IOcrEngine, PpOcrV6Engine>();

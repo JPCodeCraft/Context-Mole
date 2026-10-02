@@ -27,7 +27,7 @@ using UglyToad.PdfPig;
 
 if (args.Contains("--help", StringComparer.Ordinal))
 {
-    Console.WriteLine("dotnet run --file tools/VidorePdfBenchmark.cs -- --manifest <cache>/vidore/manifest.json [--mode semantic|keyword|hybrid] [--model Granite97M|Granite311M] [--ocr] [--assets <installed-assets>] [--k 5,10] [--iterations 3] [--timeout-minutes 60] [--output artifacts/vidore.json]");
+    Console.WriteLine("dotnet run --file tools/VidorePdfBenchmark.cs -- --manifest <cache>/vidore/manifest.json [--mode semantic|keyword|hybrid] [--model Granite97M] [--ocr] [--assets <installed-assets>] [--include-evidence] [--quality-only] [--stable-document-ids] [--preview-diversity rank|diverse|compare] [--comparison-manifest <devmanifest>] [--compare-natural-hybrid] [--k 5,10] [--iterations 3] [--timeout-minutes 60] [--index-snapshot-out <new-db>] [--output artifacts/vidore.json]");
     Console.WriteLine("Uses verified original PDFs, the actual extraction registry, IndexingCoordinator, isolated SQLite store, installed embeddings and HybridSearchService. No dataset/model download, application index/settings changes or answer generation. Default semantic mode needs installed Granite97M assets. --ocr enables only verified cached PP-OCR assets; otherwise OCR is unavailable and extraction warnings remain in the report. Ranks exposed production previews globally by fused score, then deduplicates physical pages before graded nDCG/Recall/MRR and geometric source-region coverage. Reports output/candidate caps, extraction failures, page coverage, literal citation checks, warm latency and compact/full output size. Keyword/hybrid use an explicit simple optional-token lexical baseline. This consumer-output adaptation is not the official ViDoRe visual retriever protocol or an LLM answer-quality score.");
     return;
 }
@@ -40,7 +40,7 @@ string? Option(string name)
         throw new ArgumentException($"{name} needs a value.");
     return args[position + 1];
 }
-var knownOptions = new HashSet<string>(["--manifest", "--mode", "--model", "--ocr", "--assets", "--k", "--iterations", "--timeout-minutes", "--output"], StringComparer.Ordinal);
+var knownOptions = new HashSet<string>(["--manifest", "--mode", "--model", "--ocr", "--assets", "--include-evidence", "--quality-only", "--stable-document-ids", "--preview-diversity", "--comparison-manifest", "--compare-natural-hybrid", "--k", "--iterations", "--timeout-minutes", "--index-snapshot-out", "--output"], StringComparer.Ordinal);
 foreach (var argument in args.Where(argument => argument.StartsWith("--", StringComparison.Ordinal)))
     if (!knownOptions.Contains(argument)) throw new ArgumentException($"Unknown option: {argument}.");
 var manifestPath = Path.GetFullPath(Option("--manifest") ?? throw new ArgumentException("--manifest is required. Run the pinned dataset downloader first."));
@@ -52,6 +52,18 @@ var mode = (Option("--mode") ?? "semantic") switch
 var model = Enum.Parse<EmbeddingModelChoice>(Option("--model") ?? "Granite97M");
 if (!Enum.IsDefined(model)) throw new ArgumentException("Unknown embedding model.");
 var useOcr = args.Contains("--ocr", StringComparer.Ordinal);
+var includeEvidence = args.Contains("--include-evidence", StringComparer.Ordinal);
+var qualityOnly = args.Contains("--quality-only", StringComparer.Ordinal);
+var stableDocumentIds = args.Contains("--stable-document-ids", StringComparer.Ordinal);
+IReadOnlyList<BenchmarkDocumentIdentity>? documentIdentityMap = null;
+var compareNaturalHybrid = args.Contains("--compare-natural-hybrid", StringComparer.Ordinal);
+if (compareNaturalHybrid && mode != SearchMode.Semantic)
+    throw new ArgumentException("--compare-natural-hybrid requires primary --mode semantic.");
+var previewPolicies = (Option("--preview-diversity") ?? "rank") switch
+{
+    "rank" => new[] { "rank" }, "diverse" => new[] { "diverse" }, "compare" => new[] { "rank", "diverse" },
+    _ => throw new ArgumentException("--preview-diversity must be rank, diverse, or compare.")
+};
 var ks = (Option("--k") ?? "5,10").Split(',').Select(int.Parse).Distinct().Order().ToArray();
 if (ks.Length == 0 || ks.Any(k => k is < 1 or > 500)) throw new ArgumentException("--k requires cutoffs between 1 and 500.");
 var iterations = int.Parse(Option("--iterations") ?? "3");
@@ -62,6 +74,22 @@ var manifestBytes = await File.ReadAllBytesAsync(manifestPath);
 var manifest = JsonSerializer.Deserialize<VidoreManifest>(manifestBytes, BrokerJson.Options)
     ?? throw new InvalidDataException("Missing manifest.");
 manifest.Validate();
+HashSet<string>? comparisonQueryIds = null;
+string? comparisonManifestHash = null;
+if (Option("--comparison-manifest") is { } comparisonManifestPath)
+{
+    var comparisonBytes = await File.ReadAllBytesAsync(Path.GetFullPath(comparisonManifestPath));
+    var comparison = JsonSerializer.Deserialize<VidoreManifest>(comparisonBytes, BrokerJson.Options)
+        ?? throw new InvalidDataException("Missing comparison manifest.");
+    comparison.Validate();
+    if (comparison.Documents.Length != manifest.Documents.Length || comparison.Pages.Length != manifest.Pages.Length ||
+        comparison.Documents.Any(document => !manifest.Documents.Any(original => original.Id == document.Id && original.Sha256 == document.Sha256 && original.PageCount == document.PageCount)) ||
+        comparison.Pages.Any(page => !manifest.Pages.Any(original => original.CorpusId == page.CorpusId && original.DocumentId == page.DocumentId && original.PageNumber == page.PageNumber)) ||
+        comparison.Queries.Any(query => !manifest.Queries.Any(original => original.Id == query.Id && original.Text == query.Text && original.Language == query.Language)))
+        throw new InvalidDataException("Comparison queries must be a fixed subset of the identical complete PDF corpus.");
+    comparisonQueryIds = comparison.Queries.Select(query => query.Id).ToHashSet(StringComparer.Ordinal);
+    comparisonManifestHash = Convert.ToHexStringLower(SHA256.HashData(comparisonBytes));
+}
 foreach (var warning in manifest.AnnotationWarnings) Console.Error.WriteLine("Dataset annotation warning: " + warning);
 var corpusPages = manifest.Pages.ToDictionary(page => page.CorpusId, page => new PdfPageKey(page.DocumentId, page.PageNumber));
 var physicalPages = corpusPages.Values.ToHashSet();
@@ -69,6 +97,13 @@ var corpusIds = manifest.Pages.ToDictionary(page => new PdfPageKey(page.Document
 using var cancellation = new CancellationTokenSource(TimeSpan.FromMinutes(timeoutMinutes));
 Console.CancelKeyPress += (_, eventArgs) => { eventArgs.Cancel = true; cancellation.Cancel(); };
 var token = cancellation.Token;
+string? progressPath = null;
+if (Option("--output") is { } requestedOutput)
+{
+    progressPath = Path.GetFullPath(requestedOutput) + ".progress.jsonl";
+    Directory.CreateDirectory(Path.GetDirectoryName(progressPath)!);
+    await File.WriteAllTextAsync(progressPath, "", new UTF8Encoding(false), token);
+}
 using var paths = new VidorePaths(Option("--assets"));
 var sourceDocuments = new Dictionary<string, VidoreDocument>(StringComparer.OrdinalIgnoreCase);
 foreach (var document in manifest.Documents)
@@ -114,6 +149,15 @@ try
         await writer.ObserveFileAsync(new FileObservation(project, folder, source, file.Length,
             new DateTimeOffset(file.LastWriteTimeUtc, TimeSpan.Zero)), token);
     }
+    if (stableDocumentIds)
+    {
+        await using var identityConnection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = paths.DatabasePath }.ToString());
+        await identityConnection.OpenAsync(token);
+        documentIdentityMap = await VidoreBenchmarkIdentity.ApplyAsync(identityConnection, project, manifest.Dataset,
+            manifest.Revision, sourceDocuments.Select(pair => new BenchmarkDocumentIdentityInput(pair.Key,
+                pair.Value.Id, pair.Value.Sha256)).ToArray(), token);
+        Console.Error.WriteLine($"Fresh fixture uses {VidoreBenchmarkIdentity.Protocol}; production-derived identities follow normally.");
+    }
     using var coordinator = new IndexingCoordinator(writer, store, paths, new DocumentExtractionRegistry(ocrEngine),
         embeddings, new IndexingActivityTracker(), new EmbeddingPolicyRefreshTracker(), cpu,
         NullLogger<IndexingCoordinator>.Instance);
@@ -142,9 +186,11 @@ try
         document.Status, document.ExtractedPassageCount, document.ErrorCount, document.ErrorSummary,
         expected_pages = sourceDocuments[Path.GetFullPath(document.SourcePath)].PageCount
     }).ToArray();
+    long embeddedPassageCount = 0;
     if (mode != SearchMode.Keyword)
     {
         var metadata = await store.LoadVectorSnapshotMetadataAsync(project, embeddings.Policy!, token);
+        embeddedPassageCount = metadata.EntryCount;
         if (metadata.EntryCount == 0 || !metadata.IsComplete)
             throw new InvalidOperationException($"Semantic indexing is unavailable or incomplete: {metadata.Warning}");
     }
@@ -170,22 +216,107 @@ try
             extractedMethods[method] = extractedMethods.GetValueOrDefault(method) + 1;
         }
     }
-    var service = new HybridSearchService(store, embeddings, new FlatVectorIndexFactory(),
-        new VectorIndexCache(128L * 1024 * 1024), cpu);
+    object? snapshotProvenance = null;
+    if (Option("--index-snapshot-out") is { } requestedSnapshot)
+    {
+        var snapshot = Path.GetFullPath(requestedSnapshot);
+        var temporary = snapshot + ".partial";
+        if (File.Exists(snapshot) || File.Exists(temporary))
+            throw new InvalidOperationException("Snapshot destination already exists; choose a new explicit path.");
+        Directory.CreateDirectory(Path.GetDirectoryName(snapshot)!);
+        using (var input = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = paths.DatabasePath, Mode = SqliteOpenMode.ReadOnly }.ToString()))
+        using (var destination = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = temporary }.ToString()))
+        {
+            await input.OpenAsync(token);
+            await destination.OpenAsync(token);
+            input.BackupDatabase(destination);
+            using var integrity = destination.CreateCommand();
+            integrity.CommandText = "PRAGMA integrity_check;";
+            if (!string.Equals((string?)integrity.ExecuteScalar(), "ok", StringComparison.Ordinal))
+                throw new InvalidDataException("Owned SQLite snapshot failed integrity_check.");
+        }
+        File.Move(temporary, snapshot);
+        var preparationAudit = snapshot + ".prepared-inputs.jsonl";
+        var tokenLengths = new List<int>();
+        var canonicalHashes = new List<string>();
+        var preparationHashes = new List<string>();
+        var sourceRows = new List<object>();
+        long generation;
+        using (var input = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = snapshot, Mode = SqliteOpenMode.ReadOnly }.ToString()))
+        {
+            await input.OpenAsync(token);
+            using (var command = input.CreateCommand())
+            {
+                command.CommandText = "SELECT search_generation FROM projects WHERE id=$project;";
+                command.Parameters.AddWithValue("$project", project.ToString());
+                generation = (long)command.ExecuteScalar()!;
+            }
+            using var auditWriter = new StreamWriter(preparationAudit, false, new UTF8Encoding(false));
+            using var query = input.CreateCommand();
+            query.CommandText = "SELECT d.path,d.sha256,d.active_revision_id,p.id,p.content_id,p.ordinal,p.page,p.structure_path,p.display_text,p.search_text,p.semantic_eligible FROM passages p JOIN documents d ON d.active_revision_id=p.revision_id JOIN content_nodes c ON c.id=p.content_id WHERE c.parent_id IS NULL ORDER BY d.file_name,p.ordinal;";
+            using var reader = query.ExecuteReader();
+            while (reader.Read())
+            {
+                var document = sourceDocuments[Path.GetFullPath(reader.GetString(0))];
+                var display = reader.GetString(8);
+                var prepared = reader.GetString(9);
+                var eligible = reader.GetBoolean(10);
+                var displayHash = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(display)));
+                var preparedHash = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(prepared)));
+                var completeTokens = eligible ? embeddings.CountTokens(prepared) : 0;
+                if (eligible) tokenLengths.Add(completeTokens);
+                canonicalHashes.Add(displayHash);
+                preparationHashes.Add(preparedHash);
+                var row = new { document_id = document.Id, source_sha256 = reader.GetString(1), active_revision_id = reader.GetString(2),
+                    passage_id = reader.GetString(3), content_id = reader.GetString(4), ordinal = reader.GetInt32(5),
+                    page = reader.IsDBNull(6) ? (int?)null : reader.GetInt32(6), structure_path = reader.IsDBNull(7) ? null : reader.GetString(7),
+                    display_sha256 = displayHash, prepared_sha256 = preparedHash, display_utf16_length = display.Length,
+                    prepared_utf16_length = prepared.Length, semantic_eligible = eligible, complete_tokens = completeTokens };
+                await auditWriter.WriteLineAsync(JsonSerializer.Serialize(row, BrokerJson.Options));
+            }
+        }
+        var hash = Convert.ToHexStringLower(SHA256.HashData(await File.ReadAllBytesAsync(snapshot, token)));
+        snapshotProvenance = new { version = 1, owned_public_benchmark_index = true, snapshot_db = snapshot, snapshot_sha256 = hash,
+            document_identity_protocol = stableDocumentIds ? VidoreBenchmarkIdentity.Protocol : "generated-v7",
+            document_identity_map = documentIdentityMap,
+            manifest_sha256 = Convert.ToHexStringLower(SHA256.HashData(manifestBytes)), sqlite_integrity_check = "ok",
+            project_id = project, search_generation = generation, embedding_policy = embeddings.Policy,
+            indexed_root_passages = canonicalHashes.Count, embedded_passages = embeddedPassageCount,
+            prepared_input_audit = preparationAudit,
+            prepared_input_audit_sha256 = Convert.ToHexStringLower(SHA256.HashData(await File.ReadAllBytesAsync(preparationAudit, token))),
+            ordered_display_hashes_sha256 = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join("\n", canonicalHashes)))),
+            ordered_prepared_hashes_sha256 = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join("\n", preparationHashes)))),
+            complete_tokens_mean = tokenLengths.Count == 0 ? (double?)null : tokenLengths.Average(),
+            complete_tokens_max = tokenLengths.Count == 0 ? (int?)null : tokenLengths.Max(),
+            complete_tokens_over_budget = tokenLengths.Count(length => length > GraniteEmbeddingInputEncoding.PassageMaximumTokens),
+            source_documents = sourceDocuments.Select(pair => new { source_path = pair.Key, original_document_id = pair.Value.Id, source_sha256 = pair.Value.Sha256 }),
+            source_paths_materialization_note = "Temporary copied source paths may be removed after completion; original PDFs remain hash-verified in the pinned external corpus." };
+        await File.WriteAllTextAsync(snapshot + ".provenance.json", JsonSerializer.Serialize(snapshotProvenance, BrokerJson.Options) + "\n", token);
+        Console.Error.WriteLine($"Frozen index snapshot verified: {snapshot}");
+    }
+    var vectorCache = new VectorIndexCache(128L * 1024 * 1024);
+    var services = previewPolicies.ToDictionary(policy => policy, policy => new HybridSearchService(store, embeddings,
+        new FlatVectorIndexFactory(), vectorCache, cpu, diversifyPreviews: policy == "diverse"));
     var rows = new List<VidoreQueryResult>();
     var searchOptions = new SearchResultOptions(GroupLimit: 50, PreviewsPerGroup: 10, MaxGroupsPerDocument: 50,
         SemanticSimilarityThreshold: mode == SearchMode.Keyword ? 0.25 : -1, StrictSemanticThreshold: false);
     foreach (var query in manifest.Queries)
+    foreach (var previewPolicy in previewPolicies.Where(policy => policy == previewPolicies[0] || comparisonQueryIds is null || comparisonQueryIds.Contains(query.Id))
+        .Concat(compareNaturalHybrid && (comparisonQueryIds is null || comparisonQueryIds.Contains(query.Id)) ? new[] { "natural_hybrid_msm0" } : Array.Empty<string>()))
     {
         token.ThrowIfCancellationRequested();
-        var clauses = mode == SearchMode.Semantic ? null : LexicalClauses(query.Text);
-        var request = new SearchRequest(project, mode, mode == SearchMode.Keyword ? null : query.Text, clauses,
+        var naturalHybrid = previewPolicy == "natural_hybrid_msm0";
+        var queryMode = naturalHybrid ? SearchMode.Hybrid : mode;
+        var service = services[naturalHybrid ? previewPolicies[0] : previewPolicy];
+        var clauses = queryMode == SearchMode.Semantic ? null : LexicalClauses(query.Text);
+        var request = new SearchRequest(project, queryMode, queryMode == SearchMode.Keyword ? null : query.Text, clauses,
+            MinimumShouldMatch: naturalHybrid ? 0 : null,
             Filters: new SearchFilters(AttachmentScope: AttachmentScope.RootOnly), ResultOptions: searchOptions,
             Scope: SearchScope.Passage, CandidateLimit: 10000, Detail: SearchDetail.Compact);
-        _ = await service.SearchAsync(request, token); // Exclude model/vector warm-up from warm query latency.
-        var timings = new double[iterations];
+        if (!qualityOnly) _ = await service.SearchAsync(request, token); // Exclude model/vector warm-up from warm query latency.
+        var timings = new double[qualityOnly ? 1 : iterations];
         SearchResponse response = null!;
-        for (var iteration = 0; iteration < iterations; iteration++)
+        for (var iteration = 0; iteration < timings.Length; iteration++)
         {
             var clock = Stopwatch.StartNew();
             response = await service.SearchAsync(request, token);
@@ -232,33 +363,69 @@ try
             invalidCitations.ToArray(), response.CandidateLimitReached, response.Branches,
             response.Warnings, response.SuppressedGroupCount, response.Results.Count(group => group.Previews.Count == 10),
             query.Qrels.Select(qrel => corpusPages[qrel.CorpusId]).Distinct().Count(indexedPageKeys.Contains), ranked);
+        row.PreviewPolicy = previewPolicy;
+        row.QueryMode = queryMode.ToString().ToLowerInvariant();
+        row.MinimumShouldMatch = naturalHybrid ? 0 : null;
+        row.QueryCompleteTokens = mode == SearchMode.Keyword ? null : embeddings.CountTokens(query.Text);
+        row.QueryMaximumTokens = mode == SearchMode.Keyword ? null : GraniteEmbeddingInputEncoding.QueryMaximumTokens;
         rows.Add(row);
-        Console.Error.WriteLine($"Query {query.Id} ({query.Language}): {row.ExposedPages} unique exposed pages, {row.ValidCitations}/{row.ExposedPreviews} literal citations.");
+        if (includeEvidence)
+            row.ExposedEvidence = previews.Select(preview =>
+            {
+                var document = sourceDocuments.GetValueOrDefault(Path.GetFullPath(preview.SourcePath));
+                var page = preview.Location.Page is { } number && document is not null ? new PdfPageKey(document.Id, number) : null;
+                var read = reads.GetValueOrDefault(preview.PassageId);
+                return new
+                {
+                    preview.PassageId, indexed_document_id = preview.DocumentId, preview.ContentId,
+                    original_document_id = document?.Id, page_number = preview.Location.Page,
+                    literal_citation_valid = page is not null && PdfBenchmarkMetrics.IsLiteralCitation(preview, read, page),
+                    preview.Excerpt, preview.ExcerptStart, preview.ExcerptLength,
+                    preview.Location, preview.ExtractionMethod, preview.FusedScore, preview.SemanticRank, preview.KeywordRank,
+                    preview.SemanticSimilarity, preview.KeywordScore, preview.Truncated
+                };
+            }).ToArray();
+        if (progressPath is not null)
+            await File.AppendAllTextAsync(progressPath, JsonSerializer.Serialize(row, BrokerJson.Options) + "\n", new UTF8Encoding(false), token);
+        Console.Error.WriteLine($"Query {query.Id} ({query.Language}, {previewPolicy}): {row.ExposedPages} unique exposed pages, {row.ValidCitations}/{row.ExposedPreviews} literal citations.");
     }
+    var primaryRows = rows.Where(row => row.PreviewPolicy == previewPolicies[0]).ToArray();
     var report = new
     {
-        benchmark = "vidore_v3_hr_pdf_consumer_output", schema_version = 1, measured_utc = DateTimeOffset.UtcNow,
+        benchmark = manifest.Dataset[(manifest.Dataset.IndexOf('/') + 1)..] + "_pdf_consumer_output",
+        schema_version = 1, measured_utc = DateTimeOffset.UtcNow,
         manifest.Dataset, manifest.Revision, manifest.Selection,
         manifest.UnusableBoundingBoxCount, manifest.AnnotationWarnings,
         manifest_sha256 = Convert.ToHexStringLower(SHA256.HashData(manifestBytes)),
         runtime = Environment.Version.ToString(), platform = System.Runtime.InteropServices.RuntimeInformation.OSDescription,
         cpu_architecture = System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture.ToString(),
         selected_model = mode == SearchMode.Keyword ? null : model.ToString(), embedding_policy = embeddings.Policy,
-        mode, ocr_enabled = useOcr, document_count = manifest.Documents.Length, corpus_pages = manifest.Pages.Length,
+        mode, ocr_enabled = useOcr, include_evidence = includeEvidence, primary_preview_policy = previewPolicies[0], compared_preview_policies = previewPolicies.Concat(compareNaturalHybrid ? new[] { "natural_hybrid_msm0" } : Array.Empty<string>()).ToArray(),
+        comparison_manifest_sha256 = comparisonManifestHash, comparison_query_count = comparisonQueryIds?.Count,
+        natural_hybrid_note = compareNaturalHybrid ? "Development-only explicit optional lexical boost with MinimumShouldMatch=0; structured API defaults unchanged. This is an alternative retrieval strategy, not the original optional-token hybrid baseline." : null, document_count = manifest.Documents.Length, corpus_pages = manifest.Pages.Length,
+        index_snapshot_provenance = snapshotProvenance,
+        document_identity_protocol = stableDocumentIds ? VidoreBenchmarkIdentity.Protocol : "generated-v7",
+        document_identity_map = documentIdentityMap,
         query_count = manifest.Queries.Length, query_counts_by_language = manifest.Queries.GroupBy(query => query.Language).ToDictionary(group => group.Key, group => group.Count()),
-        candidate_limit = 10000, result_options = searchOptions, attachment_scope = "root_only", measured_iterations = iterations,
-        indexing_ms = indexingClock.Elapsed.TotalMilliseconds, indexed_pages = indexedPageKeys.Count,
+        candidate_limit = 10000, result_options = searchOptions, attachment_scope = "root_only", measured_iterations = qualityOnly ? 0 : iterations,
+        quality_only = qualityOnly, latency_measurement = qualityOnly ? "single unwarmed observation; not a latency benchmark" : "excluded warmup plus measured repeated searches",
+        build_identity = new { extraction = typeof(DocumentExtractionRegistry).Assembly.ManifestModule.ModuleVersionId,
+            search = typeof(HybridSearchService).Assembly.ManifestModule.ModuleVersionId,
+            indexing = typeof(IndexingCoordinator).Assembly.ManifestModule.ModuleVersionId,
+            infrastructure = typeof(GraniteEmbeddingGenerator).Assembly.ManifestModule.ModuleVersionId },
+        indexing_ms = indexingClock.Elapsed.TotalMilliseconds, indexed_root_passages = extractedMethods.Values.Sum(), embedded_passages = embeddedPassageCount,
+        indexed_passages_inventory_total = inventory.Documents.Sum(document => document.ExtractedPassageCount), indexed_pages = indexedPageKeys.Count,
         indexed_page_coverage = (double)indexedPageKeys.Count / manifest.Pages.Length, extraction_methods = extractedMethods,
         documents = inventoryRows, extraction_errors = errors.Select(error => new { error.Code, error.Message, error.Retryable, error.Attempt }),
         summary = ks.Select(k => new
         {
-            k, recall = rows.Average(row => row.Metrics.Single(metric => metric.K == k).Recall),
-            ndcg = rows.Average(row => row.Metrics.Single(metric => metric.K == k).Ndcg),
-            mrr = rows.Average(row => row.Metrics.Single(metric => metric.K == k).ReciprocalRank),
-            evidence_area_coverage = NullableMean(rows.Select(row => row.Metrics.Single(metric => metric.K == k).EvidenceAreaCoverage)),
-            evidence_region_recall = NullableMean(rows.Select(row => row.Metrics.Single(metric => metric.K == k).EvidenceRegionRecall))
+            k, recall = primaryRows.Average(row => row.Metrics.Single(metric => metric.K == k).Recall),
+            ndcg = primaryRows.Average(row => row.Metrics.Single(metric => metric.K == k).Ndcg),
+            mrr = primaryRows.Average(row => row.Metrics.Single(metric => metric.K == k).ReciprocalRank),
+            evidence_area_coverage = NullableMean(primaryRows.Select(row => row.Metrics.Single(metric => metric.K == k).EvidenceAreaCoverage)),
+            evidence_region_recall = NullableMean(primaryRows.Select(row => row.Metrics.Single(metric => metric.K == k).EvidenceRegionRecall))
         }),
-        summary_by_language = rows.GroupBy(row => row.Language).ToDictionary(group => group.Key, group => ks.Select(k => new
+        summary_by_language = primaryRows.GroupBy(row => row.Language).ToDictionary(group => group.Key, group => ks.Select(k => new
         {
             k, query_count = group.Count(), recall = group.Average(row => row.Metrics.Single(metric => metric.K == k).Recall),
             ndcg = group.Average(row => row.Metrics.Single(metric => metric.K == k).Ndcg),
@@ -266,9 +433,18 @@ try
             evidence_area_coverage = NullableMean(group.Select(row => row.Metrics.Single(metric => metric.K == k).EvidenceAreaCoverage)),
             evidence_region_recall = NullableMean(group.Select(row => row.Metrics.Single(metric => metric.K == k).EvidenceRegionRecall))
         }).ToArray()),
-        citation_validity = rows.Sum(row => row.ExposedPreviews) == 0 ? (double?)null : (double)rows.Sum(row => row.ValidCitations) / rows.Sum(row => row.ExposedPreviews),
-        warm_latency_median_ms = Median(rows.Select(row => row.MedianSearchMs)),
-        warm_latency_p95_query_median_ms = Percentile(rows.Select(row => row.MedianSearchMs), 0.95),
+        citation_validity = primaryRows.Sum(row => row.ExposedPreviews) == 0 ? (double?)null : (double)primaryRows.Sum(row => row.ValidCitations) / primaryRows.Sum(row => row.ExposedPreviews),
+        warm_latency_median_ms = qualityOnly ? (double?)null : Median(primaryRows.Select(row => row.MedianSearchMs)),
+        warm_latency_p95_query_median_ms = qualityOnly ? (double?)null : Percentile(primaryRows.Select(row => row.MedianSearchMs), 0.95),
+        summary_by_preview_policy = rows.GroupBy(row => row.PreviewPolicy).ToDictionary(group => group.Key, group => ks.Select(k => new
+        {
+            k, query_count = group.Count(), recall = group.Average(row => row.Metrics.Single(metric => metric.K == k).Recall),
+            ndcg = group.Average(row => row.Metrics.Single(metric => metric.K == k).Ndcg),
+            mrr = group.Average(row => row.Metrics.Single(metric => metric.K == k).ReciprocalRank),
+            evidence_area_coverage = NullableMean(group.Select(row => row.Metrics.Single(metric => metric.K == k).EvidenceAreaCoverage)),
+            evidence_region_recall = NullableMean(group.Select(row => row.Metrics.Single(metric => metric.K == k).EvidenceRegionRecall)),
+            literal_citation_validity = group.Sum(row => row.ExposedPreviews) == 0 ? (double?)null : (double)group.Sum(row => row.ValidCitations) / group.Sum(row => row.ExposedPreviews)
+        }).ToArray()),
         note = "Page ranking is a consumer-output adaptation: globally sort only Results.Previews by production fused score and rank tie-breaks, then deduplicate original PDF/physical page before cutoff. No raw candidates, hidden evidence expansion, benchmark markdown or answer labels enter indexing/querying. Maximum production budgets still cap each content group at 10 previews and 50 groups. Recall denominator retains every selected positive page; nDCG uses linear qrel-grade gains, matching trec_eval. Geometric coverage unions valid literal citations' inherited source-block regions on top-k pages against all gold rectangles, including unretrieved pages; it cannot establish answer completeness or excerpt-level visual precision. Region recall threshold is 50% of each gold rectangle. Native-only extraction may omit image/chart information; errors and indexed-page coverage are reported. Search timings include query embedding and retrieval; exclude indexing, warm-up, full-response and citation reads. Summary averages query metrics; p95 is across per-query medians, not pooled request latencies.",
         queries = rows
     };
@@ -315,7 +491,17 @@ sealed record VidoreQueryResult(string Id, string Language, string Text, PdfRetr
     double MedianSearchMs, double[] SearchTimingsMs, int CompactResponseBytes, int FullResponseBytes,
     int ExposedPreviews, int ExposedPages, int ValidCitations, string[] InvalidCitations,
     bool CandidateLimitReached, SearchBranchDiagnosticsMap Branches, IReadOnlyList<SearchWarning> Warnings,
-    int SuppressedGroups, int GroupsAtPreviewCap, int RelevantIndexedPages, object RankedPages);
+    int SuppressedGroups, int GroupsAtPreviewCap, int RelevantIndexedPages, object RankedPages)
+{
+    public string PreviewPolicy { get; set; } = "rank";
+    public string QueryMode { get; set; } = "semantic";
+    public int? MinimumShouldMatch { get; set; }
+    public int? QueryCompleteTokens { get; set; }
+    public int? QueryMaximumTokens { get; set; }
+    // Consumer-visible excerpts only, with no extra search, hidden passage expansion, or scoring changes.
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public object[]? ExposedEvidence { get; set; }
+}
 
 sealed class VidorePaths : IAppPaths, IDisposable
 {

@@ -1,5 +1,10 @@
 # Performance checks
 
+The [mixed-format extraction/search evaluation](mixed-formats/EVALUATION.md)
+adds frozen authored DOCX/XLSX/EML and common-format fixtures, attachment-only
+answers, real OCR and compact-response answer/citation coverage with measured
+preview-count tradeoffs.
+
 The [extraction corpus](extraction/README.md) contains small, licensed public
 documents and quality checks for native text and OCR. Its runner records warm
 extraction times, allocations and sampled process memory. Ordinary tests verify

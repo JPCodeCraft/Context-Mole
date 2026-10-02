@@ -119,6 +119,17 @@ public sealed class VidorePdfBenchmarkTests
         Assert.Throws<InvalidDataException>(() => (manifest with { Queries = [Query(new VidoreQrel(10, 1, [[0, 0, 1.1, 1]]))] }).Validate());
     }
 
+    [Fact]
+    public void SecondDomainAllowsOnlyItsExactPinnedDatasetRevision()
+    {
+        var manifest = new VidoreManifest(1, VidoreManifest.ComputerScienceDataset, VidoreManifest.ComputerScienceRevision,
+            "heldout_v1", "imageNormalizedTopLeft", [new("first", "pdfs/first.pdf", new string('b', 64), "CC BY 4.0", 1)],
+            [new(10, "first", 1)], [Query(new VidoreQrel(10, 2, [[0, 0, 1, 1]]))]);
+        manifest.Validate();
+        Assert.Throws<InvalidDataException>(() => (manifest with { Revision = VidoreManifest.SupportedRevision }).Validate());
+        Assert.Throws<InvalidDataException>(() => (manifest with { Dataset = "vidore/unpinned_domain" }).Validate());
+    }
+
     private static VidoreQuery Query(params VidoreQrel[] qrels) => new("0", "Question", "english", qrels);
     private static PdfRetrievalAnchor Anchor(PdfPageKey page, double score, SourceRegion? region = null) =>
         new(page, Guid.NewGuid(), score, null, null, region);

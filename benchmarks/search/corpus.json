@@ -31,7 +31,7 @@
     { "id": "excluded", "title": "Unapproved draft", "sections": [
       { "id": "draft", "heading": "Operations", "passages": ["Backups run nightly and restore the database from a snapshot.", "This entire procedure is forbidden for production because it is an obsolete draft."] }
     ] },
-    { "id": "email", "title": "Launch decision email", "sections": [
+    { "id": "email", "title": "Launch decision email", "email_body": true, "sections": [
       { "id": "decision", "heading": "Email body", "passages": ["The release launch is scheduled for Friday. Deployment requires approval by the operations lead.\n-- \nDatabase restore consulting and payroll payment services. Contact the signature owner for subscription and lease offers."] },
       { "id": "footer", "heading": "Footer", "boilerplate": true, "passages": ["This email and any attachments are confidential. Database backups, supplier payments, commercial leases and software cancellation are unrelated footer terms."] }
     ] }

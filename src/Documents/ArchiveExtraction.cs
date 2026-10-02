@@ -26,13 +26,13 @@ public sealed partial class DocumentExtractionRegistry
             var entryMimeType = SupportedContent.MimeTypeForPath(entryName);
             if (entry.IsEncrypted)
             {
-                attachments.Add(Rejected(entryName, entryMimeType, "archive-entry", context,
+                attachments.Add(RejectedAttachment(entryName, entryMimeType, "archive-entry", context,
                     "encrypted_archive_entry", "Encrypted archive entries are not supported."));
                 return true;
             }
             if (entry.Size > context.Request.MaxAttachmentBytes)
             {
-                attachments.Add(Rejected(entryName, entryMimeType, "archive-entry", context,
+                attachments.Add(RejectedAttachment(entryName, entryMimeType, "archive-entry", context,
                     "attachment_size_limit", $"Attachment exceeds the {context.Request.MaxAttachmentBytes} byte limit."));
                 return true;
             }
@@ -49,10 +49,8 @@ public sealed partial class DocumentExtractionRegistry
             }
             catch (Exception exception)
             {
-                context.Errors.Add(new ExtractionError(ErrorCode(exception), SafeMessage(exception),
-                    IsTemporary(exception), entryName));
-                attachments.Add(new ExtractedNode(entryName, entryMimeType, "archive-entry", [], [],
-                    ErrorCode(exception)));
+                attachments.Add(RejectedAttachment(entryName, entryMimeType, "archive-entry", context,
+                    ErrorCode(exception), SafeMessage(exception), IsTemporary(exception)));
             }
 
             return true;

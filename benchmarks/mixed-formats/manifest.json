@@ -1,0 +1,1253 @@
+{
+  "version": 1,
+  "fixtures": [
+    {
+      "id": "launch_docx",
+      "file": "launch.docx",
+      "sha256": "769c2ce7b11bcf004ee0733f2ccb14507b03e6cc4cf51a41a8686184ba9291d5",
+      "requires_ocr": false
+    },
+    {
+      "id": "coimbra_docx",
+      "file": "coimbra.docx",
+      "sha256": "24fa8c8e71f9451730a39736bed9b97dbeb40a4b7b7626ba4abb757922bc7a41",
+      "requires_ocr": false
+    },
+    {
+      "id": "operations_xlsx",
+      "file": "operations.xlsx",
+      "sha256": "c86693ca7304013ec25194e995a1e254451e9fa0ce3a6039e22b8bd221f971c7",
+      "requires_ocr": false
+    },
+    {
+      "id": "schedule_xlsx",
+      "file": "schedule.xlsx",
+      "sha256": "d68527a5d7b111b125e5768f68f7bb4e3bdc55d82611430cbb70214f3e07df28",
+      "requires_ocr": false
+    },
+    {
+      "id": "mixed_eml",
+      "file": "mixed.eml",
+      "sha256": "2fb96e9e77299fb48249c94664b7909227bcaa8032edada8db4cd64f76f368c7",
+      "requires_ocr": false
+    },
+    {
+      "id": "html_only_eml",
+      "file": "html-only.eml",
+      "sha256": "10b98f457e1a76bfeef69c7bb11c9b0906985a63cb14b7ad62f131170de9b0f5",
+      "requires_ocr": false
+    },
+    {
+      "id": "duplicate_eml",
+      "file": "duplicate.eml",
+      "sha256": "759be33ecb9afdad5ec03fb45613a05b4e6e72ab8ebb678f5d1ac83eb0b26c44",
+      "requires_ocr": false
+    },
+    {
+      "id": "native_pdf",
+      "file": "harbor.pdf",
+      "sha256": "d284f605c6939d62801f0915399d6c04df3ef4e94f7b2b646fa06bd305d6c8e0",
+      "requires_ocr": false
+    },
+    {
+      "id": "radio_txt",
+      "file": "radio.txt",
+      "sha256": "32aed612a09d889d19f2c3fe6b5ec404625712194093d840d9d1c370699fda8f",
+      "requires_ocr": false
+    },
+    {
+      "id": "maintenance_md",
+      "file": "maintenance.md",
+      "sha256": "439adea121c42bf5aa87afd6fac0c38eabcb7b29742046d4205a8205c1d38b95",
+      "requires_ocr": false
+    },
+    {
+      "id": "venue_html",
+      "file": "venue.html",
+      "sha256": "777816d262b22973b16994ba9b417c85e37ab8a4663c1805331eaebf845715aa",
+      "requires_ocr": false
+    },
+    {
+      "id": "inventory_csv",
+      "file": "inventory.csv",
+      "sha256": "eca18c8ae37dc4870d6edd9bb035ad5b07d78eaa6f4a3ced6c685b6cc16ca8a7",
+      "requires_ocr": false
+    },
+    {
+      "id": "signoff_rtf",
+      "file": "signoff.rtf",
+      "sha256": "268af9ec138f54eb2c74c4e77da55e52630d09b2b08088eacb5ee33b00dd6725",
+      "requires_ocr": false
+    },
+    {
+      "id": "scan_png",
+      "file": "dispatch-card.png",
+      "sha256": "d30bfca25a2ab20962ffb9780c649e0357e866976d630e65e27c18ce8d1ab53e",
+      "requires_ocr": true
+    },
+    {
+      "id": "long_eml",
+      "file": "long.eml",
+      "sha256": "1cb29d809f72ce7daefdb093c824c86476aa81922ef38e528af18ff4f8a8ed00",
+      "requires_ocr": false
+    },
+    {
+      "id": "scanned_eml",
+      "file": "scanned-mail.eml",
+      "sha256": "388e2c59f87b771ab9f091faf82e2a28699b263545b90d0ffe3b4a5ff6135642",
+      "requires_ocr": true
+    }
+  ],
+  "facts": [
+    {
+      "id": "launch_owner",
+      "root": "launch_docx",
+      "chain": [],
+      "anchors": [
+        "Sofia Mendonça",
+        "Aurora field launch"
+      ],
+      "location": {
+        "kind": "structure",
+        "structure_path": "document/paragraph[2]"
+      },
+      "heading": "Aurora field launch"
+    },
+    {
+      "id": "launch_date",
+      "root": "launch_docx",
+      "chain": [],
+      "anchors": [
+        "2026-11-19"
+      ],
+      "location": {
+        "kind": "structure",
+        "structure_path": "document/paragraph[3]"
+      },
+      "heading": "Aurora field launch"
+    },
+    {
+      "id": "launch_budget",
+      "root": "launch_docx",
+      "chain": [],
+      "anchors": [
+        "Field installation",
+        "18400"
+      ],
+      "location": {
+        "kind": "structure",
+        "structure_path": "document/table[1]"
+      },
+      "heading": "Aurora field launch"
+    },
+    {
+      "id": "launch_long_paragraph",
+      "root": "launch_docx",
+      "chain": [],
+      "anchors": [
+        "LANTERN-82"
+      ],
+      "location": {
+        "kind": "structure",
+        "structure_path": "document/paragraph[5]"
+      },
+      "heading": "Closing checklist",
+      "notes": "Answer is near the end of a single long paragraph, after independently authored distractor sentences."
+    },
+    {
+      "id": "launch_long_table",
+      "root": "launch_docx",
+      "chain": [],
+      "anchors": [
+        "MARLIN-440"
+      ],
+      "location": {
+        "kind": "structure",
+        "structure_path": "document/table[2]"
+      },
+      "heading": "Closing checklist",
+      "notes": "Answer is in the final row of a 61-row table including its header."
+    },
+    {
+      "id": "coimbra_owner",
+      "root": "coimbra_docx",
+      "chain": [],
+      "anchors": [
+        "Inês Gonçalves",
+        "2026-12-03"
+      ],
+      "location": {
+        "kind": "structure",
+        "structure_path": "document/paragraph[2]"
+      },
+      "heading": "Entrega em Coimbra"
+    },
+    {
+      "id": "coimbra_room",
+      "root": "coimbra_docx",
+      "chain": [],
+      "anchors": [
+        "Sala Açucena",
+        "28"
+      ],
+      "location": {
+        "kind": "structure",
+        "structure_path": "document/table[1]"
+      },
+      "heading": "Entrega em Coimbra"
+    },
+    {
+      "id": "order_quantity",
+      "root": "operations_xlsx",
+      "chain": [],
+      "anchors": [
+        "Maré sensor",
+        "48"
+      ],
+      "location": {
+        "kind": "sheet",
+        "sheet": "Orders",
+        "cell_range": "A2:F2"
+      }
+    },
+    {
+      "id": "order_iso_date",
+      "root": "operations_xlsx",
+      "chain": [],
+      "anchors": [
+        "2026-11-07",
+        "João Ribeiro"
+      ],
+      "location": {
+        "kind": "sheet",
+        "sheet": "Orders",
+        "cell_range": "A2:F2"
+      }
+    },
+    {
+      "id": "formula_cached",
+      "root": "operations_xlsx",
+      "chain": [],
+      "anchors": [
+        "Published total",
+        "1250"
+      ],
+      "location": {
+        "kind": "sheet",
+        "sheet": "Totals",
+        "cell_range": "A2:B2"
+      },
+      "notes": "B2 stores formula SUM(Orders!F2:F3) and author-supplied numeric cached value 1250. Do not evaluate formulas to generate gold."
+    },
+    {
+      "id": "formula_uncached",
+      "root": "operations_xlsx",
+      "chain": [],
+      "anchors": [
+        "Uncached audit",
+        "SUM(B2:B3)"
+      ],
+      "location": {
+        "kind": "sheet",
+        "sheet": "Totals",
+        "cell_range": "A4:B4"
+      },
+      "notes": "B4 stores formula SUM(B2:B3), without a v element. Only the authored formula string is gold; no numeric result is asserted."
+    },
+    {
+      "id": "styled_date_iso",
+      "root": "schedule_xlsx",
+      "chain": [],
+      "anchors": [
+        "2026-11-19"
+      ],
+      "location": {
+        "kind": "sheet",
+        "sheet": "Schedules",
+        "cell_range": "A2:B2"
+      },
+      "notes": "B2 is raw numeric 46345 with number format yyyy-mm-dd in the Excel 1900 system. Human calendar interpretation is 2026-11-19. It is intentionally absent as literal text, exposing date-format gaps."
+    },
+    {
+      "id": "styled_date_raw",
+      "root": "schedule_xlsx",
+      "chain": [],
+      "anchors": [
+        "46345"
+      ],
+      "location": {
+        "kind": "sheet",
+        "sheet": "Schedules",
+        "cell_range": "A2:B2"
+      },
+      "notes": "Raw-serial control for the same styled date as styled_date_iso; a raw-only extractor should pass this and fail the human-date anchor."
+    },
+    {
+      "id": "sparse_latch",
+      "root": "schedule_xlsx",
+      "chain": [],
+      "anchors": [
+        "Emergency latch",
+        "17"
+      ],
+      "location": {
+        "kind": "sheet",
+        "sheet": "Sparse",
+        "cell_range": "A40:G40"
+      },
+      "notes": "Only A40 and F40 have values; G40 is an explicit blank. Rows and intermediate cells are sparse, not filled with zeros."
+    },
+    {
+      "id": "mail_headers_unicode",
+      "root": "mixed_eml",
+      "chain": [],
+      "anchors": [
+        "Sofia Mendonça",
+        "Revisão Azulejo"
+      ],
+      "location": {
+        "kind": "email_part",
+        "email_part": "headers"
+      },
+      "notes": "From display name and Subject are encoded RFC 2047 UTF-8 headers."
+    },
+    {
+      "id": "mail_body_meeting",
+      "root": "mixed_eml",
+      "chain": [],
+      "anchors": [
+        "Jadebrief",
+        "9:20"
+      ],
+      "location": {
+        "kind": "email_part",
+        "email_part": "body"
+      },
+      "notes": "Plain and HTML alternatives express the same root fact; attachment answers are excluded from both alternatives."
+    },
+    {
+      "id": "attachment_cabinet",
+      "root": "mixed_eml",
+      "chain": [
+        "annex-brief.docx"
+      ],
+      "anchors": [
+        "Azulejo",
+        "AX-204"
+      ],
+      "location": {
+        "kind": "structure",
+        "structure_path": "document/paragraph[2]"
+      },
+      "heading": "Cabinet allocation"
+    },
+    {
+      "id": "attachment_filters",
+      "root": "mixed_eml",
+      "chain": [
+        "annex-stock.xlsx"
+      ],
+      "anchors": [
+        "Shipment filters",
+        "73"
+      ],
+      "location": {
+        "kind": "sheet",
+        "sheet": "Dispatch",
+        "cell_range": "A2:B2"
+      }
+    },
+    {
+      "id": "attachment_reserve",
+      "root": "mixed_eml",
+      "chain": [
+        "annex-approval.pdf"
+      ],
+      "anchors": [
+        "R$ 6.840",
+        "reserve"
+      ],
+      "location": {
+        "kind": "page",
+        "page": 1
+      }
+    },
+    {
+      "id": "attachment_phrase",
+      "root": "mixed_eml",
+      "chain": [
+        "annex-note.txt"
+      ],
+      "anchors": [
+        "NIGHTJAR-52"
+      ],
+      "location": {
+        "kind": "document"
+      }
+    },
+    {
+      "id": "html_mail_room",
+      "root": "html_only_eml",
+      "chain": [],
+      "anchors": [
+        "Sala Ipê"
+      ],
+      "location": {
+        "kind": "email_part",
+        "email_part": "body"
+      },
+      "notes": "HTML-only MIME body, with no plain-text alternative."
+    },
+    {
+      "id": "html_mail_action",
+      "root": "html_only_eml",
+      "chain": [],
+      "anchors": [
+        "levar o medidor azul"
+      ],
+      "location": {
+        "kind": "email_part",
+        "email_part": "body"
+      }
+    },
+    {
+      "id": "duplicate_first",
+      "root": "duplicate_eml",
+      "chain": [
+        "status.txt"
+      ],
+      "anchors": [
+        "Birch-314"
+      ],
+      "location": {
+        "kind": "document"
+      },
+      "notes": "First MIME attachment named status.txt, Content-ID <birch-status@fixtures.invalid>. The second has the identical filename; content anchors distinguish occurrences."
+    },
+    {
+      "id": "duplicate_second",
+      "root": "duplicate_eml",
+      "chain": [
+        "status.txt"
+      ],
+      "anchors": [
+        "Willow-271"
+      ],
+      "location": {
+        "kind": "document"
+      },
+      "notes": "Second MIME attachment named status.txt, Content-ID <willow-status@fixtures.invalid>. Do not collapse children by filename."
+    },
+    {
+      "id": "pdf_shift",
+      "root": "native_pdf",
+      "chain": [],
+      "anchors": [
+        "Cedar vessel",
+        "06:40"
+      ],
+      "location": {
+        "kind": "page",
+        "page": 1
+      }
+    },
+    {
+      "id": "pdf_pressure_pt",
+      "root": "native_pdf",
+      "chain": [],
+      "anchors": [
+        "São Tomé",
+        "4.2 bar"
+      ],
+      "location": {
+        "kind": "page",
+        "page": 2
+      }
+    },
+    {
+      "id": "text_radio",
+      "root": "radio_txt",
+      "chain": [],
+      "anchors": [
+        "channel 14"
+      ],
+      "location": {
+        "kind": "document"
+      }
+    },
+    {
+      "id": "markdown_torque",
+      "root": "maintenance_md",
+      "chain": [],
+      "anchors": [
+        "Torquímetro Coral",
+        "9 N m"
+      ],
+      "location": {
+        "kind": "structure",
+        "structure_path": "html/block[2]"
+      },
+      "heading": "Ajustes da oficina",
+      "notes": "Authored Markdown H1 is block 1; the following torque paragraph is block 2 in the stable HTML block representation."
+    },
+    {
+      "id": "html_capacity",
+      "root": "venue_html",
+      "chain": [],
+      "anchors": [
+        "Juniper",
+        "36"
+      ],
+      "location": {
+        "kind": "structure",
+        "structure_path": "html/table[1]"
+      },
+      "heading": "Workshop seating"
+    },
+    {
+      "id": "csv_stock",
+      "root": "inventory_csv",
+      "chain": [],
+      "anchors": [
+        "Viseu",
+        "65"
+      ],
+      "location": {
+        "kind": "sheet",
+        "sheet": "CSV",
+        "cell_range": "A2:D2"
+      },
+      "notes": "CSV header is row 1; Viseu is row 2. All column positions are authored. CSV is the stable sheet label for this file format."
+    },
+    {
+      "id": "rtf_signoff",
+      "root": "signoff_rtf",
+      "chain": [],
+      "anchors": [
+        "Carla Araújo",
+        "2026-10-27"
+      ],
+      "location": {
+        "kind": "document"
+      }
+    },
+    {
+      "id": "scan_code",
+      "root": "scan_png",
+      "chain": [],
+      "anchors": [
+        "ORCHID-619"
+      ],
+      "location": {
+        "kind": "image_frame",
+        "image_frame": 1
+      },
+      "notes": "Image-only exclusive fact; no text metadata and no sidecar transcript is indexed. Root requires OCR."
+    },
+    {
+      "id": "long_email_seal",
+      "root": "long_eml",
+      "chain": [],
+      "anchors": [
+        "KITE-907"
+      ],
+      "location": {
+        "kind": "email_part",
+        "email_part": "body"
+      },
+      "notes": "Answer near the end of a single long plain-text email body, after dispatch-log distractors."
+    },
+    {
+      "id": "attachment_scan_code",
+      "root": "scanned_eml",
+      "chain": [
+        "dispatch-scan.png"
+      ],
+      "anchors": [
+        "ORCHID-690"
+      ],
+      "location": {
+        "kind": "image_frame",
+        "image_frame": 1
+      },
+      "notes": "Image-only exclusive attachment fact, distinct from the standalone scan. Root requires OCR; neither headers nor body repeat the code."
+    }
+  ],
+  "queries": [
+    {
+      "id": "q01",
+      "text": "Who owns the Aurora field launch?",
+      "terms": [
+        "Aurora",
+        "launch"
+      ],
+      "relevant": [
+        "launch_owner"
+      ],
+      "language": "en",
+      "scope": "any",
+      "negative": false,
+      "split": "development"
+    },
+    {
+      "id": "q02",
+      "text": "On what date will the Aurora installation happen?",
+      "terms": [
+        "Aurora",
+        "installation"
+      ],
+      "relevant": [
+        "launch_date"
+      ],
+      "language": "en",
+      "scope": "any",
+      "negative": false,
+      "split": "holdout"
+    },
+    {
+      "id": "q03",
+      "text": "What is the budget for field installation?",
+      "terms": [
+        "Field",
+        "installation"
+      ],
+      "relevant": [
+        "launch_budget"
+      ],
+      "language": "en",
+      "scope": "any",
+      "negative": false,
+      "split": "development"
+    },
+    {
+      "id": "q04",
+      "text": "Which rendezvous code closes the Aurora checklist?",
+      "terms": [
+        "rendezvous",
+        "Aurora"
+      ],
+      "relevant": [
+        "launch_long_paragraph"
+      ],
+      "language": "en",
+      "scope": "any",
+      "negative": false,
+      "split": "holdout"
+    },
+    {
+      "id": "q05",
+      "text": "Which serial identifies the final calibration crate?",
+      "terms": [
+        "final",
+        "calibration",
+        "crate"
+      ],
+      "relevant": [
+        "launch_long_table"
+      ],
+      "language": "en",
+      "scope": "any",
+      "negative": false,
+      "split": "development"
+    },
+    {
+      "id": "q06",
+      "text": "Quem recebe a entrega em Coimbra e em que data?",
+      "terms": [
+        "Coimbra",
+        "recebe"
+      ],
+      "relevant": [
+        "coimbra_owner"
+      ],
+      "language": "pt",
+      "scope": "any",
+      "negative": false,
+      "split": "holdout"
+    },
+    {
+      "id": "q07",
+      "text": "Quantos lugares tem a Sala Açucena?",
+      "terms": [
+        "Sala",
+        "Açucena"
+      ],
+      "relevant": [
+        "coimbra_room"
+      ],
+      "language": "pt",
+      "scope": "any",
+      "negative": false,
+      "split": "development"
+    },
+    {
+      "id": "q08",
+      "text": "How many Maré sensors were ordered?",
+      "terms": [
+        "Maré",
+        "sensor"
+      ],
+      "relevant": [
+        "order_quantity"
+      ],
+      "language": "en",
+      "scope": "any",
+      "negative": false,
+      "split": "holdout"
+    },
+    {
+      "id": "q09",
+      "text": "Qual a data ISO do pedido de João Ribeiro?",
+      "terms": [
+        "João",
+        "Ribeiro"
+      ],
+      "relevant": [
+        "order_iso_date"
+      ],
+      "language": "pt",
+      "scope": "any",
+      "negative": false,
+      "split": "development"
+    },
+    {
+      "id": "q10",
+      "text": "What cached number is saved for the published total?",
+      "terms": [
+        "Published",
+        "total"
+      ],
+      "relevant": [
+        "formula_cached"
+      ],
+      "language": "en",
+      "scope": "any",
+      "negative": false,
+      "split": "holdout"
+    },
+    {
+      "id": "q11",
+      "text": "Which formula is stored for the uncached audit?",
+      "terms": [
+        "Uncached",
+        "audit"
+      ],
+      "relevant": [
+        "formula_uncached"
+      ],
+      "language": "en",
+      "scope": "any",
+      "negative": false,
+      "split": "development"
+    },
+    {
+      "id": "q12",
+      "text": "What calendar date is Cedar calibration scheduled?",
+      "terms": [
+        "Cedar",
+        "calibration"
+      ],
+      "relevant": [
+        "styled_date_iso"
+      ],
+      "language": "en",
+      "scope": "any",
+      "negative": false,
+      "split": "holdout"
+    },
+    {
+      "id": "q13",
+      "text": "What raw Excel serial is stored for Cedar calibration?",
+      "terms": [
+        "Cedar",
+        "calibration"
+      ],
+      "relevant": [
+        "styled_date_raw"
+      ],
+      "language": "en",
+      "scope": "any",
+      "negative": false,
+      "split": "development"
+    },
+    {
+      "id": "q14",
+      "text": "How many emergency latches are listed in the sparse sheet?",
+      "terms": [
+        "Emergency",
+        "latch"
+      ],
+      "relevant": [
+        "sparse_latch"
+      ],
+      "language": "en",
+      "scope": "any",
+      "negative": false,
+      "split": "holdout"
+    },
+    {
+      "id": "q15",
+      "text": "Quem enviou o email Revisão Azulejo?",
+      "terms": [
+        "Revisão",
+        "Azulejo"
+      ],
+      "relevant": [
+        "mail_headers_unicode"
+      ],
+      "language": "pt",
+      "scope": "root_only",
+      "negative": false,
+      "split": "development"
+    },
+    {
+      "id": "q16",
+      "text": "When does the Jadebrief meeting begin?",
+      "terms": [
+        "Jadebrief",
+        "meeting"
+      ],
+      "relevant": [
+        "mail_body_meeting"
+      ],
+      "language": "en",
+      "scope": "root_only",
+      "negative": false,
+      "split": "holdout"
+    },
+    {
+      "id": "q17",
+      "text": "Which cabinet is allocated to the Azulejo team in the attachment?",
+      "terms": [
+        "Azulejo",
+        "cabinet"
+      ],
+      "relevant": [
+        "attachment_cabinet"
+      ],
+      "language": "en",
+      "scope": "attachments_only",
+      "negative": false,
+      "split": "development"
+    },
+    {
+      "id": "q18",
+      "text": "How many filters are in the attachment's shipment?",
+      "terms": [
+        "Shipment",
+        "filters"
+      ],
+      "relevant": [
+        "attachment_filters"
+      ],
+      "language": "en",
+      "scope": "attachments_only",
+      "negative": false,
+      "split": "holdout"
+    },
+    {
+      "id": "q19",
+      "text": "Qual é o valor da reserva aprovada no PDF anexo?",
+      "terms": [
+        "reserve",
+        "approved"
+      ],
+      "relevant": [
+        "attachment_reserve"
+      ],
+      "language": "pt",
+      "scope": "attachments_only",
+      "negative": false,
+      "split": "development"
+    },
+    {
+      "id": "q20",
+      "text": "What is the access phrase in the attached note?",
+      "terms": [
+        "access",
+        "phrase"
+      ],
+      "relevant": [
+        "attachment_phrase"
+      ],
+      "language": "en",
+      "scope": "attachments_only",
+      "negative": false,
+      "split": "holdout"
+    },
+    {
+      "id": "q21",
+      "text": "Em que sala será a sessão descrita no email só HTML?",
+      "terms": [
+        "sessão",
+        "sala"
+      ],
+      "relevant": [
+        "html_mail_room"
+      ],
+      "language": "pt",
+      "scope": "root_only",
+      "negative": false,
+      "split": "development"
+    },
+    {
+      "id": "q22",
+      "text": "O que é preciso levar para a sessão da Sala Ipê?",
+      "terms": [
+        "Sala",
+        "Ipê",
+        "levar"
+      ],
+      "relevant": [
+        "html_mail_action"
+      ],
+      "language": "pt",
+      "scope": "root_only",
+      "negative": false,
+      "split": "holdout"
+    },
+    {
+      "id": "q23",
+      "text": "What docket belongs to Birch in the first status attachment?",
+      "terms": [
+        "Birch",
+        "docket"
+      ],
+      "relevant": [
+        "duplicate_first"
+      ],
+      "language": "en",
+      "scope": "attachments_only",
+      "negative": false,
+      "split": "development"
+    },
+    {
+      "id": "q24",
+      "text": "What docket belongs to Willow in the second status attachment?",
+      "terms": [
+        "Willow",
+        "docket"
+      ],
+      "relevant": [
+        "duplicate_second"
+      ],
+      "language": "en",
+      "scope": "attachments_only",
+      "negative": false,
+      "split": "holdout"
+    },
+    {
+      "id": "q25",
+      "text": "When does the Cedar vessel shift start?",
+      "terms": [
+        "Cedar",
+        "vessel",
+        "shift"
+      ],
+      "relevant": [
+        "pdf_shift"
+      ],
+      "language": "en",
+      "scope": "any",
+      "negative": false,
+      "split": "development"
+    },
+    {
+      "id": "q26",
+      "text": "Qual a pressão de teste em São Tomé?",
+      "terms": [
+        "São",
+        "Tomé"
+      ],
+      "relevant": [
+        "pdf_pressure_pt"
+      ],
+      "language": "pt",
+      "scope": "any",
+      "negative": false,
+      "split": "holdout"
+    },
+    {
+      "id": "q27",
+      "text": "Which radio channel does the harbor watch use?",
+      "terms": [
+        "harbor",
+        "watch",
+        "radio"
+      ],
+      "relevant": [
+        "text_radio"
+      ],
+      "language": "en",
+      "scope": "any",
+      "negative": false,
+      "split": "development"
+    },
+    {
+      "id": "q28",
+      "text": "Qual o ajuste do Torquímetro Coral?",
+      "terms": [
+        "Torquímetro",
+        "Coral"
+      ],
+      "relevant": [
+        "markdown_torque"
+      ],
+      "language": "pt",
+      "scope": "any",
+      "negative": false,
+      "split": "holdout"
+    },
+    {
+      "id": "q29",
+      "text": "What is the Juniper workshop seating capacity?",
+      "terms": [
+        "Juniper",
+        "Seats"
+      ],
+      "relevant": [
+        "html_capacity"
+      ],
+      "language": "en",
+      "scope": "any",
+      "negative": false,
+      "split": "development"
+    },
+    {
+      "id": "q30",
+      "text": "Quantas unidades tem o depósito de Viseu?",
+      "terms": [
+        "Viseu"
+      ],
+      "relevant": [
+        "csv_stock"
+      ],
+      "language": "pt",
+      "scope": "any",
+      "negative": false,
+      "split": "holdout"
+    },
+    {
+      "id": "q31",
+      "text": "Em que data Carla Araújo assinou a revisão?",
+      "terms": [
+        "Carla",
+        "Araújo"
+      ],
+      "relevant": [
+        "rtf_signoff"
+      ],
+      "language": "pt",
+      "scope": "any",
+      "negative": false,
+      "split": "development"
+    },
+    {
+      "id": "q32",
+      "text": "What dispatch code is printed on the standalone scanned card?",
+      "terms": [
+        "DISPATCH",
+        "CODE"
+      ],
+      "relevant": [
+        "scan_code"
+      ],
+      "language": "en",
+      "scope": "root_only",
+      "negative": false,
+      "split": "holdout"
+    },
+    {
+      "id": "q33",
+      "text": "Which emergency seal is specified at the end of the quay dispatch email?",
+      "terms": [
+        "emergency",
+        "seal"
+      ],
+      "relevant": [
+        "long_email_seal"
+      ],
+      "language": "en",
+      "scope": "root_only",
+      "negative": false,
+      "split": "development"
+    },
+    {
+      "id": "q34",
+      "text": "Quem é responsável pelo lançamento de campo Aurora?",
+      "terms": [
+        "Aurora"
+      ],
+      "relevant": [
+        "launch_owner"
+      ],
+      "language": "pt",
+      "scope": "any",
+      "negative": false,
+      "split": "holdout"
+    },
+    {
+      "id": "q35",
+      "text": "Qual é o código de encontro no fim da lista de encerramento?",
+      "terms": [
+        "rendezvous"
+      ],
+      "relevant": [
+        "launch_long_paragraph"
+      ],
+      "language": "pt",
+      "scope": "any",
+      "negative": false,
+      "split": "development"
+    },
+    {
+      "id": "q36",
+      "text": "What day does João Ribeiro expect delivery?",
+      "terms": [
+        "João",
+        "Ribeiro"
+      ],
+      "relevant": [
+        "order_iso_date"
+      ],
+      "language": "en",
+      "scope": "any",
+      "negative": false,
+      "split": "holdout"
+    },
+    {
+      "id": "q37",
+      "text": "Qual armário foi reservado à equipa Azulejo no anexo?",
+      "terms": [
+        "Azulejo",
+        "cabinet"
+      ],
+      "relevant": [
+        "attachment_cabinet"
+      ],
+      "language": "pt",
+      "scope": "attachments_only",
+      "negative": false,
+      "split": "development"
+    },
+    {
+      "id": "q38",
+      "text": "How much money was set aside in the approval annex?",
+      "terms": [
+        "reserve"
+      ],
+      "relevant": [
+        "attachment_reserve"
+      ],
+      "language": "en",
+      "scope": "attachments_only",
+      "negative": false,
+      "split": "holdout"
+    },
+    {
+      "id": "q39",
+      "text": "Que senha de acesso está na nota anexa?",
+      "terms": [
+        "access",
+        "phrase"
+      ],
+      "relevant": [
+        "attachment_phrase"
+      ],
+      "language": "pt",
+      "scope": "attachments_only",
+      "negative": false,
+      "split": "development"
+    },
+    {
+      "id": "q40",
+      "text": "Which quartzotter permit appears in the records?",
+      "terms": [
+        "quartzotter"
+      ],
+      "relevant": [],
+      "language": "en",
+      "scope": "any",
+      "negative": true,
+      "split": "holdout"
+    },
+    {
+      "id": "q41",
+      "text": "Qual relatório menciona nebulafinch?",
+      "terms": [
+        "nebulafinch"
+      ],
+      "relevant": [],
+      "language": "pt",
+      "scope": "any",
+      "negative": true,
+      "split": "development"
+    },
+    {
+      "id": "q42",
+      "text": "What is the NIGHTJAR access phrase in root documents only?",
+      "terms": [
+        "NIGHTJAR"
+      ],
+      "relevant": [],
+      "language": "en",
+      "scope": "root_only",
+      "negative": true,
+      "split": "holdout"
+    },
+    {
+      "id": "q43",
+      "text": "Qual anexo menciona a reunião Jadebrief?",
+      "terms": [
+        "Jadebrief"
+      ],
+      "relevant": [],
+      "language": "pt",
+      "scope": "attachments_only",
+      "negative": true,
+      "split": "development"
+    },
+    {
+      "id": "q44",
+      "text": "Which root document supplies the Willow docket?",
+      "terms": [
+        "Willow"
+      ],
+      "relevant": [],
+      "language": "en",
+      "scope": "root_only",
+      "negative": true,
+      "split": "holdout"
+    },
+    {
+      "id": "q45",
+      "text": "What dispatch code is printed in the attached scan?",
+      "terms": [
+        "DISPATCH",
+        "CODE"
+      ],
+      "relevant": [
+        "attachment_scan_code"
+      ],
+      "language": "en",
+      "scope": "attachments_only",
+      "negative": false,
+      "split": "development"
+    },
+    {
+      "id": "q46",
+      "text": "Qual é o código de despacho na imagem anexa?",
+      "terms": [
+        "DISPATCH",
+        "CODE"
+      ],
+      "relevant": [
+        "attachment_scan_code"
+      ],
+      "language": "pt",
+      "scope": "attachments_only",
+      "negative": false,
+      "split": "holdout"
+    }
+  ]
+}

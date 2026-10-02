@@ -76,14 +76,15 @@ public sealed partial class SqliteSearchStore : ISearchStore
               (SELECT d.path FROM index_jobs j JOIN documents d ON d.id=j.document_id WHERE j.project_id=p.id AND j.state='running' ORDER BY j.updated_utc LIMIT 1),
               COALESCE(f.queued,0),COALESCE(f.retry_scheduled,0),COALESCE(f.processing,0),
               COALESCE(f.running_retry,0),f.next_retry,
-              COALESCE(f.ready,0),COALESCE(f.attention,0),COALESCE(f.error_files,0),COALESCE(f.with_text,0)
+              COALESCE(f.ready,0),COALESCE(f.attention,0),COALESCE(f.error_files,0),COALESCE(f.with_text,0),
+              (SELECT COUNT(*) FROM file_exclusions x WHERE x.project_id=p.id)
             FROM projects p LEFT JOIN file_totals f ON f.project_id=p.id ORDER BY p.name_key;
             """;
         command.Parameters.AddWithValue("$now", now);
         var rows = new List<(Guid Id, string Name, ProjectState State, long Generation, int Documents,
             int Pending, int Indexed, int Errors, DateTimeOffset? Last, string? Current, int Queued,
             int RetryScheduled, int Processing, int RunningRetry, DateTimeOffset? NextRetry,
-            int Ready, int Attention, int ErrorFiles, int Searchable)>();
+            int Ready, int Attention, int ErrorFiles, int Searchable, int ExcludedPaths)>();
         await using (var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
         {
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
@@ -94,7 +95,7 @@ public sealed partial class SqliteSearchStore : ISearchStore
                     reader.IsDBNull(9) ? null : reader.GetString(9), reader.GetInt32(10), reader.GetInt32(11),
                     reader.GetInt32(12), reader.GetInt32(13),
                     reader.IsDBNull(14) ? null : DateTimeOffset.Parse(reader.GetString(14)),
-                    reader.GetInt32(15), reader.GetInt32(16), reader.GetInt32(17), reader.GetInt32(18)));
+                    reader.GetInt32(15), reader.GetInt32(16), reader.GetInt32(17), reader.GetInt32(18), reader.GetInt32(19)));
             }
         }
 
@@ -109,6 +110,7 @@ public sealed partial class SqliteSearchStore : ISearchStore
                 AttentionCount = row.Attention,
                 ErrorFileCount = row.ErrorFiles,
                 SearchableCount = row.Searchable,
+                ExcludedPathCount = row.ExcludedPaths,
                 Work = new ProjectWorkSummary(row.Queued, row.RetryScheduled, row.Processing, row.RunningRetry,
                     row.NextRetry)
             });
@@ -550,12 +552,13 @@ public sealed partial class SqliteSearchStore : ISearchStore
             JOIN documents d ON d.id=r.document_id AND d.active_revision_id=r.id AND d.tombstoned=0
             JOIN content_nodes c ON c.id=p.content_id
             WHERE d.project_id=$project AND r.embedding_policy_json=$policy_json
-              AND e.policy_key=$policy_key AND LENGTH(e.vector)=1536
+              AND r.preparation_version=$preparation AND e.policy_key=$policy_key AND LENGTH(e.vector)=1536
             ORDER BY e.passage_rowid;
             """;
         command.Parameters.AddWithValue("$project", projectId.ToString());
         command.Parameters.AddWithValue("$policy_json", policyJson);
         command.Parameters.AddWithValue("$policy_key", targetPolicy.Key);
+        command.Parameters.AddWithValue("$preparation", targetPolicy.PreparationVersion);
         var entries = new List<VectorEntry>();
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
@@ -583,7 +586,7 @@ public sealed partial class SqliteSearchStore : ISearchStore
         metadata.Transaction = transaction;
         metadata.CommandText = """
             WITH active_revisions AS (
-              SELECT r.id,r.embedding_policy_json,d.path,d.extension
+              SELECT r.id,r.embedding_policy_json,r.preparation_version,d.path,d.extension
               FROM documents d
               JOIN document_revisions r ON r.id=d.active_revision_id AND r.status='active'
               WHERE d.project_id=$project AND d.tombstoned=0
@@ -597,7 +600,9 @@ public sealed partial class SqliteSearchStore : ISearchStore
               (SELECT COUNT(DISTINCT r.embedding_policy_json) FROM active_revisions r),
               (SELECT MIN(r.embedding_policy_json) FROM active_revisions r),
               (SELECT COUNT(*) FROM active_revisions r WHERE r.embedding_policy_json IS NULL),
-              (SELECT COUNT(*) FROM passages p JOIN active_revisions r ON r.id=p.revision_id WHERE p.semantic_eligible=1);
+              (SELECT COUNT(*) FROM passages p JOIN active_revisions r ON r.id=p.revision_id WHERE p.semantic_eligible=1),
+              (SELECT COUNT(DISTINCT r.preparation_version) FROM active_revisions r),
+              (SELECT MIN(r.preparation_version) FROM active_revisions r);
             """;
         metadata.Parameters.AddWithValue("$project", projectId.ToString());
         long total;
@@ -609,6 +614,8 @@ public sealed partial class SqliteSearchStore : ISearchStore
         string? revisionPolicyJson;
         long revisionsWithoutPolicy;
         long passageCount;
+        int preparationVersionCount;
+        string? preparationVersion;
         await using (var metadataReader = await metadata.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
         {
             await metadataReader.ReadAsync(cancellationToken).ConfigureAwait(false);
@@ -621,6 +628,8 @@ public sealed partial class SqliteSearchStore : ISearchStore
             revisionPolicyJson = metadataReader.IsDBNull(6) ? null : metadataReader.GetString(6);
             revisionsWithoutPolicy = metadataReader.GetInt64(7);
             passageCount = metadataReader.GetInt64(8);
+            preparationVersionCount = metadataReader.GetInt32(9);
+            preparationVersion = metadataReader.IsDBNull(10) ? null : metadataReader.GetString(10);
         }
 
         var policy = revisionCount > 0 && revisionsWithoutPolicy == 0 && revisionPolicyCount == 1 &&
@@ -631,7 +640,9 @@ public sealed partial class SqliteSearchStore : ISearchStore
                                     revisionPolicyCount > 0 && revisionsWithoutPolicy > 0;
         var invalidEmbeddingPolicy = total > 0 && (policy is null || policyKeyCount != 1 ||
             !string.Equals(policy.Key, policyKey, StringComparison.Ordinal));
-        if (mixedRevisionPolicies || invalidEmbeddingPolicy)
+        var invalidPreparation = policy is not null && (preparationVersionCount != 1 ||
+            !string.Equals(policy.PreparationVersion, preparationVersion, StringComparison.Ordinal));
+        if (mixedRevisionPolicies || invalidEmbeddingPolicy || invalidPreparation)
             return new VectorSnapshotMetadata(generation, null, total,
                 Warning: "The active project contains incompatible embedding policy generations.",
                 IsComplete: false);
@@ -660,44 +671,49 @@ public sealed partial class SqliteSearchStore : ISearchStore
         metadata.Transaction = transaction;
         metadata.CommandText = """
             WITH active_revisions AS (
-              SELECT r.id,r.embedding_policy_json,d.id AS document_id,d.path,d.extension
+              SELECT r.id,r.embedding_policy_json,r.preparation_version,d.id AS document_id,d.path,d.extension
               FROM documents d
               JOIN document_revisions r ON r.id=d.active_revision_id AND r.status='active'
               WHERE d.project_id=$project AND d.tombstoned=0
             ),
             revision_coverage AS (
-              SELECT r.id,r.document_id,r.path,r.extension,r.embedding_policy_json,
+              SELECT r.id,r.document_id,r.path,r.extension,r.embedding_policy_json,r.preparation_version,
                      COUNT(p.rowid) AS passage_count,
                      COALESCE(SUM(CASE
-                       WHEN r.embedding_policy_json=$policy_json AND e.policy_key=$policy_key
+                       WHEN r.embedding_policy_json=$policy_json AND r.preparation_version=$preparation AND e.policy_key=$policy_key
                             AND LENGTH(e.vector)=1536 THEN 1 ELSE 0 END),0) AS compatible_passage_count
               FROM active_revisions r
               LEFT JOIN passages p ON p.revision_id=r.id AND p.semantic_eligible=1
               LEFT JOIN embeddings e ON e.passage_rowid=p.rowid AND e.revision_id=r.id
                                       AND e.policy_key=$policy_key
-              GROUP BY r.id,r.document_id,r.path,r.extension,r.embedding_policy_json
+              GROUP BY r.id,r.document_id,r.path,r.extension,r.embedding_policy_json,r.preparation_version
             )
             SELECT
               COALESCE(SUM(compatible_passage_count),0),
               COALESCE(AVG(CASE WHEN compatible_passage_count>0
                                 THEN LENGTH(path)+LENGTH(extension) END),0),
               COUNT(*),
-              COALESCE(SUM(CASE WHEN embedding_policy_json=$policy_json
+              COALESCE(SUM(CASE WHEN embedding_policy_json=$policy_json AND preparation_version=$preparation
                                      AND compatible_passage_count=passage_count THEN 1 ELSE 0 END),0),
               COALESCE(SUM(passage_count),0),
-              COALESCE(SUM(CASE WHEN NOT (COALESCE(embedding_policy_json,'')=$policy_json
+              COALESCE(SUM(CASE WHEN NOT (COALESCE(embedding_policy_json,'')=$policy_json AND preparation_version=$preparation
                                           AND compatible_passage_count=passage_count)
                                      AND EXISTS(
                                        SELECT 1 FROM index_jobs j
                                        WHERE j.document_id=revision_coverage.document_id
                                          AND j.state IN ('queued','retry_wait','running')
                                          AND (j.kind<>$embedding_refresh OR j.target_policy_key=$policy_key)
-                                     ) THEN 1 ELSE 0 END),0)
+                                     ) THEN 1 ELSE 0 END),0),
+              COALESCE(SUM(CASE WHEN preparation_version<>$preparation THEN 1 ELSE 0 END),0),
+              COALESCE(SUM(CASE WHEN preparation_version=$preparation AND NOT (
+                COALESCE(embedding_policy_json,'')=$policy_json AND compatible_passage_count=passage_count)
+                THEN 1 ELSE 0 END),0)
             FROM revision_coverage;
             """;
         metadata.Parameters.AddWithValue("$project", projectId.ToString());
         metadata.Parameters.AddWithValue("$policy_json", policyJson);
         metadata.Parameters.AddWithValue("$policy_key", targetPolicy.Key);
+        metadata.Parameters.AddWithValue("$preparation", targetPolicy.PreparationVersion);
         metadata.Parameters.AddWithValue("$embedding_refresh", (int)IndexJobKind.EmbeddingRefresh);
 
         long entryCount;
@@ -706,6 +722,8 @@ public sealed partial class SqliteSearchStore : ISearchStore
         int compatibleDocumentCount;
         long totalPassageCount;
         int repairQueuedDocumentCount;
+        int reextractionRequiredDocumentCount;
+        int embeddingRepairEligibleDocumentCount;
         await using (var reader = await metadata.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
         {
             await reader.ReadAsync(cancellationToken).ConfigureAwait(false);
@@ -715,6 +733,8 @@ public sealed partial class SqliteSearchStore : ISearchStore
             compatibleDocumentCount = checked((int)reader.GetInt64(3));
             totalPassageCount = reader.GetInt64(4);
             repairQueuedDocumentCount = checked((int)reader.GetInt64(5));
+            reextractionRequiredDocumentCount = checked((int)reader.GetInt64(6));
+            embeddingRepairEligibleDocumentCount = checked((int)reader.GetInt64(7));
         }
 
         var excludedDocumentCount = Math.Max(0, totalDocumentCount - compatibleDocumentCount);
@@ -734,7 +754,9 @@ public sealed partial class SqliteSearchStore : ISearchStore
         var estimatedEntryBytes = VectorEntryBaseBytes + averageStringChars * sizeof(char);
         var requiresStreaming = entryCount > 0 && entryCount > VectorCacheBudgetBytes / estimatedEntryBytes;
         return new VectorSnapshotMetadata(generation, targetPolicy, entryCount, requiresStreaming, warning,
-            isComplete, totalDocumentCount, compatibleDocumentCount, repairQueuedDocumentCount, totalPassageCount);
+            isComplete, totalDocumentCount, compatibleDocumentCount, repairQueuedDocumentCount, totalPassageCount)
+            { ReextractionRequiredDocumentCount = reextractionRequiredDocumentCount,
+              EmbeddingRepairEligibleDocumentCount = embeddingRepairEligibleDocumentCount };
     }
 
     public async IAsyncEnumerable<VectorEntry> StreamVectorEntriesAsync(Guid projectId, long expectedGeneration,
@@ -793,12 +815,13 @@ public sealed partial class SqliteSearchStore : ISearchStore
             JOIN documents d ON d.id=r.document_id AND d.active_revision_id=r.id AND d.tombstoned=0
             JOIN content_nodes c ON c.id=p.content_id
             WHERE d.project_id=$project AND r.embedding_policy_json=$policy_json
-              AND e.policy_key=$policy_key AND LENGTH(e.vector)=1536
+              AND r.preparation_version=$preparation AND e.policy_key=$policy_key AND LENGTH(e.vector)=1536
             """);
         command.Parameters.AddWithValue("$project", projectId.ToString());
         command.Parameters.AddWithValue("$policy_json",
             JsonSerializer.Serialize(targetPolicy, StorageJsonOptions));
         command.Parameters.AddWithValue("$policy_key", targetPolicy.Key);
+        command.Parameters.AddWithValue("$preparation", targetPolicy.PreparationVersion);
         AppendFilters(sql, command, filters, "d", "c");
         sql.Append(" ORDER BY e.passage_rowid;");
         command.CommandText = sql.ToString();

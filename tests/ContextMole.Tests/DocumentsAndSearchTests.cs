@@ -255,7 +255,7 @@ public sealed class FlatVectorIndexTests
         new("test-model", "1", "model-sha", "tokenizer-sha", "fp32", 384, 384, "cls", "l2");
 }
 
-public sealed class HybridSearchTests
+public sealed partial class HybridSearchTests
 {
     [Fact]
     public async Task KeywordSearchMixesClauseTypesAndReportsMatchedFields()
@@ -864,7 +864,8 @@ public sealed class HybridSearchTests
         var anchor = first with { PassageId = Guid.NewGuid(), Ordinal = 1, DisplayText = new string('x', 1200) + " needle late evidence" };
         var store = new SearchStoreFake([anchor, first], new VectorSnapshot(8, null, []), [anchor, first]);
         var result = await CreateSearch(store, new EmbeddingGeneratorFake(Policy, Policy, Vector(1))).SearchAsync(
-            new SearchRequest(Guid.NewGuid(), SearchMode.Keyword, Clauses: [new SearchClause("needle", "needle", Fields: [SearchField.Body])]),
+            new SearchRequest(Guid.NewGuid(), SearchMode.Keyword, Clauses: [new SearchClause("needle", "needle", Fields: [SearchField.Body])],
+                ResultOptions: new SearchResultOptions(PreviewsPerGroup: 1)),
             TestContext.Current.CancellationToken);
         var preview = Assert.Single(Assert.Single(result.Results).Previews);
         Assert.Equal(anchor.PassageId, preview.PassageId);
@@ -874,6 +875,24 @@ public sealed class HybridSearchTests
         Assert.Equal(anchor.DisplayText.Substring(preview.ExcerptStart, preview.ExcerptLength), preview.Excerpt);
         Assert.All(preview.MatchSpans, span => Assert.Equal("needle", anchor.DisplayText.Substring(span.Start, span.Length)));
         Assert.Equal([anchor.PassageId], preview.EvidencePassageIds);
+    }
+
+    [Fact]
+    public async Task DefaultPreviewPairPreservesBothLiteralAnchorSlices()
+    {
+        var first = Candidate(Guid.NewGuid(), "needle first answer") with { Ordinal = 0 };
+        var second = first with { PassageId = Guid.NewGuid(), Ordinal = 1, DisplayText = "needle complementary answer" };
+        var store = new SearchStoreFake([first, second], new VectorSnapshot(8, null, []), [first, second]);
+        var result = await CreateSearch(store, new EmbeddingGeneratorFake(Policy, Policy, Vector(1))).SearchAsync(
+            new SearchRequest(Guid.NewGuid(), SearchMode.Keyword, Clauses: [new SearchClause("needle", "needle", Fields: [SearchField.Body])]),
+            TestContext.Current.CancellationToken);
+        var previews = Assert.Single(result.Results).Previews; Assert.Equal(2, previews.Count);
+        foreach (var preview in previews)
+        {
+            var anchor = preview.PassageId == first.PassageId ? first : second;
+            Assert.Equal(anchor.DisplayText.Substring(preview.ExcerptStart, preview.ExcerptLength), preview.Excerpt);
+            Assert.Contains("answer", preview.Excerpt);
+        }
     }
 
     [Fact]
@@ -1042,7 +1061,7 @@ public sealed class HybridSearchTests
         var result = await CreateSearch(store, new EmbeddingGeneratorFake(Policy, Policy, Vector(1))).SearchAsync(
             new SearchRequest(Guid.NewGuid(), SearchMode.Hybrid, "Target evidence",
                 [new SearchClause("required", "required", SearchClauseOccur.Must, Fields: [SearchField.Body])],
-                Scope: SearchScope.Section), TestContext.Current.CancellationToken);
+                ResultOptions: new SearchResultOptions(PreviewsPerGroup: 1), Scope: SearchScope.Section), TestContext.Current.CancellationToken);
         var group = Assert.Single(SearchWireResponse.FromDomain(result, SearchDetail.Compact).Results);
         Assert.Equal(first.PassageId, Assert.Single(group.Previews).PassageId);
         Assert.Null(Assert.Single(group.Previews).SemanticSimilarity);
@@ -1052,8 +1071,83 @@ public sealed class HybridSearchTests
         Assert.Equal(2, group.EvidencePassageIds.Count);
     }
 
-    private static HybridSearchService CreateSearch(ISearchStore store, IEmbeddingGenerator embeddings) =>
-        new(store, embeddings, new FlatVectorIndexFactory(), new VectorIndexCache(), new ImmediateCpuBudget());
+    [Fact]
+    public async Task OptionalPreviewDiversitySelectsDistinctPagesWithoutChangingScoresOrCitations()
+    {
+        var first = Candidate(Guid.NewGuid(), "evidence 0") with { Location = new SourceLocation(LocationKind.Page, Page: 1) };
+        var pages = new[] { 1, 1, 1, 2, 3, 3, 4, 4 };
+        var candidates = pages.Select((page, index) => first with { PassageId = Guid.NewGuid(),
+            DisplayText = $"evidence {index}", Ordinal = index, Location = first.Location with { Page = page } }).ToArray();
+        var snapshot = new VectorSnapshot(24, Policy,
+            candidates.Select((candidate, index) => VectorEntry(candidate, 0.95f - index * 0.01f)).ToArray());
+        var store = new SearchStoreFake([], snapshot, candidates);
+        var request = new SearchRequest(Guid.NewGuid(), SearchMode.Semantic, "evidence",
+            ResultOptions: new SearchResultOptions(PreviewsPerGroup: 3));
+        var baseline = await CreateSearch(store, new EmbeddingGeneratorFake(Policy, Policy, Vector(1)))
+            .SearchAsync(request, TestContext.Current.CancellationToken);
+        var diversified = await CreateSearch(store, new EmbeddingGeneratorFake(Policy, Policy, Vector(1)), true)
+            .SearchAsync(request, TestContext.Current.CancellationToken);
+        var baselineGroup = Assert.Single(baseline.Results);
+        var group = Assert.Single(diversified.Results);
+        Assert.Equal([1, 1, 1], baselineGroup.Previews.Select(item => item.Location.Page));
+        Assert.Equal([1, 2, 3], group.Previews.Select(item => item.Location.Page));
+        Assert.Equal(baselineGroup.Previews[0].PassageId, group.Previews[0].PassageId);
+        Assert.Equal(baselineGroup.Previews[0].FusedScore, group.Previews[0].FusedScore);
+        Assert.Equal(baselineGroup.Previews[0].SemanticSimilarity, group.Previews[0].SemanticSimilarity);
+        Assert.Equal(baselineGroup.Previews[0].Excerpt, group.Previews[0].Excerpt);
+        Assert.Equal(baselineGroup.Score, group.Score);
+        Assert.Equal(baselineGroup.TotalMatchCount, group.TotalMatchCount);
+        Assert.Equal(baselineGroup.EvidencePassageIds, group.EvidencePassageIds);
+        Assert.Equal([1, 4, 5], group.Previews.Select(item => item.SemanticRank));
+        foreach (var preview in group.Previews)
+        {
+            var source = candidates.Single(candidate => candidate.PassageId == preview.PassageId);
+            Assert.Equal(source.DisplayText.Substring(preview.ExcerptStart, preview.ExcerptLength), preview.Excerpt);
+            Assert.Equal(source.Location, preview.Location);
+            Assert.Equal(1d / (60 + preview.SemanticRank!.Value), preview.FusedScore, 12);
+        }
+    }
+
+    [Fact]
+    public async Task OptionalPreviewDiversityDoesNotPullPagesOutsideItsRankedWindow()
+    {
+        var first = Candidate(Guid.NewGuid(), "evidence") with { Location = new SourceLocation(LocationKind.Page, Page: 1) };
+        var candidates = Enumerable.Range(0, 8).Select(index => first with { PassageId = Guid.NewGuid(), Ordinal = index,
+            Location = first.Location with { Page = index < 6 ? 1 : 2 } }).ToArray();
+        var snapshot = new VectorSnapshot(25, Policy,
+            candidates.Select((candidate, index) => VectorEntry(candidate, 0.95f - index * 0.1f)).ToArray());
+        var response = await CreateSearch(new SearchStoreFake([], snapshot, candidates),
+            new EmbeddingGeneratorFake(Policy, Policy, Vector(1)), true).SearchAsync(
+            new SearchRequest(Guid.NewGuid(), SearchMode.Semantic, "evidence",
+                ResultOptions: new SearchResultOptions(PreviewsPerGroup: 2)), TestContext.Current.CancellationToken);
+        Assert.Equal(candidates.Take(2).Select(candidate => candidate.PassageId),
+            Assert.Single(response.Results).Previews.Select(preview => preview.PassageId));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task OptionalPreviewDiversityPreservesComplementaryClausesAndCoveragePriority(bool higherCoverage)
+    {
+        var first = Candidate(Guid.NewGuid(), higherCoverage ? "alpha beta" : "alpha") with
+            { Location = new SourceLocation(LocationKind.Page, Page: 1) };
+        var second = first with { PassageId = Guid.NewGuid(), Ordinal = 1 };
+        var third = first with { PassageId = Guid.NewGuid(), Ordinal = 2,
+            DisplayText = higherCoverage ? "alpha" : "beta", Location = first.Location with { Page = higherCoverage ? 2 : 1 } };
+        var candidates = new[] { first, second, third };
+        var response = await CreateSearch(new SearchStoreFake(candidates, new VectorSnapshot(26, null, []), candidates),
+            new EmbeddingGeneratorFake(Policy, Policy, Vector(1)), true).SearchAsync(
+            new SearchRequest(Guid.NewGuid(), SearchMode.Keyword, Clauses:
+                [new("alpha", "alpha", Fields: [SearchField.Body]), new("beta", "beta", Fields: [SearchField.Body])],
+                ResultOptions: new SearchResultOptions(PreviewsPerGroup: 2)), TestContext.Current.CancellationToken);
+        Assert.Equal(new[] { first.PassageId, higherCoverage ? second.PassageId : third.PassageId },
+            Assert.Single(response.Results).Previews.Select(preview => preview.PassageId));
+    }
+
+    private static HybridSearchService CreateSearch(ISearchStore store, IEmbeddingGenerator embeddings,
+        bool diversifyPreviews = false, bool anchorSemanticPreviews = false) =>
+        new(store, embeddings, new FlatVectorIndexFactory(), new VectorIndexCache(), new ImmediateCpuBudget(),
+            diversifyPreviews, anchorSemanticPreviews);
 
     private static SearchCandidate Candidate(Guid passageId, string text) =>
         new(passageId, Guid.NewGuid(), Guid.NewGuid(), text, Path.Combine(Path.GetTempPath(), passageId + ".txt"),

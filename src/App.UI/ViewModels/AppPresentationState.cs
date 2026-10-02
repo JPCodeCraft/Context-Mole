@@ -18,7 +18,9 @@ internal sealed class AppPresentationState(TimeProvider? timeProvider = null)
 
     public bool HasLoadedProjects { get; private set; }
     public string? RefreshError { get; private set; }
-    public void ProjectsLoaded() { HasLoadedProjects = true; RefreshError = null; }
+    public DateTimeOffset? LastProjectsLoadedUtc { get; private set; }
+    public bool HasStaleProjectData => HasLoadedProjects && RefreshError is not null;
+    public void ProjectsLoaded() { HasLoadedProjects = true; RefreshError = null; LastProjectsLoadedUtc = _time.GetUtcNow(); }
     public void ProjectsFailed(string message) => RefreshError = message;
 
     public void Notify(string source, Guid? projectId, string message, bool isError = false)
@@ -28,6 +30,9 @@ internal sealed class AppPresentationState(TimeProvider? timeProvider = null)
         _notifications[(source, projectId)] = new(source, projectId, message, isError,
             isError ? null : _time.GetUtcNow().AddSeconds(5), ++_sequence);
     }
+
+    public OperationNotification? NotificationFor(string source, Guid? projectId = null) =>
+        _notifications.TryGetValue((source, projectId), out var notification) ? notification : null;
 
     public void Clear(string source, Guid? projectId = null) => _notifications.Remove((source, projectId));
     public void RemoveProject(Guid projectId)
@@ -48,7 +53,7 @@ internal sealed class AppPresentationState(TimeProvider? timeProvider = null)
         foreach (var key in _notifications.Where(item => item.Value.ExpiresUtc <= now).Select(item => item.Key).ToArray())
             _notifications.Remove(key);
         return _notifications.Values.Where(item => item.ProjectId is null || item.ProjectId == selectedProjectId)
-            .OrderByDescending(item => item.IsError).ThenByDescending(item => item.Sequence).FirstOrDefault();
+            .OrderByDescending(item => item.Sequence).FirstOrDefault();
     }
 
     public AppStatus CurrentStatus(IReadOnlyList<ProjectItemViewModel> projects)
@@ -64,12 +69,14 @@ internal sealed class AppPresentationState(TimeProvider? timeProvider = null)
         var processing = active.Sum(project => project.ProcessingCount);
         var waiting = active.Sum(project => project.QueuedCount);
         var discovering = active.Count(project => project.IsDiscovering);
+        var awaitingFirstScan = active.Count(project => project.Phase == "Awaiting first scan");
         var pausing = projects.Count(project => project.Phase == "Pausing");
         var attention = projects.Count(project => project.ErrorCount > 0 || project.AttentionCount > 0 || project.HasFolderIssues);
         var searchable = projects.Sum(project => project.SearchableCount);
         var parts = new List<string>();
         if (processing > 0) parts.Add($"{processing:N0} {(processing == 1 ? "file" : "files")} processing");
         if (discovering > 0) parts.Add("Finding files");
+        if (awaitingFirstScan > 0) parts.Add("Waiting for the first folder scan");
         if (waiting > 0) parts.Add($"{waiting:N0} queued");
         if (pausing > 0) parts.Add("Finishing pause cleanup");
         if (attention > 0) parts.Add($"{attention} {(attention == 1 ? "project needs" : "projects need")} attention");
@@ -81,6 +88,8 @@ internal sealed class AppPresentationState(TimeProvider? timeProvider = null)
             return new(parts[0], details, AppStatusTone.Busy);
         if (discovering > 0)
             return new("Finding files", details, AppStatusTone.Busy);
+        if (awaitingFirstScan > 0)
+            return new("Waiting for the first folder scan", details, AppStatusTone.Busy);
         if (waiting > 0)
             return new($"{waiting:N0} {(waiting == 1 ? "file" : "files")} queued", details, AppStatusTone.Busy);
         if (pausing > 0)

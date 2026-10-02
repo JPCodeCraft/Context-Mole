@@ -50,7 +50,7 @@ public sealed record McpSearchFilters(
 
 public sealed record McpSearchResultOptions(
     [property: Description("Maximum content groups returned, 1-50; default 10.")] int GroupLimit = 10,
-    [property: Description("Maximum anchor passage previews per content group, 1-10; default 1.")] int PreviewsPerGroup = 1,
+    [property: Description("Maximum anchor passage previews per content group, 1-10; default 2.")] int PreviewsPerGroup = 2,
     [property: Description("Diversity cap per root document, 1-50; default 2.")] int MaxGroupsPerDocument = 2,
     [property: Description("Cosine similarity below which any preview with a semantic similarity is marked below_similarity_threshold; default 0.25, allowed -1 to 1.")] double SemanticSimilarityThreshold = 0.25,
     [property: Description("False by default so borderline semantic leads remain visible. True hides semantic-only matches below the threshold.")] bool StrictSemanticThreshold = false,

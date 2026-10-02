@@ -16,7 +16,8 @@ public sealed record GraniteValidationResult(
     double QuantizedMillisecondsPerVector,
     double Fp32MillisecondsPerVector,
     long PeakWorkingSetBytes,
-    string Decision);
+    string Decision,
+    string? TokenizationVersion = null);
 
 public static class GraniteEmbeddingDiagnostics
 {
@@ -29,6 +30,7 @@ public static class GraniteEmbeddingDiagnostics
         int threadCount,
         CancellationToken cancellationToken = default)
     {
+        GraniteEmbeddingModels.EnsureSupported(model);
         cancellationToken.ThrowIfCancellationRequested();
         var directory = Path.Combine(paths.AssetsDirectory, "granite", model.Revision);
         var tokenizerPath = Path.Combine(directory, "tokenizer.json");
@@ -100,7 +102,8 @@ public static class GraniteEmbeddingDiagnostics
         return new GraniteValidationResult(enabled, meanCosine, meanOverlap,
             quantWatch.Elapsed.TotalMilliseconds / all.Length, fpWatch.Elapsed.TotalMilliseconds / all.Length,
             currentProcess.PeakWorkingSet64,
-            enabled ? "Quantized profile passed parity thresholds." : "Quantized profile failed parity thresholds; FP32 is required.");
+            enabled ? "Quantized profile passed parity thresholds." : "Quantized profile failed parity thresholds; FP32 is required.",
+            model.TokenizationVersion);
     }
 
     private static InferenceSession CreateSession(string path, int threadCount)
@@ -127,8 +130,8 @@ public static class GraniteEmbeddingDiagnostics
         {
             cancellationToken.ThrowIfCancellationRequested();
             var batch = texts.Skip(offset).Take(8).Select(text =>
-                new[] { model.BosTokenId }.Concat(tokenizer.Encode(text, false).First().Ids.Take(511)
-                    .Select(id => (long)id)).ToArray()).ToArray();
+                GraniteEmbeddingInputEncoding.Encode(tokenizer, text, model,
+                    GraniteEmbeddingInputEncoding.PassageMaximumTokens, rejectOverlong: true)).ToArray();
             var length = batch.Max(ids => ids.Length);
             var inputIds = new DenseTensor<long>([batch.Length, length]);
             var attention = new DenseTensor<long>([batch.Length, length]);

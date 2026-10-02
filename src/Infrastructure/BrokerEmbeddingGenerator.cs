@@ -1,5 +1,4 @@
 using System.Runtime.InteropServices;
-using System.Runtime.Intrinsics.X86;
 
 using ContextMole.Broker.Protocol;
 using ContextMole.Core;
@@ -78,7 +77,7 @@ public sealed class BrokerEmbeddingGenerator : IEmbeddingGenerator
         {
             if (_tokenizer is null) return Math.Max(1, (int)Math.Ceiling(text.Length / 3.5));
             lock (_tokenizer)
-                return 1 + _tokenizer.Encode(text, false).First().Ids.Count;
+                return GraniteEmbeddingInputEncoding.CountTokens(_tokenizer, text);
         }
     }
 
@@ -140,13 +139,9 @@ public sealed class BrokerEmbeddingGenerator : IEmbeddingGenerator
     private void LoadTokenizerMetadata(GraniteEmbeddingModelDefinition model, string directory, string fingerprint)
     {
         var tokenizerPath = Path.Combine(directory, "tokenizer.json");
-        var quantized = RuntimeInformation.ProcessArchitecture == Architecture.X64 && Avx2.IsSupported &&
-                        !File.Exists(Path.Combine(directory, "quantization-disabled"));
+        var quantized = GraniteEmbeddingProfiles.UseQuantized(directory, model);
         var modelPath = Path.Combine(directory, quantized ? "model_quint8_avx2.onnx" : "model.onnx");
-        var policy = new EmbeddingPolicy(model.ModelId, model.Revision,
-            quantized ? model.QuantizedSha : model.Fp32Sha, model.TokenizerSha,
-            quantized ? "quint8-avx2" : "fp32", model.SourceDimensions, model.Dimensions,
-            model.Pooling, model.Normalization);
+        var policy = model.CreatePolicy(quantized);
         var complete = File.Exists(Path.Combine(directory, "installation-complete")) &&
                        !File.Exists(Path.Combine(directory, "repair-required")) &&
                        File.Exists(tokenizerPath) && File.Exists(modelPath) &&
@@ -197,8 +192,9 @@ public sealed class BrokerEmbeddingGenerator : IEmbeddingGenerator
         previous?.Dispose();
     }
 
-    private void UpdatePolicy(EmbeddingPolicy policy)
+    internal void UpdatePolicy(EmbeddingPolicy policy)
     {
+        GraniteEmbeddingModels.EnsureCurrentPolicy(policy);
         lock (_stateGate) _policy = policy;
     }
 

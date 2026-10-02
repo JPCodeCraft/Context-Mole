@@ -6,13 +6,21 @@ namespace ContextMole.Core;
 
 public static partial class TextNormalization
 {
-    public static string ForDisplay(string? value)
+    public static string ForDisplay(string? value, bool preserveTableWhitespace = false)
     {
         if (string.IsNullOrWhiteSpace(value))
         {
             return string.Empty;
         }
 
+        // A discretionary hyphen marks a single wrapped word. Resolve its line
+        // continuation before removing invisible formatting, otherwise later
+        // lexical and semantic preparation can no longer distinguish this from
+        // two separate words. Do not join blank paragraphs or capitalized text.
+        // A TSV newline separates rows, not wrapped words. Only U+2028 is an
+        // in-cell line separator in our canonical table representation.
+        value = (preserveTableWhitespace ? SoftHyphenCellLineBreak() : SoftHyphenLineBreak())
+            .Replace(value, "$1$2");
         var builder = new StringBuilder(value.Length);
         foreach (var rune in value.EnumerateRunes())
         {
@@ -30,18 +38,23 @@ public static partial class TextNormalization
             builder.Append(rune.ToString());
         }
 
-        return NewLineWhitespace().Replace(builder.ToString().Replace("\r\n", "\n").Replace('\r', '\n'), "\n").Trim();
+        var cleaned = builder.ToString().Replace("\r\n", "\n").Replace('\r', '\n');
+        // Tabs at either edge, or immediately before a newline, encode empty TSV cells.
+        // Preserve them when canonicalizing table evidence; search normalization stays separate.
+        return preserveTableWhitespace ? cleaned : NewLineWhitespace().Replace(cleaned, "\n").Trim();
     }
 
     public static string ForSearch(string? value, bool dehyphenateLineBreaks = false)
     {
-        var text = ForDisplay(value).Normalize(NormalizationForm.FormKC);
+        // Display cleanup already resolves explicit discretionary-hyphen wraps.
+        // Visible line-end hyphens are joined only for semantic preparation.
+        var text = ForDisplay(value);
         if (dehyphenateLineBreaks)
         {
             text = LineBreakHyphen().Replace(text, "$1$2");
         }
 
-        return AllWhitespace().Replace(text, " ").Trim();
+        return AllWhitespace().Replace(text.Normalize(NormalizationForm.FormKC), " ").Trim();
     }
 
     public static string NameKey(string value) => ForSearch(value).ToUpperInvariant();
@@ -64,7 +77,13 @@ public static partial class TextNormalization
     [GeneratedRegex(@"\s+")]
     private static partial Regex AllWhitespace();
 
-    [GeneratedRegex(@"([\p{L}\p{M}])-\s*\n\s*([\p{Ll}])")]
+    [GeneratedRegex(@"([\p{L}\p{M}])[-\u2010][ \t]*[\n\u2028][ \t]*([\p{Ll}])")]
     private static partial Regex LineBreakHyphen();
+
+    [GeneratedRegex(@"([\p{L}\p{M}])\u00AD[ \t]*(?:\r\n|[\r\n\u2028])[ \t]*([\p{Ll}])")]
+    private static partial Regex SoftHyphenLineBreak();
+
+    [GeneratedRegex(@"([\p{L}\p{M}])\u00AD[ ]*\u2028[ ]*([\p{Ll}])")]
+    private static partial Regex SoftHyphenCellLineBreak();
 
 }

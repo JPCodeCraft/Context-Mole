@@ -79,6 +79,7 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
         ExpansionContext context,
         CancellationToken cancellationToken)
     {
+        using var component = context.EnterComponent(name, relationship);
         cancellationToken.ThrowIfCancellationRequested();
         if (depth > context.Request.MaxDepth)
             return Rejected(name, mimeType, relationship, context, "attachment_depth_limit", "Attachment depth exceeds the limit.");
@@ -92,6 +93,17 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
         catch (InvalidDataException ex)
         {
             return Rejected(name, mimeType, relationship, context, "attachment_size_limit", ex.Message);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            // Keep a read failure inside the component scope already allocated for this node.
+            // An outer container fallback must not allocate the same sibling occurrence twice.
+            context.AddError(new ExtractionError(ErrorCode(ex), SafeMessage(ex), IsTemporary(ex), name));
+            return ExtractedNode.Empty(name, relationship) with { MimeType = mimeType, Status = ErrorCode(ex) };
         }
 
         if (depth > 0) context.AggregateBytes += bytes.LongLength;
@@ -138,7 +150,7 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
         }
         catch (Exception ex)
         {
-            context.Errors.Add(new ExtractionError(ErrorCode(ex), SafeMessage(ex), IsTemporary(ex), name));
+            context.AddError(new ExtractionError(ErrorCode(ex), SafeMessage(ex), IsTemporary(ex), name));
             return ExtractedNode.Empty(name, relationship) with { MimeType = mimeType, Status = ErrorCode(ex) };
         }
         finally
@@ -174,8 +186,8 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
             var renderDpi = SafePdfRenderDpi((double)page.Width, (double)page.Height);
             if (renderDpi is null)
             {
-                context.Errors.Add(new ExtractionError("image_dimensions_limit",
-                    $"PDF page {page.Number} is too large to render safely for OCR.", false, name));
+                context.AddError(new ExtractionError("image_dimensions_limit",
+                    $"PDF page {page.Number} is too large to render safely for OCR.", false, name), $"page:{page.Number}");
                 continue;
             }
 
@@ -215,12 +227,12 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
                         }, cancellationToken);
                         pageBlocks[page.Number] = ReconcilePdfText(page.NativeBlocks, ocr);
                         if (ocr.TimedOut)
-                            context.Errors.Add(new ExtractionError("ocr_timeout", $"OCR timed out for PDF page {page.Number}.", true, name));
+                            context.AddError(new ExtractionError("ocr_timeout", $"OCR timed out for PDF page {page.Number}.", true, name), $"page:{page.Number}");
                     }
                     catch (Exception ex) when (ex is not OperationCanceledException)
                     {
-                        context.Errors.Add(new ExtractionError(ErrorCode(ex),
-                            $"PDF page {page.Number} needs OCR. {SafeMessage(ex)}", IsTemporary(ex), name));
+                        context.AddError(new ExtractionError(ErrorCode(ex),
+                            $"PDF page {page.Number} needs OCR. {SafeMessage(ex)}", IsTemporary(ex), name), $"page:{page.Number}");
                     }
                 }
             }
@@ -304,10 +316,10 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
                 frame++;
                 var width = tiff.GetField(TiffTag.IMAGEWIDTH)?[0].ToInt() ?? 0;
                 var height = tiff.GetField(TiffTag.IMAGELENGTH)?[0].ToInt() ?? 0;
-                if (width <= 0 || height <= 0 || (long)width * height > MaxRasterPixels)
-                    throw new InvalidDataException("TIFF frame dimensions are invalid or exceed the safety limit.");
                 try
                 {
+                    if (width <= 0 || height <= 0 || (long)width * height > MaxRasterPixels)
+                        throw new InvalidDataException("TIFF frame dimensions are invalid or exceed the safety limit.");
                     var frameOcr = await _ocrEngine.RecognizeAsync(preparationToken =>
                     {
                         preparationToken.ThrowIfCancellationRequested();
@@ -331,12 +343,12 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
                     tiffSections.AddRange(ImageOcrSections(frameOcr,
                         new SourceLocation(LocationKind.ImageFrame, Page: frame, ImageFrame: frame)));
                     if (frameOcr.TimedOut)
-                        context.Errors.Add(new ExtractionError("ocr_timeout", $"OCR timed out for TIFF frame {frame}.", true, name));
+                        context.AddError(new ExtractionError("ocr_timeout", $"OCR timed out for TIFF frame {frame}.", true, name), $"frame:{frame}");
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
-                    context.Errors.Add(new ExtractionError(ErrorCode(ex),
-                        $"TIFF frame {frame} needs OCR. {SafeMessage(ex)}", IsTemporary(ex), name));
+                    context.AddError(new ExtractionError(ErrorCode(ex),
+                        $"TIFF frame {frame} needs OCR. {SafeMessage(ex)}", IsTemporary(ex), name), $"frame:{frame}");
                 }
             } while (tiff.ReadDirectory());
             return new ExtractedNode(name, mimeType, relationship, tiffSections, []);
@@ -345,7 +357,7 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
         ValidateRasterImage(bytes);
         var ocr = await _ocrEngine.RecognizeAsync(new OcrRequest(bytes, extension, TimeSpan.FromSeconds(120)), cancellationToken);
         if (ocr.TimedOut)
-            context.Errors.Add(new ExtractionError("ocr_timeout", "OCR timed out for this image.", true, name));
+            context.AddError(new ExtractionError("ocr_timeout", "OCR timed out for this image.", true, name), "frame:1");
         var sections = ImageOcrSections(ocr, new SourceLocation(LocationKind.ImageFrame, Page: 1, ImageFrame: 1));
         return new ExtractedNode(name, mimeType, relationship, sections, []);
     }
@@ -462,7 +474,15 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
 
     private static ExtractedNode Rejected(string name, string? mimeType, string relationship, ExpansionContext context, string code, string message)
     {
-        context.Errors.Add(new ExtractionError(code, message, false, name));
+        context.AddError(new ExtractionError(code, message, false, name));
+        return new ExtractedNode(name, mimeType, relationship, [], [], code);
+    }
+
+    private static ExtractedNode RejectedAttachment(string name, string? mimeType, string relationship,
+        ExpansionContext context, string code, string message, bool retryable = false)
+    {
+        using var component = context.EnterComponent(name, relationship);
+        context.AddError(new ExtractionError(code, message, retryable, name));
         return new ExtractedNode(name, mimeType, relationship, [], [], code);
     }
 
@@ -471,7 +491,7 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
     {
         const string code = "unsupported_format";
         if (string.Equals(relationship, "root", StringComparison.Ordinal))
-            context.Errors.Add(new ExtractionError(code, $"Unsupported document format: {extension ?? "unknown"}.", false, name));
+            context.AddError(new ExtractionError(code, $"Unsupported document format: {extension ?? "unknown"}.", false, name));
         return new ExtractedNode(name, mimeType, relationship, [], [], code);
     }
 
@@ -492,18 +512,49 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
 
     private sealed class ExpansionContext(ExtractionRequest request)
     {
+        private ComponentFrame? _component;
         public ExtractionRequest Request { get; } = request;
         public List<ExtractionError> Errors { get; } = [];
         public HashSet<string> Hashes { get; } = new(StringComparer.Ordinal);
         public long AggregateBytes { get; set; }
         public int AttachmentCount { get; private set; }
 
+        public IDisposable EnterComponent(string name, string relationship)
+        {
+            var parent = _component;
+            var path = "root";
+            if (parent is not null)
+            {
+                var siblingKey = $"{TextNormalization.NameKey(relationship)}\u001f{TextNormalization.NameKey(name)}";
+                var occurrence = parent.Occurrences.GetValueOrDefault(siblingKey);
+                parent.Occurrences[siblingKey] = occurrence + 1;
+                path = $"{parent.Path}/{siblingKey}\u001f{occurrence}";
+            }
+            _component = new ComponentFrame(path);
+            return new ComponentScope(this, parent);
+        }
+
+        public void AddError(ExtractionError error, string? location = null) =>
+            Errors.Add(error with { ComponentKey = location is null ? _component?.Path ?? "root"
+                : $"{_component?.Path ?? "root"}/{location}" });
+
         public bool TryAddAttachment(string parentName)
         {
             if (++AttachmentCount <= Request.MaxAttachments)
                 return true;
-            Errors.Add(new ExtractionError("attachment_count_limit", "Attachment count exceeds the per-document limit.", false, parentName));
+            AddError(new ExtractionError("attachment_count_limit", "Attachment count exceeds the per-document limit.", false, parentName));
             return false;
+        }
+
+        private sealed class ComponentFrame(string path)
+        {
+            public string Path { get; } = path;
+            public Dictionary<string, int> Occurrences { get; } = new(StringComparer.Ordinal);
+        }
+
+        private sealed class ComponentScope(ExpansionContext owner, ComponentFrame? parent) : IDisposable
+        {
+            public void Dispose() => owner._component = parent;
         }
     }
 }

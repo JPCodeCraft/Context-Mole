@@ -38,10 +38,12 @@ public sealed partial class DocumentExtractionRegistry
         Walk(document.Body ?? document.DocumentElement, false);
         return sections;
 
-        void Emit(string text, bool boilerplate, string? path = null, string? warning = null)
+        void Emit(string text, bool boilerplate, string? path = null, string? warning = null, bool table = false)
         {
-            text = TextNormalization.ForDisplay(text);
-            if (text.Length == 0) return;
+            // Individual cells are already normalized. Trimming the complete TSV would erase
+            // leading/trailing empty cells and move values into the wrong columns.
+            if (!table) text = TextNormalization.ForDisplay(text);
+            if (string.IsNullOrWhiteSpace(text)) return;
             var location = baseLocation ?? new SourceLocation(LocationKind.Structure);
             location = location with { StructurePath = path ?? $"html/block[{++ordinal}]", LayoutWarning = warning };
             sections.Add(new ExtractedSection(text, location, method, Heading: heading.Heading,
@@ -72,6 +74,9 @@ public sealed partial class DocumentExtractionRegistry
                 else if (tag == "table")
                 {
                     Flush();
+                    var path = $"html/table[{++tableOrdinal}]";
+                    foreach (var caption in element.Children.Where(child => child.LocalName == "caption"))
+                        Emit(InlineText(caption), boilerplate, path + "/caption");
                     var rows = element.QuerySelectorAll("tr")
                         .Where(row => ReferenceEquals(row.Closest("table"), element)).ToArray();
                     var ambiguous = rows.SelectMany(row => row.Children)
@@ -79,9 +84,9 @@ public sealed partial class DocumentExtractionRegistry
                                      cell.GetAttribute("rowspan") is { } rowSpan && rowSpan != "1");
                     var table = string.Join('\n', rows.Select(row => string.Join('\t', row.Children
                         .Where(cell => cell.LocalName is "td" or "th")
-                        .Select(cell => TextNormalization.ForSearch(cell.TextContent)))));
-                    Emit(table, boilerplate, $"html/table[{++tableOrdinal}]",
-                        ambiguous ? "table_spans: merged cells retained; cell alignment is uncertain." : null);
+                        .Select(cell => TextNormalization.ForSearch(InlineText(cell))))));
+                    Emit(table, boilerplate, path,
+                        ambiguous ? "table_spans: merged cells retained; cell alignment is uncertain." : null, table: true);
                 }
                 else if (tag is "p" or "div" or "section" or "article" or "main" or "aside" or "nav" or
                          "header" or "footer" or "blockquote" or "ul" or "ol" or "li" or "pre" or "figure" or
@@ -105,6 +110,13 @@ public sealed partial class DocumentExtractionRegistry
         }
     }
 
+    private static string InlineText(INode node)
+    {
+        var text = new StringBuilder();
+        AppendInline(node, text);
+        return text.ToString();
+    }
+
     private static void AppendInline(INode node, StringBuilder text)
     {
         foreach (var child in node.ChildNodes)
@@ -114,7 +126,17 @@ public sealed partial class DocumentExtractionRegistry
             {
                 if (element.LocalName == "br") text.Append('\n');
                 else if (element.LocalName == "img") text.Append(element.GetAttribute("alt"));
-                else AppendInline(element, text);
+                else
+                {
+                    // Inline wrappers can contain blocks (including table cells and custom
+                    // elements). TextContent alone silently turns <p>one</p><p>two</p> into onetwo.
+                    var boundary = element.LocalName is "p" or "div" or "section" or "article" or "li" or
+                        "ul" or "ol" or "blockquote" or "pre" or "tr" or "td" or "th" or "caption" or
+                        "h1" or "h2" or "h3" or "h4" or "h5" or "h6" or "dt" or "dd" or "figcaption";
+                    if (boundary) text.Append('\n');
+                    AppendInline(element, text);
+                    if (boundary) text.Append('\n');
+                }
             }
         }
     }

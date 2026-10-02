@@ -51,6 +51,7 @@ public sealed class JsonMcpConfigurationService : IAiClientConnection
         {
             if (existing is not JsonObject entry || !IsManaged(entry))
                 return Conflict($"An existing {ServerName} entry in {Client.DisplayName} is not managed by Context Mole and was left unchanged.");
+            if (!TryValidateManagedEntry(entry, out error)) return Conflict(error!);
 
             var configuredDataDirectory = entry["env"] is JsonObject environment
                 ? TryGetFullPath(ReadString(environment, "CONTEXTMOLE_DATA_DIR"))
@@ -120,6 +121,19 @@ public sealed class JsonMcpConfigurationService : IAiClientConnection
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            var read = await ReadConfigAsync(cancellationToken).ConfigureAwait(false);
+            if (!TryParseRoot(read, out var root, out var error)) return Conflict(error!);
+            if (!TryGetServers(root!, out var servers, out error)) return Conflict(error!);
+
+            JsonObject? managedEntry = null;
+            if (servers is not null && servers.TryGetPropertyValue(ServerName, out var existing))
+            {
+                if (existing is not JsonObject entry || !IsManaged(entry))
+                    return Conflict($"An existing {ServerName} entry in {Client.DisplayName} is not managed by Context Mole and was left unchanged.");
+                if (!TryValidateManagedEntry(entry, out error)) return Conflict(error!);
+                managedEntry = entry;
+            }
+
             var candidate = _deployment.ResolveCandidate();
             if (candidate is null)
             {
@@ -128,18 +142,8 @@ public sealed class JsonMcpConfigurationService : IAiClientConnection
             }
 
             var serverPath = await _deployment.PrepareAsync(candidate, cancellationToken).ConfigureAwait(false);
-            var read = await ReadConfigAsync(cancellationToken).ConfigureAwait(false);
-            if (!TryParseRoot(read, out var root, out var error)) return Conflict(error!);
-            if (!TryGetOrCreateServers(root!, out var servers, out error)) return Conflict(error!);
-
-            if (servers!.TryGetPropertyValue(ServerName, out var existing) &&
-                (existing is not JsonObject entry || !IsManaged(entry)))
-            {
-                return Conflict($"An existing {ServerName} entry in {Client.DisplayName} is not managed by Context Mole and was left unchanged.",
-                    serverPath);
-            }
-
-            servers[ServerName] = BuildEntry(serverPath);
+            if (!TryGetOrCreateServers(root!, out servers, out error)) return Conflict(error!);
+            servers![ServerName] = BuildEntry(serverPath, managedEntry);
             var updated = Serialize(root!);
             if (string.Equals(read, updated, StringComparison.Ordinal))
             {
@@ -185,20 +189,18 @@ public sealed class JsonMcpConfigurationService : IAiClientConnection
         }
     }
 
-    private JsonObject BuildEntry(string serverPath)
+    private JsonObject BuildEntry(string serverPath, JsonObject? existing = null)
     {
-        var entry = new JsonObject
-        {
-            ["command"] = serverPath,
-            ["args"] = new JsonArray(),
-            ["env"] = new JsonObject
-            {
-                ["CONTEXTMOLE_DATA_DIR"] = _appPaths.DataDirectory,
-                [ManagedEnvironmentName] = "1"
-            }
-        };
-        if (_transportType is not null) entry.Insert(0, "type", _transportType);
-        if (_includeAllTools) entry["tools"] = new JsonArray("*");
+        // Ownership covers launch settings, not client permissions or user preferences.
+        var entry = existing?.DeepClone().AsObject() ?? new JsonObject();
+        entry["command"] = serverPath;
+        entry["args"] = new JsonArray();
+        var environment = entry["env"] as JsonObject ?? new JsonObject();
+        environment["CONTEXTMOLE_DATA_DIR"] = _appPaths.DataDirectory;
+        environment[ManagedEnvironmentName] = "1";
+        if (entry["env"] is null) entry["env"] = environment;
+        if (_transportType is not null && !entry.ContainsKey("type")) entry["type"] = _transportType;
+        if (_includeAllTools && !entry.ContainsKey("tools")) entry["tools"] = new JsonArray("*");
         return entry;
     }
 
@@ -206,20 +208,71 @@ public sealed class JsonMcpConfigurationService : IAiClientConnection
         entry["env"] is JsonObject environment &&
         string.Equals(ReadString(environment, ManagedEnvironmentName), "1", StringComparison.Ordinal);
 
+    private bool TryValidateManagedEntry(JsonObject entry, out string? error)
+    {
+        if (entry.TryGetPropertyValue("disabled", out var disabled))
+        {
+            if (disabled is not JsonValue value || !value.TryGetValue<bool>(out var isDisabled))
+            {
+                error = $"The managed {ServerName} disabled setting must be a JSON boolean. Correct it in {Client.DisplayName}'s configuration; the entry was left unchanged.";
+                return false;
+            }
+
+            if (isDisabled)
+            {
+                error = $"This managed connection is disabled in {Client.DisplayName}. Enable it explicitly in the client or set disabled to false before configuring it. Context Mole left the entry unchanged.";
+                return false;
+            }
+        }
+
+        var expectedType = _transportType == "local" ? "\"local\" or \"stdio\"" : $"\"{_transportType ?? "stdio"}\"";
+        foreach (var property in new[] { "type", "transportType" })
+        {
+            if (!entry.TryGetPropertyValue(property, out _)) continue;
+            if (IsSupportedTransport(ReadString(entry, property))) continue;
+            error = $"The managed {ServerName} {property} setting is incompatible with the local server. Set it to {expectedType} in {Client.DisplayName}'s configuration; the entry was left unchanged.";
+            return false;
+        }
+
+        if (entry.ContainsKey("url") || entry.ContainsKey("transport"))
+        {
+            error = $"The managed {ServerName} entry contains URL or nested transport settings that may override its local command. Restore the command-based local configuration in {Client.DisplayName} before configuring it; the entry was left unchanged.";
+            return false;
+        }
+
+        foreach (var (name, value) in entry["env"]!.AsObject())
+        {
+            if (value is JsonValue environmentValue && environmentValue.TryGetValue<string>(out _)) continue;
+            error = $"The managed {ServerName} environment variable \"{name}\" must have a JSON string value. Correct or remove it in {Client.DisplayName}'s configuration; the entry was left unchanged.";
+            return false;
+        }
+
+        if (_includeAllTools && entry.TryGetPropertyValue("tools", out var tools) &&
+            (tools is not JsonArray toolArray || toolArray.Any(tool =>
+                tool is not JsonValue value || !value.TryGetValue<string>(out _))))
+        {
+            error = $"The managed {ServerName} tools setting must be an array of strings. Correct it in {Client.DisplayName}'s configuration; the entry was left unchanged.";
+            return false;
+        }
+
+        error = null;
+        return true;
+    }
+
+    private bool IsSupportedTransport(string? transport) =>
+        string.Equals(transport, _transportType ?? "stdio", StringComparison.Ordinal) ||
+        (_transportType == "local" && string.Equals(transport, "stdio", StringComparison.Ordinal));
+
     private bool NeedsRepair(JsonObject entry)
     {
-        if (_transportType is not null &&
-            !string.Equals(ReadString(entry, "type"), _transportType, StringComparison.Ordinal))
+        if (_transportType is not null && !IsSupportedTransport(ReadString(entry, "type")))
             return true;
 
         if (entry.TryGetPropertyValue("args", out var arguments) &&
             (arguments is not JsonArray argumentArray || argumentArray.Count != 0))
             return true;
 
-        return _includeAllTools &&
-               (entry["tools"] is not JsonArray { Count: 1 } tools ||
-                tools[0] is not JsonValue tool || !tool.TryGetValue<string>(out var name) ||
-                !string.Equals(name, "*", StringComparison.Ordinal));
+        return _includeAllTools && !entry.ContainsKey("tools");
     }
 
     private static string? ReadString(JsonObject value, string propertyName) =>
@@ -230,7 +283,7 @@ public sealed class JsonMcpConfigurationService : IAiClientConnection
         if (string.IsNullOrWhiteSpace(path)) return null;
         try
         {
-            return Path.GetFullPath(path);
+            return Path.IsPathFullyQualified(path) ? Path.GetFullPath(path) : null;
         }
         catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
         {
@@ -254,7 +307,18 @@ public sealed class JsonMcpConfigurationService : IAiClientConnection
 
         try
         {
-            root = JsonNode.Parse(config, documentOptions: new JsonDocumentOptions
+            using var document = JsonDocument.Parse(config, new JsonDocumentOptions
+            {
+                AllowTrailingCommas = true,
+                CommentHandling = JsonCommentHandling.Skip
+            });
+            if (TryFindDuplicateProperty(document.RootElement, "$", out error))
+            {
+                root = null;
+                return false;
+            }
+
+            root = JsonNode.Parse(document.RootElement.GetRawText(), documentOptions: new JsonDocumentOptions
             {
                 AllowTrailingCommas = true,
                 CommentHandling = JsonCommentHandling.Skip
@@ -270,9 +334,38 @@ public sealed class JsonMcpConfigurationService : IAiClientConnection
         }
     }
 
+    private static bool TryFindDuplicateProperty(JsonElement element, string path, out string? error)
+    {
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            var names = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var property in element.EnumerateObject())
+            {
+                if (!names.Add(property.Name))
+                {
+                    error = $"The configuration contains a duplicate JSON property \"{property.Name}\" at {path}. Remove the duplicate properties before configuring or removing this connection; the file was left unchanged.";
+                    return true;
+                }
+
+                if (TryFindDuplicateProperty(property.Value, $"{path}.{property.Name}", out error)) return true;
+            }
+        }
+        else if (element.ValueKind == JsonValueKind.Array)
+        {
+            var index = 0;
+            foreach (var item in element.EnumerateArray())
+            {
+                if (TryFindDuplicateProperty(item, $"{path}[{index++}]", out error)) return true;
+            }
+        }
+
+        error = null;
+        return false;
+    }
+
     private bool TryGetServers(JsonObject root, out JsonObject? servers, out string? error)
     {
-        if (!root.TryGetPropertyValue(_rootProperty, out var value) || value is null)
+        if (!root.TryGetPropertyValue(_rootProperty, out var value))
         {
             servers = null;
             error = null;

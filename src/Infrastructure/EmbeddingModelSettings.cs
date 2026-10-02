@@ -13,7 +13,9 @@ public sealed class EmbeddingModelSettings : IEmbeddingModelSettings
     public EmbeddingModelSettings(IAppPaths paths)
     {
         _settingsPath = Path.Combine(paths.DataDirectory, "ui-state", "embedding-model.txt");
-        _model = TryLoadModel(out var model) ? model : GraniteEmbeddingModels.DefaultChoice;
+        _model = GraniteEmbeddingModels.DefaultChoice;
+        // Normalize valid legacy selections without touching indexes or downloaded model files.
+        TryLoadModel(out _);
     }
 
     public EmbeddingModelChoice Model
@@ -25,12 +27,17 @@ public sealed class EmbeddingModelSettings : IEmbeddingModelSettings
 
     public void SetModel(EmbeddingModelChoice model)
     {
-        if (!Enum.IsDefined(model))
+        if (!GraniteEmbeddingModels.IsSupported(model))
             throw new ArgumentOutOfRangeException(nameof(model));
 
         lock (_gate)
         {
-            if (_model == model) return;
+            if (_model == model)
+            {
+                // A first-run selection still needs a durable settings file.
+                SaveModel(model);
+                return;
+            }
             SaveModel(model);
             _model = model;
         }
@@ -61,7 +68,14 @@ public sealed class EmbeddingModelSettings : IEmbeddingModelSettings
             var value = File.ReadAllText(_settingsPath).Trim();
             if (Enum.TryParse<EmbeddingModelChoice>(value, ignoreCase: true, out var parsed) && Enum.IsDefined(parsed))
             {
-                model = parsed;
+                model = GraniteEmbeddingModels.DefaultChoice;
+                if (parsed != model)
+                {
+                    // A read-only or temporarily locked settings directory must not reactivate 311M.
+                    // Keep using 97M in memory and retry normalization on the next metadata refresh.
+                    try { SaveModel(model); }
+                    catch (ContextMoleException exception) when (exception.Code == "settings_write_failed") { }
+                }
                 return true;
             }
             return false;

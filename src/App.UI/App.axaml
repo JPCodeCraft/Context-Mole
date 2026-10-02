@@ -13,7 +13,7 @@
         <SolidColorBrush x:Key="BorderStrongBrush" Color="#34445E" />
         <SolidColorBrush x:Key="TextPrimaryBrush" Color="#F2F5FA" />
         <SolidColorBrush x:Key="TextSecondaryBrush" Color="#A2AEC0" />
-        <SolidColorBrush x:Key="TextMutedBrush" Color="#718097" />
+        <SolidColorBrush x:Key="TextMutedBrush" Color="#91A0B6" />
         <SolidColorBrush x:Key="AccentBrush" Color="#6E9FFF" />
         <SolidColorBrush x:Key="AccentHoverBrush" Color="#83ADFF" />
         <SolidColorBrush x:Key="AccentSubtleBrush" Color="#182A47" />
@@ -64,7 +64,7 @@
         </Style>
         <Style Selector="TextBlock.eyebrow">
             <Setter Property="Foreground" Value="{DynamicResource TextMutedBrush}" />
-            <Setter Property="FontSize" Value="11" />
+            <Setter Property="FontSize" Value="12" />
             <Setter Property="FontWeight" Value="SemiBold" />
             <Setter Property="LetterSpacing" Value="0.7" />
         </Style>
@@ -292,7 +292,7 @@
         </Style>
         <Style Selector="TextBlock.statusText">
             <Setter Property="Foreground" Value="{DynamicResource TextSecondaryBrush}" />
-            <Setter Property="FontSize" Value="10" />
+            <Setter Property="FontSize" Value="12" />
             <Setter Property="FontWeight" Value="SemiBold" />
         </Style>
         <Style Selector="TextBlock.statusText.ready">

@@ -76,6 +76,7 @@ public sealed class AppStatusTests
         var project = Project(0);
         var state = new AppPresentationState();
         state.ProjectsLoaded();
+        project.UpdateRuntime(new([], null, 0), isInitialScanComplete: true);
         Assert.Equal("No supported files found", state.CurrentStatus([project]).Message);
         project.UpdateRuntime(new([], null, 0), isDiscovering: true);
         Assert.Contains("Finding files", state.CurrentStatus([project]).Message);

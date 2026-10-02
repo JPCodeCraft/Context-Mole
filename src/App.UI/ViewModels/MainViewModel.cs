@@ -131,12 +131,18 @@ internal partial class MainViewModel : ViewModelBase
     public bool IsStatusWarning => _appStatus.Tone == AppStatusTone.Warning;
     public bool IsStatusError => _appStatus.Tone == AppStatusTone.Error;
     public bool IsProjectLoadPending => !_presentation.HasLoadedProjects && _presentation.RefreshError is null;
-    public bool HasProjectLoadError => !_presentation.HasLoadedProjects && _presentation.RefreshError is not null;
+    public bool HasProjectLoadError => _presentation.RefreshError is not null;
+    public bool HasInitialProjectLoadError => !_presentation.HasLoadedProjects && HasProjectLoadError;
+    public bool HasStaleProjectData => _presentation.HasStaleProjectData;
+    public string LastProjectRefreshLabel => _presentation.LastProjectsLoadedUtc is { } checkedAt
+        ? $"Last checked {checkedAt.ToLocalTime():g}. Displayed counts and coverage may be outdated."
+        : "The local index status has not been loaded yet.";
     public string ProjectLoadError => _presentation.RefreshError ?? string.Empty;
     public bool HasNotification => _visibleNotification is not null;
     public string NotificationMessage => _visibleNotification?.Message ?? string.Empty;
     public bool IsNotificationError => _visibleNotification?.IsError == true;
-    public string NotificationLabel => IsNotificationError ? "Action needs attention" : "Action completed";
+    public bool NotificationCanOpenSettings => _visibleNotification?.Source is "ocr_setup" or "semantic_setup" or "model" or "ai_check";
+    public string NotificationLabel => IsNotificationError ? "Action needs attention" : "Action update";
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(CanRunProjectAction))]
@@ -168,6 +174,9 @@ internal partial class MainViewModel : ViewModelBase
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(EmbeddingModelSummary))]
+    [NotifyPropertyChangedFor(nameof(NeedsSemanticModelValidation))]
+    [NotifyPropertyChangedFor(nameof(IsSemanticSearchSetupVisible))]
+    [NotifyPropertyChangedFor(nameof(CanSetUpSemanticSearch))]
     [NotifyPropertyChangedFor(nameof(SemanticSearchStatusLabel))]
     [NotifyPropertyChangedFor(nameof(SemanticSearchStatusMessage))]
     [NotifyPropertyChangedFor(nameof(SemanticSearchSetupButtonLabel))]
@@ -197,11 +206,25 @@ internal partial class MainViewModel : ViewModelBase
     public partial bool IsPreparingEmbeddingModel { get; set; } = true;
 
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CanChangeEmbeddingModel))]
+    [NotifyPropertyChangedFor(nameof(CanSetUpSemanticSearch))]
+    [NotifyPropertyChangedFor(nameof(SemanticSearchStatusLabel))]
+    [NotifyPropertyChangedFor(nameof(SemanticSearchStatusMessage))]
+    [NotifyPropertyChangedFor(nameof(IsSemanticSearchReadyStatus))]
+    [NotifyPropertyChangedFor(nameof(IsSemanticSearchWarningStatus))]
+    [NotifyPropertyChangedFor(nameof(IsSemanticSearchErrorStatus))]
+    public partial bool IsSettingUpEmbeddingModel { get; private set; }
+
+    [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(OcrStatusLabel))]
     [NotifyPropertyChangedFor(nameof(OcrStatusMessage))]
     [NotifyPropertyChangedFor(nameof(CanRetryOcrSetup))]
     [NotifyPropertyChangedFor(nameof(IsOcrReadyStatus))]
     [NotifyPropertyChangedFor(nameof(IsOcrWarningStatus))]
+    [NotifyPropertyChangedFor(nameof(IsOcrProgressVisible))]
+    [NotifyPropertyChangedFor(nameof(CanCancelOcrSetup))]
+    [NotifyPropertyChangedFor(nameof(OcrProgressPercent))]
+    [NotifyPropertyChangedFor(nameof(IsOcrProgressIndeterminate))]
     public partial bool IsPreparingOcr { get; set; } = true;
 
     [ObservableProperty]
@@ -212,11 +235,15 @@ internal partial class MainViewModel : ViewModelBase
     [NotifyPropertyChangedFor(nameof(IsApplicationUpdateReady))]
     [NotifyPropertyChangedFor(nameof(CanRestartForUpdate))]
     [NotifyPropertyChangedFor(nameof(ApplicationUpdateMessage))]
+    [NotifyPropertyChangedFor(nameof(CanCheckApplicationUpdates))]
+    [NotifyPropertyChangedFor(nameof(ApplicationUpdateRetryLabel))]
+    [NotifyPropertyChangedFor(nameof(ApplicationUpdateLastCheckedLabel))]
     [NotifyPropertyChangedFor(nameof(ApplicationUpdateStatusLabel))]
     [NotifyPropertyChangedFor(nameof(IsApplicationUpdateReadyStatus))]
     [NotifyPropertyChangedFor(nameof(IsApplicationUpdateWarningStatus))]
     public partial ApplicationUpdateSnapshot ApplicationUpdate { get; set; } = ApplicationUpdateSnapshot.Disabled;
 
+    public string ApplicationVersionLabel => ApplicationVersionInfo.DisplayLabel;
     public bool IsOcrUnavailable => !_ocrEngine.AreAssetsReady || _ocrEngine.UnavailableReason is not null;
     public bool IsOcrAvailable => !IsOcrUnavailable;
     public bool IsWindowsStartupSupported => _windowsStartup.IsSupported;
@@ -239,44 +266,62 @@ internal partial class MainViewModel : ViewModelBase
             return $"{SelectedCpuUsageProfile} · up to {percentage}% CPU";
         }
     }
-    public string OcrStatusLabel => IsPreparingOcr ? "Setting up" : IsOcrAvailable ? "Ready" : "Needs attention";
-    public string OcrStatusMessage => IsPreparingOcr
-        ? "Preparing OCR for scanned documents and images…"
-        : _ocrEngine.UnavailableReason ?? "OCR is ready and loads only when a scanned document needs it.";
-    public bool CanRetryOcrSetup => !IsPreparingOcr && IsOcrUnavailable;
+    public bool IsOcrPlatformSupported => OcrPresentation.IsPlatformSupported;
+    public string OcrStatusLabel => IsPreparingOcr ? "Setting up" : IsOcrAvailable ? "Ready"
+        : !IsOcrPlatformSupported ? "Unavailable on this platform" : _ocrSetupCanceled ? "Setup canceled" : "Needs attention";
+    public string OcrStatusMessage => _ocrSetupCanceled && !IsPreparingOcr && !IsOcrAvailable
+        ? "This setup attempt was canceled. Any completed files and partial downloads that remain are kept; retry to resume and verify them before use."
+        : OcrPresentation.StatusMessage(IsPreparingOcr, IsOcrAvailable, _ocrEngine.UnavailableReason);
+    public string OcrFeatureImpact => "Text documents remain searchable without OCR. Scanned PDF pages and images need OCR. Indexing may prepare OCR again when a file needs it.";
+    public bool CanRetryOcrSetup => !IsPreparingOcr && IsOcrUnavailable && IsOcrPlatformSupported;
+    public bool CanCancelOcrSetup => IsPreparingOcr && _ocrPreparation is not null && !_ocrPreparation.IsCancellationRequested;
+    public bool IsOcrProgressVisible => IsPreparingOcr;
+    public double OcrProgressPercent => OcrPresentation.DownloadPercent(OcrStatusMessage) ?? 0;
+    public bool IsOcrProgressIndeterminate => OcrPresentation.DownloadPercent(OcrStatusMessage) is null;
     public bool IsOcrReadyStatus => !IsPreparingOcr && IsOcrAvailable;
     public bool IsOcrWarningStatus => !IsPreparingOcr && IsOcrUnavailable;
     public bool IsSemanticSearchUnavailable => !_embeddingGenerator.IsAvailable;
     public bool CanInstallSemanticModel => _modelInstaller.IsSupported;
-    public bool CanSetUpSemanticSearch => IsSemanticSearchUnavailable && CanInstallSemanticModel &&
-        !IsChangingEmbeddingModel && !IsPreparingEmbeddingModel;
-    public bool CanChangeEmbeddingModel => CanInstallSemanticModel &&
-        !IsChangingEmbeddingModel && !IsPreparingEmbeddingModel;
-    public string EmbeddingModelSummary => $"{SelectedEmbeddingModel.Description}. Supports multilingual search.";
+    public bool NeedsSemanticModelValidation => _modelInstaller.NeedsTokenizationValidation(SelectedEmbeddingModel.Choice);
+    public bool IsSemanticSearchSetupVisible => CanInstallSemanticModel &&
+        (IsSemanticSearchUnavailable || NeedsSemanticModelValidation);
+    public bool CanSetUpSemanticSearch => IsSemanticSearchSetupVisible &&
+        !IsChangingEmbeddingModel && !IsPreparingEmbeddingModel && !IsSettingUpEmbeddingModel;
+    public bool CanChangeEmbeddingModel => false;
+    public string EmbeddingModelSummary => "Local multilingual meaning-based search with the pinned Granite Multilingual 97M model.";
     public string SemanticSearchStatusLabel => IsChangingEmbeddingModel ? "Switching model" : IsPreparingEmbeddingModel ? "Loading"
+        : IsSettingUpEmbeddingModel ? "Setting up"
         : IsSemanticSearchUnavailable && !_modelInstaller.IsSupported ? "Unavailable"
         : IsSemanticSearchUnavailable && _modelInstaller.HasModelAssets(SelectedEmbeddingModel.Choice)
             ? "Needs attention"
-            : IsSemanticSearchUnavailable ? "Optional" : "Ready";
+            : IsSemanticSearchUnavailable ? "Optional"
+            : NeedsSemanticModelValidation ? "Verification recommended" : "Ready";
     public string SemanticSearchStatusMessage => IsChangingEmbeddingModel
         ? "Switching the semantic model. Keyword search remains available; project coverage updates as compatible embeddings are rebuilt."
         : IsPreparingEmbeddingModel
         ? $"Loading {SelectedEmbeddingModel.DisplayName} in the background."
+        : IsSettingUpEmbeddingModel
+        ? "Verifying and repairing the selected model. Existing search remains available."
+        : !IsSemanticSearchUnavailable && NeedsSemanticModelValidation
+        ? $"{SelectedEmbeddingModel.DisplayName} is available using full precision. Verify the optimized model with the updated tokenizer before enabling it."
         : !IsSemanticSearchUnavailable
         ? $"{SelectedEmbeddingModel.DisplayName} is ready for multilingual meaning-based search."
         : !_modelInstaller.IsSupported
             ? _embeddingGenerator.UnavailableReason ?? "Semantic search is unavailable on this platform."
             : _modelInstaller.HasModelAssets(SelectedEmbeddingModel.Choice)
-                ? $"Keyword search remains ready. {_embeddingGenerator.UnavailableReason ?? "The selected semantic model needs verification or repair."}"
-                : $"Keyword search is ready. Download {SelectedEmbeddingModel.DisplayName} to add multilingual meaning-based search.";
+                ? $"Keyword search needs no model download. {_embeddingGenerator.UnavailableReason ?? "The selected semantic model needs verification or repair."}"
+                : $"Keyword search needs no model download. Download {SelectedEmbeddingModel.DisplayName} to add multilingual meaning-based search.";
     public string SemanticSearchSetupButtonLabel =>
         _modelInstaller.HasModelAssets(SelectedEmbeddingModel.Choice)
-            ? "Verify and repair selected model"
-            : "Download selected model";
-    public bool IsSemanticSearchReadyStatus => !IsChangingEmbeddingModel && !IsPreparingEmbeddingModel && !IsSemanticSearchUnavailable;
-    public bool IsSemanticSearchWarningStatus => !IsChangingEmbeddingModel && !IsPreparingEmbeddingModel && IsSemanticSearchUnavailable &&
-        CanInstallSemanticModel && _modelInstaller.HasModelAssets(SelectedEmbeddingModel.Choice);
-    public bool IsSemanticSearchErrorStatus => !IsChangingEmbeddingModel && !IsPreparingEmbeddingModel && IsSemanticSearchUnavailable &&
+            ? "Verify and repair semantic model"
+            : "Download semantic search model";
+    public bool IsSemanticSearchReadyStatus => !IsChangingEmbeddingModel && !IsPreparingEmbeddingModel &&
+        !IsSettingUpEmbeddingModel && !IsSemanticSearchUnavailable && !NeedsSemanticModelValidation;
+    public bool IsSemanticSearchWarningStatus => !IsChangingEmbeddingModel && !IsPreparingEmbeddingModel &&
+        !IsSettingUpEmbeddingModel && CanInstallSemanticModel &&
+        (NeedsSemanticModelValidation || IsSemanticSearchUnavailable && _modelInstaller.HasModelAssets(SelectedEmbeddingModel.Choice));
+    public bool IsSemanticSearchErrorStatus => !IsChangingEmbeddingModel && !IsPreparingEmbeddingModel &&
+        !IsSettingUpEmbeddingModel && IsSemanticSearchUnavailable &&
         !CanInstallSemanticModel;
     public bool HasSelection => SelectedProject is not null;
     public bool HasNoSelection => _presentation.HasLoadedProjects && _presentation.RefreshError is null && Projects.Count == 0;
@@ -286,13 +331,19 @@ internal partial class MainViewModel : ViewModelBase
     public string SettingsNavigationAutomationName => IsSettingsSection ? "Settings, current section" : "Settings";
     public bool IsActiveIndexingCollapsed => !IsActiveIndexingExpanded;
     public bool IsAiConnectionsCollapsed => !IsAiConnectionsExpanded;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(VisibleAiConnections))]
+    public partial bool ShowAllAiClients { get; set; }
+    public IReadOnlyList<AiConnectionItemViewModel> VisibleAiConnections => AiConnections
+        .Where(connection => ShowAllAiClients || !connection.IsUnsupportedPlatform).ToArray();
     public bool HasActiveIndexingItems => ActiveIndexingItems.Count > 0;
     public string AiConnectionsStatusLabel
     {
         get
         {
-            if (AiConnections.Any(connection => connection.IsBusy)) return "Checking";
-            if (AiConnections.Any(connection => connection.IsWarningStatus || connection.IsErrorStatus))
+            if (AiConnections.Any(connection => connection.IsBusy))
+                return AiConnections.Any(connection => connection.IsBusy && connection.StatusLabel != "Checking") ? "Working" : "Checking";
+            if (AiConnections.Any(connection => connection.NeedsAttention))
                 return "Needs attention";
             var configured = AiConnections.Count(connection => connection.IsReadyStatus);
             return configured switch
@@ -305,14 +356,21 @@ internal partial class MainViewModel : ViewModelBase
     }
     public bool AreAiConnectionsReady => !AiConnections.Any(connection => connection.IsBusy) &&
         AiConnections.Any(connection => connection.IsReadyStatus) &&
-        !AiConnections.Any(connection => connection.IsWarningStatus || connection.IsErrorStatus);
+        !AiConnections.Any(connection => connection.NeedsAttention);
     public bool DoAiConnectionsNeedAttention => !AiConnections.Any(connection => connection.IsBusy) &&
-        AiConnections.Any(connection => connection.IsWarningStatus || connection.IsErrorStatus);
+        AiConnections.Any(connection => connection.NeedsAttention);
     public bool IsApplicationUpdateProgressVisible => ApplicationUpdate.State == ApplicationUpdateState.Downloading;
     public bool IsApplicationUpdateReady => ApplicationUpdate.State == ApplicationUpdateState.Ready;
     public bool CanRestartForUpdate => IsApplicationUpdateReady && !_hasAnyActiveIndexingItems;
+    public bool CanCheckApplicationUpdates => _applicationUpdates.CanCheckNow && ApplicationUpdate.State is not
+        (ApplicationUpdateState.Checking or ApplicationUpdateState.Downloading);
+    public string ApplicationUpdateRetryLabel => ApplicationUpdate.AvailableVersion is not null &&
+        ApplicationUpdate.State == ApplicationUpdateState.Error ? "Retry download" : "Check again";
+    public string ApplicationUpdateLastCheckedLabel => ApplicationUpdate.LastAttemptUtc is { } attempt
+        ? $"Last attempt {attempt.ToLocalTime():g}. Automatic checks run every 6 hours." : string.Empty;
+    public Task CheckApplicationUpdatesAsync() => _applicationUpdates.CheckNowAsync();
     public string ApplicationUpdateMessage => IsApplicationUpdateReady && _hasAnyActiveIndexingItems
-        ? $"{ApplicationUpdate.Message} Restart will be available when indexing is idle."
+        ? $"{ApplicationUpdate.Message} Pause processing in active projects, then wait for pause cleanup to finish before restarting."
         : ApplicationUpdate.Message;
     public string ApplicationUpdateStatusLabel => ApplicationUpdate.State switch
     {
@@ -332,6 +390,8 @@ internal partial class MainViewModel : ViewModelBase
         RefreshOcrAvailability();
         OnPropertyChanged(nameof(IsSemanticSearchUnavailable));
         OnPropertyChanged(nameof(CanInstallSemanticModel));
+        OnPropertyChanged(nameof(NeedsSemanticModelValidation));
+        OnPropertyChanged(nameof(IsSemanticSearchSetupVisible));
         OnPropertyChanged(nameof(CanSetUpSemanticSearch));
         OnPropertyChanged(nameof(CanChangeEmbeddingModel));
         OnPropertyChanged(nameof(EmbeddingModelSummary));
@@ -380,6 +440,7 @@ internal partial class MainViewModel : ViewModelBase
 
     private void RefreshPresentation()
     {
+        foreach (var project in Projects) project.SetFreshness(HasStaleProjectData, _presentation.LastProjectsLoadedUtc);
         var status = _presentation.CurrentStatus(Projects.ToArray());
         if (_appStatus != status)
         {
@@ -399,9 +460,13 @@ internal partial class MainViewModel : ViewModelBase
             OnPropertyChanged(nameof(NotificationMessage));
             OnPropertyChanged(nameof(IsNotificationError));
             OnPropertyChanged(nameof(NotificationLabel));
+            OnPropertyChanged(nameof(NotificationCanOpenSettings));
         }
         OnPropertyChanged(nameof(IsProjectLoadPending));
         OnPropertyChanged(nameof(HasProjectLoadError));
+        OnPropertyChanged(nameof(HasInitialProjectLoadError));
+        OnPropertyChanged(nameof(HasStaleProjectData));
+        OnPropertyChanged(nameof(LastProjectRefreshLabel));
         OnPropertyChanged(nameof(ProjectLoadError));
         OnPropertyChanged(nameof(HasNoSelection));
     }
@@ -411,13 +476,16 @@ internal partial class MainViewModel : ViewModelBase
     {
         if (IsProjectActionBusy)
             throw new ContextMoleException("project_action_busy", "Another project action is in progress. Wait for it to finish, then try again.", true);
+        var previousFeedback = _presentation.NotificationFor(source, projectId);
         IsProjectActionBusy = true;
         foreach (var project in Projects) project.SetActionsBusy(true);
         ProjectActionMessage = description;
         try
         {
             await action();
-            _presentation.Clear(source, projectId);
+            // Clear only the message that predated this operation. The action may have just
+            // published useful completion feedback under the same source.
+            _presentation.Dismiss(previousFeedback);
         }
         catch (Exception exception)
         {
@@ -445,28 +513,32 @@ internal partial class MainViewModel : ViewModelBase
         if (sourceIndex == targetIndex) return false;
 
         Projects.Move(sourceIndex, targetIndex);
+        NotifyProjectReorderAvailability();
         return true;
     }
 
-    public void EndProjectReorder(bool persist)
+    public bool EndProjectReorder(bool persist)
     {
-        if (!_isProjectReordering) return;
+        if (!_isProjectReordering) return false;
         _isProjectReordering = false;
-        if (!persist) return;
+        if (!persist) return false;
 
         try
         {
             _projectOrder.Save(Projects.Select(project => project.Id).ToArray());
+            return true;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
             Notify("project_order", $"The project order could not be saved: {exception.Message}", isError: true);
+            return false;
         }
     }
 
     partial void OnSelectedProjectChanged(ProjectItemViewModel? value)
     {
         Interlocked.Increment(ref _semanticRefreshSequence);
+        NotifyProjectReorderAvailability();
         RefreshPresentation();
         ReconcileIndexingActivities(_indexingActivities.GetSnapshot(value?.Id));
         if (value is not null)
@@ -511,7 +583,7 @@ internal partial class MainViewModel : ViewModelBase
     public async Task CreateAsync(string name, IReadOnlyList<string> folders)
     {
         await MutateAsync(() => _writer.CreateProjectAsync(new CreateProjectRequest(name, folders)), selectCreated: true);
-        Notify("project_saved", $"{name} saved.");
+        Notify("project_saved", $"{name} saved. Its first folder scan is queued. Use Connect an assistant to search the files as they become available.");
     }
 
     public async Task UpdateAsync(Guid projectId, string name, IReadOnlyList<string> folders)
@@ -540,9 +612,10 @@ internal partial class MainViewModel : ViewModelBase
             }
             var drain = _projectIndexingControl.DrainPausedAsync(selected.Id);
             _projectPauseDrains[selected.Id] = drain;
-            _ = ObservePauseDrainAsync(selected.Id, selected.Name, drain);
             await RefreshAsync();
-            Notify("pause", $"{selected.Name} is paused. Interrupted files remain queued for resume.", selected.Id);
+            if (!drain.IsCompleted)
+                Notify("pause", $"Pausing processing in {selected.Name}… interrupted files will remain queued.", selected.Id);
+            _ = ObservePauseDrainAsync(selected.Id, selected.Name, drain);
             return;
         }
 
@@ -576,6 +649,9 @@ internal partial class MainViewModel : ViewModelBase
             await Dispatcher.UIThread.InvokeAsync(() =>
             {
                 _presentation.Clear("pause_cleanup", projectId);
+                if (_projectPauseDrains.TryGetValue(projectId, out var current) && ReferenceEquals(current, drain) &&
+                    Projects.FirstOrDefault(project => project.Id == projectId)?.State == ProjectState.Paused)
+                    Notify("pause", $"Processing paused in {projectName}. Folder changes are still tracked; queued files wait for resume. Deleted source files are removed from search.", projectId);
                 RefreshPresentation();
             });
         }
@@ -631,7 +707,24 @@ internal partial class MainViewModel : ViewModelBase
         _embeddingPolicyRefreshes.TryBeginRefresh(selected.Id, policy.Key);
         await RefreshSemanticIndexAsync(selected.Id, selected.SearchGeneration);
         await RefreshAsync();
-        Notify("semantic_repair", $"Queued semantic-index repair for {selected.Name}. Meaning-based coverage will expand in the background.", selected.Id);
+        var metadata = await _store.LoadVectorSnapshotMetadataAsync(selected.Id, policy);
+        Notify("semantic_repair", FormatSemanticRepairNotification(selected.Name, metadata), selected.Id,
+            isError: metadata.ExcludedDocumentCount > metadata.RepairQueuedDocumentCount);
+    }
+
+    internal static string FormatSemanticRepairNotification(string projectName, VectorSnapshotMetadata metadata)
+    {
+        if (metadata.IsComplete) return $"{projectName} has complete meaning-based coverage.";
+        var queued = metadata.RepairQueuedDocumentCount;
+        var message = queued > 0
+            ? $"Semantic-index repair is queued for {queued} file{(queued == 1 ? string.Empty : "s")} in {projectName}."
+            : $"Semantic-index repair was requested for {projectName}, but no repair jobs are queued.";
+        var remaining = Math.Max(0, metadata.ExcludedDocumentCount - queued);
+        if (metadata.ReextractionRequiredDocumentCount > 0)
+            message += $" {metadata.ReextractionRequiredDocumentCount} older file{(metadata.ReextractionRequiredDocumentCount == 1 ? " requires" : "s require")} source-backed Reindex; source folders must be available. Existing indexed text is kept until replacement succeeds.";
+        return remaining > 0
+            ? $"{message} {remaining} file{(remaining == 1 ? " still lacks" : "s still lack")} compatible meaning-based coverage. Files prepared by an older version require Reindex with their source folders available."
+            : $"{message} Meaning-based coverage can expand in the background as repairs succeed. Unavailable sources keep their previous indexed text.";
     }
 
     public Task SetCpuUsageProfileAsync(CpuUsageProfile profile)
@@ -643,10 +736,30 @@ internal partial class MainViewModel : ViewModelBase
     }
 
     public Task RetryOcrSetupAsync(CancellationToken cancellationToken = default) =>
-        IsPreparingOcr ? Task.CompletedTask : PrepareOcrAsync(cancellationToken, loadSessions: true);
+        !CanRetryOcrSetup ? Task.CompletedTask : PrepareOcrAsync(cancellationToken, loadSessions: true);
+
+    public async Task SetUpSemanticSearchAsync(Func<GraniteEmbeddingModelDefinition, Task<bool>> showSetup)
+    {
+        if (!CanSetUpSemanticSearch) return;
+        var model = SelectedEmbeddingModel;
+        IsSettingUpEmbeddingModel = true;
+        try
+        {
+            // An available FP32 fallback still needs the explicit verification dialog when
+            // optimized-model validation predates the selected model's input template.
+            if (!await showSetup(model)) return;
+            await SetEmbeddingModelAsync(model);
+        }
+        finally
+        {
+            IsSettingUpEmbeddingModel = false;
+            RefreshAssetAvailability();
+        }
+    }
 
     public async Task SetEmbeddingModelAsync(GraniteEmbeddingModelDefinition model)
     {
+        GraniteEmbeddingModels.EnsureSupported(model);
         if (!_modelInstaller.IsModelInstalled(model.Choice))
             throw new ContextMoleException("model_unavailable", $"Download {model.DisplayName} before selecting it.");
 
@@ -759,17 +872,23 @@ internal partial class MainViewModel : ViewModelBase
 
     public async Task<AiConnectionStatus> ToggleAiConnectionAsync(AiConnectionItemViewModel connection)
     {
-        if (!connection.SupportsAutomaticSetup)
-            return await _aiConnections.GetStatusAsync(connection.Id).ConfigureAwait(false);
+        if (!connection.SupportsAutomaticSetup || connection.IsUnsupportedPlatform || connection.IsBusy)
+            return connection.Snapshot;
 
-        await _aiRefreshGate.WaitAsync();
-        connection.IsBusy = true;
+        // Latch the requested operation before waiting for the shared gate. A second click must
+        // not queue a future opposite operation against a state that the first click will change.
+        var operation = connection.RequiresReadOnlyCheck ? AiConnectionOperation.Checking
+            : connection.IsConfigured ? AiConnectionOperation.Removing
+            : connection.State == AiConnectionState.UpdateRequired ? AiConnectionOperation.Updating
+            : AiConnectionOperation.Configuring;
+        connection.BeginOperation(operation, explicitlyChosen: true);
         NotifyAiConnectionsSummaryChanged();
+        await _aiRefreshGate.WaitAsync();
         try
         {
-            var result = connection.RequiresReadOnlyCheck
+            var result = operation == AiConnectionOperation.Checking
                 ? await _aiConnections.GetStatusAsync(connection.Id).ConfigureAwait(false)
-                : connection.IsConfigured
+                : operation == AiConnectionOperation.Removing
                 ? await _aiConnections.DisconnectAsync(connection.Id).ConfigureAwait(false)
                 : await _aiConnections.ConnectAsync(connection.Id).ConfigureAwait(false);
             await Dispatcher.UIThread.InvokeAsync(() => ApplyAiConnectionStatus(connection, result));
@@ -882,13 +1001,14 @@ internal partial class MainViewModel : ViewModelBase
                     await Dispatcher.UIThread.InvokeAsync(() =>
                     {
                         foreach (var project in Projects)
-                            project.UpdateRuntime(_indexingActivities.GetSnapshot(project.Id), _indexingActivities.IsDiscovering(project.Id));
+                            project.UpdateRuntime(_indexingActivities.GetSnapshot(project.Id), _indexingActivities.IsDiscovering(project.Id),
+                                _indexingActivities.IsInitialScanComplete(project.Id, project.Folders));
                         ReconcileIndexingActivities(_indexingActivities.GetSnapshot(SelectedProject?.Id));
                     });
                     if (++summaryTick % 4 != 0) continue;
 
-                    await RefreshAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
                     await Dispatcher.UIThread.InvokeAsync(RefreshAssetAvailability);
+                    await RefreshAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
                     if (IsSettingsSection && DateTimeOffset.UtcNow >= _nextAiRefreshUtc)
                         await RefreshAiConnectionsSafeAsync(cancellationToken).ConfigureAwait(false);
                 }
@@ -938,34 +1058,40 @@ internal partial class MainViewModel : ViewModelBase
 
     private async Task PrepareOcrAsync(CancellationToken cancellationToken, bool loadSessions = false)
     {
-        await Dispatcher.UIThread.InvokeAsync(() => IsPreparingOcr = true);
+        using var preparation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        await Dispatcher.UIThread.InvokeAsync(() =>
+        {
+            _ocrPreparation = preparation;
+            _ocrSetupCanceled = false;
+            IsPreparingOcr = true;
+            RefreshOcrAvailability();
+        });
         try
         {
             if (loadSessions)
-                await _ocrEngine.EnsureAvailableAsync(cancellationToken).ConfigureAwait(false);
+                await _ocrEngine.EnsureAvailableAsync(preparation.Token).ConfigureAwait(false);
             else
-                await _ocrEngine.PrepareAssetsAsync(cancellationToken).ConfigureAwait(false);
+                await _ocrEngine.PrepareAssetsAsync(preparation.Token).ConfigureAwait(false);
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (preparation.IsCancellationRequested)
         {
-            return;
+            if (!cancellationToken.IsCancellationRequested)
+                await Dispatcher.UIThread.InvokeAsync(() => _ocrSetupCanceled = true);
         }
         catch (Exception exception)
         {
-            await Dispatcher.UIThread.InvokeAsync(() => Notify("ocr_setup", $"OCR setup: {exception.Message}", isError: true));
+            await Dispatcher.UIThread.InvokeAsync(() => Notify("ocr_setup", $"OCR setup: {exception.Message} Text documents remain searchable. Open Settings → Document OCR for progress and recovery.", isError: true));
         }
         finally
         {
-            if (!cancellationToken.IsCancellationRequested)
+            await Dispatcher.UIThread.InvokeAsync(() =>
             {
-                await Dispatcher.UIThread.InvokeAsync(() =>
-                {
-                    IsPreparingOcr = false;
-                    RefreshOcrAvailability();
-                    if (_ocrEngine.IsAvailable) _presentation.Clear("ocr_setup");
-                    RefreshPresentation();
-                });
-            }
+                if (ReferenceEquals(_ocrPreparation, preparation)) _ocrPreparation = null;
+                IsPreparingOcr = false;
+                RefreshOcrAvailability();
+                if (IsOcrAvailable) _presentation.Clear("ocr_setup");
+                RefreshPresentation();
+            });
         }
     }
 
@@ -979,7 +1105,7 @@ internal partial class MainViewModel : ViewModelBase
         {
             IsCheckingAiConnections = true;
             connections = AiConnections.ToArray();
-            foreach (var connection in connections) connection.IsBusy = true;
+            foreach (var connection in connections) connection.BeginOperation(AiConnectionOperation.Checking);
             NotifyAiConnectionsSummaryChanged();
         });
         await Task.WhenAll(connections.Select(async connection =>
@@ -1044,6 +1170,7 @@ internal partial class MainViewModel : ViewModelBase
         OnPropertyChanged(nameof(AiConnectionsStatusLabel));
         OnPropertyChanged(nameof(AreAiConnectionsReady));
         OnPropertyChanged(nameof(DoAiConnectionsNeedAttention));
+        OnPropertyChanged(nameof(VisibleAiConnections));
     }
 
     private void SortAiConnections()
@@ -1076,6 +1203,10 @@ internal partial class MainViewModel : ViewModelBase
         OnPropertyChanged(nameof(CanRetryOcrSetup));
         OnPropertyChanged(nameof(IsOcrReadyStatus));
         OnPropertyChanged(nameof(IsOcrWarningStatus));
+        OnPropertyChanged(nameof(CanCancelOcrSetup));
+        OnPropertyChanged(nameof(IsOcrProgressVisible));
+        OnPropertyChanged(nameof(OcrProgressPercent));
+        OnPropertyChanged(nameof(IsOcrProgressIndeterminate));
     }
 
     private async Task RefreshErrorsSafeAsync(Guid projectId, CancellationToken cancellationToken = default)
@@ -1090,7 +1221,10 @@ internal partial class MainViewModel : ViewModelBase
             await Dispatcher.UIThread.InvokeAsync(() =>
             {
                 if (SelectedProject is { } selected && selected.Id == projectId && selected.SearchGeneration == generation)
+                {
+                    selected.FailIssueRefresh(exception.Message);
                     Notify("errors_refresh", $"Current issues could not be refreshed: {exception.Message}", projectId, isError: true);
+                }
             });
         }
     }
@@ -1147,39 +1281,53 @@ internal partial class MainViewModel : ViewModelBase
         // so an older result cannot restore an obsolete page after a newer one has been displayed.
         await _errorRefreshGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         ProjectItemViewModel? requestedProject = null;
-        var offset = 0;
         var expectedErrorCount = 0;
         var expectedGeneration = -1L;
+        ProjectIssueListRequest? request = null;
+        long queryVersion = 0;
         try
         {
             await Dispatcher.UIThread.InvokeAsync(() =>
             {
-                if (SelectedProject is not { } selected || selected.Id != projectId ||
-                    !selected.HasErrors || !selected.IsErrorsExpanded)
-                {
-                    if (SelectedProject?.Id == projectId && !SelectedProject.HasErrors)
-                    {
-                        _presentation.Clear("errors_refresh", projectId);
-                        RefreshPresentation();
-                    }
-                    return;
-                }
+                if (SelectedProject is not { } selected || selected.Id != projectId) return;
                 requestedProject = selected;
-                offset = selected.ErrorPageOffset;
                 expectedErrorCount = selected.ErrorCount;
                 expectedGeneration = selected.SearchGeneration;
-                selected.IsErrorsLoading = true;
+                queryVersion = selected.IssueQueryVersion;
+                if (selected.IsErrorsExpanded)
+                {
+                    request = selected.CreateIssueRequest();
+                    selected.IsErrorsLoading = true;
+                }
             });
             if (requestedProject is null) return;
-            var errors = await _store.ListProjectErrorsAsync(projectId, ProjectItemViewModel.ErrorPageSize,
-                cancellationToken, offset).ConfigureAwait(false);
+            ProjectIssueListResponse? errors = null;
+            if (request is not null)
+            {
+                try { errors = await _store.ListProjectIssuesAsync(request, cancellationToken).ConfigureAwait(false); }
+                catch (ContextMoleException exception) when (exception.Code is "issues_changed" or "invalid_cursor")
+                {
+                    request = null;
+                    await Dispatcher.UIThread.InvokeAsync(() =>
+                    {
+                        if (!ReferenceEquals(SelectedProject, requestedProject) || requestedProject.IssueQueryVersion != queryVersion) return;
+                        requestedProject.ResetIssuePages();
+                        requestedProject.SetIssueActionMessage("Current issues changed; the list was refreshed from the first page.");
+                        queryVersion = requestedProject.IssueQueryVersion;
+                        request = requestedProject.CreateIssueRequest();
+                    });
+                    if (request is not null) errors = await _store.ListProjectIssuesAsync(request, cancellationToken).ConfigureAwait(false);
+                }
+            }
+            var excluded = await _store.ListExcludedFilesAsync(projectId, cancellationToken).ConfigureAwait(false);
             await Dispatcher.UIThread.InvokeAsync(() =>
             {
-                if (ReferenceEquals(SelectedProject, requestedProject) && requestedProject.HasErrors &&
+                if (ReferenceEquals(SelectedProject, requestedProject) &&
                     requestedProject.SearchGeneration == expectedGeneration &&
-                    requestedProject.ErrorPageOffset == offset && requestedProject.ErrorCount == expectedErrorCount)
+                    requestedProject.IssueQueryVersion == queryVersion && requestedProject.ErrorCount == expectedErrorCount)
                 {
-                    requestedProject.UpdateErrors(errors);
+                    if (errors is not null && requestedProject.IsErrorsExpanded) requestedProject.UpdateIssueGroups(errors);
+                    requestedProject.UpdateExcludedFiles(excluded);
                     _presentation.Clear("errors_refresh", projectId);
                     RefreshPresentation();
                 }
@@ -1196,7 +1344,7 @@ internal partial class MainViewModel : ViewModelBase
     public async Task MoveErrorPageAsync(int direction)
     {
         if (SelectedProject is not { } selected || selected.IsErrorsLoading) return;
-        selected.MoveErrorPage(direction);
+        selected.MoveIssuePage(direction);
         await RefreshErrorsAsync(selected.Id);
     }
 
@@ -1291,16 +1439,18 @@ internal partial class MainViewModel : ViewModelBase
         foreach (var project in Projects)
         {
             project.UpdateRuntime(_indexingActivities.GetSnapshot(project.Id),
-                _indexingActivities.IsDiscovering(project.Id));
+                _indexingActivities.IsDiscovering(project.Id), _indexingActivities.IsInitialScanComplete(project.Id, project.Folders));
             project.UpdateFolderIssues(_indexingActivities.GetFolderIssues(project.Id));
             project.SetActionsBusy(IsProjectActionBusy);
         }
+        NotifyProjectReorderAvailability();
     }
 
     private void ReconcileIndexingActivities(IndexingTimingSnapshot snapshot)
     {
         if (SelectedProject is { } selected)
-            selected.UpdateRuntime(snapshot, _indexingActivities.IsDiscovering(selected.Id));
+            selected.UpdateRuntime(snapshot, _indexingActivities.IsDiscovering(selected.Id),
+                _indexingActivities.IsInitialScanComplete(selected.Id, selected.Folders));
         var hasAnyActiveIndexingItems = _indexingActivities.HasActiveItems;
         if (_hasAnyActiveIndexingItems != hasAnyActiveIndexingItems)
         {

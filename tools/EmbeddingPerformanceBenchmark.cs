@@ -13,9 +13,9 @@ using Tokenizers.HuggingFace.Tokenizer;
 
 if (args.Contains("--help", StringComparer.Ordinal))
 {
-    Console.WriteLine("Run from the repository root: dotnet run --file tools/EmbeddingPerformanceBenchmark.cs -- [Granite97M|Granite311M] [model.onnx|model_quint8_avx2.onnx] [--relevance]");
+    Console.WriteLine("Run from the repository root: dotnet run --file tools/EmbeddingPerformanceBenchmark.cs -- [Granite97M] [model.onnx|model_quint8_avx2.onnx] [--relevance]");
     Console.WriteLine("Uses installed pinned assets from CONTEXTMOLE_DATA_DIR (or the normal application data directory), without downloading or modifying them. Compares 64 mixed-length English/Portuguese/Spanish passages on 4 CPU threads, grouping both FP32 and quantized profiles. Model loading and warm-up are excluded; two timings run in reverse order to reduce order bias. Emits timing, padding and vector-difference diagnostics; use --relevance to measure retrieval. Compare on an otherwise idle machine; these timings are workload-specific.");
-    Console.WriteLine("--relevance instead uses benchmarks/embeddings/relevance.json: 10 labeled topics, 60 mixed-length passages and 30 English/Portuguese/Spanish queries. Related topics act as distractors. It compares ungrouped and length-grouped retrieval with top-1 accuracy, MRR, Recall@6 and NDCG@10, including per-query results. Queries use the production BOS token and 256-token limit; passages retain 512 tokens. Vector differences are diagnostic, not a quality gate.");
+    Console.WriteLine("--relevance instead uses benchmarks/embeddings/relevance.json: 10 labeled topics, 60 mixed-length passages and 30 English/Portuguese/Spanish queries. Related topics act as distractors. It compares ungrouped and length-grouped retrieval with top-1 accuracy, MRR, Recall@6 and NDCG@10, including per-query results. Inputs use the production model-specific special tokens; query bodies are right-truncated to a complete 256-token limit, synthetic performance passages to 512. Vector differences are diagnostic, not a quality gate.");
     return;
 }
 
@@ -70,8 +70,7 @@ else
 }
 long[] Tokenize(string text, int maximumTokens)
 {
-    var ids = tokenizer.Encode(text, false).First().Ids;
-    return new[] { model.BosTokenId }.Concat(ids.Take(maximumTokens - 1).Select(id => (long)id)).ToArray();
+    return GraniteEmbeddingInputEncoding.Encode(tokenizer, text, model, maximumTokens, rejectOverlong: false);
 }
 var encoded = passages.Select(passage => Tokenize(passage.Text, 512)).ToArray();
 foreach (var profile in profiles)

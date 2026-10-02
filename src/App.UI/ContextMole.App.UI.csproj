@@ -13,11 +13,28 @@
     <DebugType Condition="'$(Configuration)' == 'Release'">none</DebugType>
   </PropertyGroup>
 
+  <!-- Capture the version input before Sdk.targets supplies its default 1.0.0.
+       VersionSuffix alone still uses an unversioned SDK-default prefix.
+       This is UI-only provenance, not a change to any project's version values. -->
+  <PropertyGroup>
+    <_ContextMoleBuildVersionSource>Development</_ContextMoleBuildVersionSource>
+    <_ContextMoleBuildVersionSource Condition="'$(AssemblyVersion)' != ''">AssemblyVersion</_ContextMoleBuildVersionSource>
+    <_ContextMoleBuildVersionSource Condition="'$(VersionPrefix)' != ''">VersionPrefix</_ContextMoleBuildVersionSource>
+    <_ContextMoleBuildVersionSource Condition="'$(Version)' != ''">Version</_ContextMoleBuildVersionSource>
+    <_ContextMoleBuildVersionSource Condition="'$(InformationalVersion)' != ''">InformationalVersion</_ContextMoleBuildVersionSource>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <AssemblyMetadata Include="ContextMole.BuildVersionSource" Value="$(_ContextMoleBuildVersionSource)" />
+  </ItemGroup>
+
   <ItemGroup>
     <Folder Include="Models\" />
     <AvaloniaResource Include="Assets\**" />
     <AvaloniaResource Include="..\..\docs\branding\context-mole\originals\context-mole-01-app-icon.png"
                        Link="Assets\context-mole-app-icon.png" />
+    <Content Include="..\..\docs\LEGACY-INDEX-UPGRADES.md" Link="docs\LEGACY-INDEX-UPGRADES.md"
+             CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="..\..\LICENSE"
              Link="LICENSE"
              CopyToOutputDirectory="PreserveNewest"
@@ -47,6 +64,8 @@
     <PackageReference Include="Avalonia.Desktop" />
     <PackageReference Include="Avalonia.Fonts.Inter" />
     <PackageReference Include="Avalonia.Themes.Fluent" />
+    <!-- Keep Avalonia's Linux native Skia runtime compatible with the managed OCR/PDF runtime. -->
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux" />
     <PackageReference Include="CommunityToolkit.Mvvm" />
     <PackageReference Include="Microsoft.Extensions.Hosting" />
     <PackageReference Include="Serilog.Extensions.Hosting" />

@@ -168,30 +168,29 @@ public sealed class CoreAndInfrastructureTests
     }
 
     [Fact]
-    public void EmbeddingModelSettings_PersistsSignalsAndIgnoresInvalidRefreshes()
+    public void EmbeddingModelSettings_PersistsSoleModelAndNormalizesLegacyRefreshes()
     {
         using var paths = new TemporaryAppPaths();
         var settings = new EmbeddingModelSettings(paths);
         var changes = 0;
         settings.Changed += (_, _) => changes++;
 
-        Assert.Equal(EmbeddingModelChoice.Granite311M, settings.Model);
+        Assert.Equal(EmbeddingModelChoice.Granite97M, settings.Model);
         settings.SetModel(EmbeddingModelChoice.Granite97M);
         settings.SetModel(EmbeddingModelChoice.Granite97M);
-
-        Assert.Equal(1, changes);
+        Assert.Equal(0, changes);
         Assert.Equal(EmbeddingModelChoice.Granite97M, new EmbeddingModelSettings(paths).Model);
         Assert.Equal("Granite97M", File.ReadAllText(paths.EmbeddingSettingsPath));
+        Assert.Throws<ArgumentOutOfRangeException>(() => settings.SetModel(EmbeddingModelChoice.Granite311M));
 
-        new EmbeddingModelSettings(paths).SetModel(EmbeddingModelChoice.Granite311M);
-        Assert.True(settings.RefreshFromDisk());
-        Assert.Equal(EmbeddingModelChoice.Granite311M, settings.Model);
-        Assert.Equal(2, changes);
-
+        File.WriteAllText(paths.EmbeddingSettingsPath, "Granite311M");
+        Assert.False(settings.RefreshFromDisk());
+        Assert.Equal(EmbeddingModelChoice.Granite97M, settings.Model);
+        Assert.Equal("Granite97M", File.ReadAllText(paths.EmbeddingSettingsPath));
         File.WriteAllText(paths.EmbeddingSettingsPath, "not-a-model");
         Assert.False(settings.RefreshFromDisk());
-        Assert.Equal(EmbeddingModelChoice.Granite311M, settings.Model);
-        Assert.Equal(2, changes);
+        Assert.Equal(EmbeddingModelChoice.Granite97M, settings.Model);
+        Assert.Equal(0, changes);
     }
 
     [Fact]
@@ -356,21 +355,10 @@ public sealed class CoreAndInfrastructureTests
     [Fact]
     public void GraniteModelCatalog_PreservesPinnedCompatibilityMetadata()
     {
-        Assert.Equal(EmbeddingModelChoice.Granite311M, GraniteEmbeddingModels.DefaultChoice);
-        Assert.Equal(2, GraniteEmbeddingModels.All.Count);
-        Assert.Equal(2, GraniteEmbeddingModels.All.Select(model => model.Choice).Distinct().Count());
-
-        AssertModel(
-            GraniteEmbeddingModels.Get(EmbeddingModelChoice.Granite311M),
-            "ibm-granite/granite-embedding-311m-multilingual-r2",
-            "44399559930365213510b1ee2eb15ded83374f0e",
-            "0087c868b33bad550a78a08d19798cfd7f713cde4f020803b8f51f405503e15f",
-            "f1fdd44e7e1ac51f12ab7957c7bd092e064d596c288513bf9d326842f669edee",
-            "75f9f258bf5013f5fe8a4dad61dd0fd16ac0cbaa7a106e3d3f41c2d04a42d541",
-            bosTokenId: 2,
-            sourceDimensions: 768,
-            normalization: "l2-after-matryoshka",
-            requiresGemmaTerms: true);
+        Assert.Equal(EmbeddingModelChoice.Granite97M, GraniteEmbeddingModels.DefaultChoice);
+        Assert.Single(GraniteEmbeddingModels.All);
+        Assert.Equal(EmbeddingModelChoice.Granite97M, GraniteEmbeddingModels.All[0].Choice);
+        Assert.Throws<ArgumentOutOfRangeException>(() => GraniteEmbeddingModels.Get(EmbeddingModelChoice.Granite311M));
 
         AssertModel(
             GraniteEmbeddingModels.Get(EmbeddingModelChoice.Granite97M),

@@ -67,12 +67,14 @@ public sealed partial class DocumentExtractionRegistry
 
     private static IReadOnlyList<PdfTextBlock> PdfTables(Page page, Word[] words, HashSet<Word> used)
     {
+        var result = PdfGridTables(page, words, used).ToList();
         var rows = new List<List<Word>>();
-        foreach (var word in words.OrderByDescending(word => word.BoundingBox.Top).ThenBy(word => word.BoundingBox.Left))
+        foreach (var word in words.Where(word => !used.Contains(word))
+                     .OrderByDescending(word => word.BoundingBox.Top).ThenBy(word => word.BoundingBox.Left))
         {
             var row = rows.LastOrDefault();
             if (row is null || Math.Abs(row[0].BoundingBox.Top - word.BoundingBox.Top) >
-                Math.Max(2, Math.Min(row[0].BoundingBox.Height, word.BoundingBox.Height) * 0.45))
+                Math.Max(2, Math.Max(row[0].BoundingBox.Height, word.BoundingBox.Height) * 0.6))
             { row = []; rows.Add(row); }
             row.Add(word);
         }
@@ -83,37 +85,40 @@ public sealed partial class DocumentExtractionRegistry
             {
                 var previous = cells.LastOrDefault();
                 var gap = previous is null ? 0 : word.BoundingBox.Left - previous[^1].BoundingBox.Right;
-                if (previous is null || gap > Math.Max(12, word.BoundingBox.Height * 1.8))
+                // Inter-cell gutters can be smaller than two glyph heights in compact
+                // numeric tables. Normal word spaces remain below this threshold.
+                if (previous is null || gap > Math.Max(6, word.BoundingBox.Height * 0.85))
                 { previous = []; cells.Add(previous); }
                 previous.Add(word);
             }
             return cells;
         }).ToArray();
-        var result = new List<PdfTextBlock>();
         for (var start = 0; start < candidates.Length; start++)
         {
             var first = candidates[start];
             if (first.Count < 2 || first.Count > 12) continue;
             var end = start + 1;
-            var tolerance = Math.Max(4, (double)page.Width * 0.015);
+            var tolerance = Math.Max(4, (double)page.Width * 0.008);
             while (end < candidates.Length && candidates[end].Count == first.Count &&
-                   candidates[end].Select((cell, index) => Math.Abs(cell[0].BoundingBox.Left - first[index][0].BoundingBox.Left) <= tolerance).All(value => value) &&
+                   candidates[end].Select((cell, index) => CellsAlign(cell, first[index], tolerance,
+                       rowLabel: index == 0)).All(value => value) &&
                    rows[end - 1][0].BoundingBox.Top - rows[end][0].BoundingBox.Top <= Math.Max(40, rows[end][0].BoundingBox.Height * 3.5)) end++;
             if (end - start < 3) continue;
-            var numericRows = candidates.Skip(start).Take(end - start).Count(row => row.Any(cell =>
-                cell.Any(word => word.Text.Any(char.IsDigit)) &&
-                string.Join(' ', cell.Select(word => word.Text)).Count(char.IsDigit) >=
-                string.Join(' ', cell.Select(word => word.Text)).Count(char.IsLetter)));
             var tableRows = candidates.Skip(start).Take(end - start).ToArray();
+            var numericRows = Enumerable.Range(0, first.Count).Max(column => tableRows.Count(row =>
+            {
+                var text = string.Join(' ', row[column].Select(word => word.Text));
+                return text.Any(char.IsDigit) && text.Count(char.IsDigit) >= text.Count(char.IsLetter);
+            }));
             var all = tableRows.SelectMany(row => row.SelectMany(cell => cell)).ToArray();
             var left = all.Min(word => word.BoundingBox.Left);
             var right = all.Max(word => word.BoundingBox.Right);
             var top = all.Max(word => word.BoundingBox.Top);
             var bottom = all.Min(word => word.BoundingBox.Bottom);
             var ruled = HasPdfTableRules(page, left, bottom, right, top, first.Count);
-            // Aligned prose columns are not enough evidence of a table. Require repeated numeric
-            // cells or a visible grid enclosing the same rows and column boundaries.
-            if (numericRows < 2 && !ruled) continue;
+            // Aligned prose (especially bibliographies) can have scattered numeric fragments
+            // in alternating columns. Require a consistently numeric column, or visible rules.
+            if (numericRows < Math.Max(2, (int)Math.Ceiling(tableRows.Length * 0.6)) && !ruled) continue;
             foreach (var word in all) used.Add(word);
             result.Add(new PdfTextBlock(string.Join('\n', tableRows.Select(row => string.Join('\t',
                     row.Select(cell => string.Join(' ', cell.Select(word => word.Text)))))),
@@ -124,6 +129,24 @@ public sealed partial class DocumentExtractionRegistry
             start = end - 1;
         }
         return result;
+
+        static bool CellsAlign(List<Word> first, List<Word> second, double tolerance, bool rowLabel)
+        {
+            // Nested row labels commonly change indentation by one em even though all data
+            // columns are unchanged. Keep their small indentation shifts inside the table;
+            // this allowance must not loosen alignment for its numeric/data columns.
+            if (rowLabel && first.Any(word => word.Text.Any(char.IsLetter)) &&
+                second.Any(word => word.Text.Any(char.IsLetter)))
+                tolerance = Math.Max(tolerance, Median(first.Concat(second).SelectMany(word => word.Letters)
+                    .Select(letter => letter.PointSize)) * 1.25);
+            var firstLeft = first[0].BoundingBox.Left;
+            var secondLeft = second[0].BoundingBox.Left;
+            var firstRight = first[^1].BoundingBox.Right;
+            var secondRight = second[^1].BoundingBox.Right;
+            return Math.Abs(firstLeft - secondLeft) <= tolerance ||
+                   Math.Abs(firstRight - secondRight) <= tolerance ||
+                   Math.Abs((firstLeft + firstRight - secondLeft - secondRight) / 2) <= tolerance;
+        }
     }
 
     private static bool HasPdfTableRules(Page page, double left, double bottom, double right, double top, int columns)
@@ -246,8 +269,11 @@ public sealed partial class DocumentExtractionRegistry
                        Math.Abs(line.Region.X - first[index].Region.X) < 0.025).All(value => value) &&
                    rows[end][0].Region.Y - rows[end - 1][0].Region.Y < Math.Max(0.08, first[0].Region.Height * 3.5)) end++;
             var selected = rows.Skip(start).Take(end - start).ToArray();
-            if (selected.Length < 3 || selected.Count(row => row.Any(line =>
-                    line.Text.Count(char.IsDigit) > 0 && line.Text.Count(char.IsDigit) >= line.Text.Count(char.IsLetter))) < 2) continue;
+            if (selected.Length < 3 || Enumerable.Range(0, first.Length).Max(column => selected.Count(row =>
+                {
+                    var text = row.OrderBy(line => line.Region.X).ElementAt(column).Text;
+                    return text.Any(char.IsDigit) && text.Count(char.IsDigit) >= text.Count(char.IsLetter);
+                })) < Math.Max(2, (int)Math.Ceiling(selected.Length * 0.6))) continue;
             var cells = selected.SelectMany(row => row).ToArray();
             foreach (var cell in cells) used.Add(cell);
             var region = UnionRegions(cells.Select(cell => cell.Region));
@@ -271,11 +297,100 @@ public sealed partial class DocumentExtractionRegistry
             items.Max(region => region.Y + region.Height) - top);
     }
 
+    private static IReadOnlyList<PdfTextBlock> GroupOcrParagraphs(IReadOnlyList<PdfTextBlock> blocks)
+    {
+        var result = new List<PdfTextBlock>();
+        foreach (var block in blocks)
+        {
+            var previous = result.LastOrDefault();
+            if (previous is not { Method: ExtractionMethod.Ocr, IsTable: false, Region: { } region } ||
+                block is not { Method: ExtractionMethod.Ocr, IsTable: false, Region: { } next } ||
+                previous.Warning is not null || block.Warning is not null)
+            { result.Add(block); continue; }
+
+            var lineCount = previous.Text.Count(character => character == '\n') + 1;
+            var previousHeight = region.Height / lineCount;
+            var gap = next.Y - (region.Y + region.Height);
+            // Work only inside the same column, with nearby baselines and similar text size.
+            // Tables are kept atomic; large paragraph gaps and indents start a new block.
+            if (Math.Abs(region.X - next.X) > 0.015 || next.Height < previousHeight * 0.65 ||
+                next.Height > previousHeight * 1.5 || gap < -next.Height * 0.2 ||
+                gap > Math.Max(0.006, next.Height * 1.25) ||
+                Math.Min(region.X + region.Width, next.X + next.Width) - Math.Max(region.X, next.X) <
+                Math.Min(region.Width, next.Width) * 0.8)
+            { result.Add(block); continue; }
+
+            var confidence = previous.Confidence is { } first && block.Confidence is { } second
+                ? (first * previous.Text.Length + second * block.Text.Length) /
+                  Math.Max(1, previous.Text.Length + block.Text.Length)
+                : previous.Confidence ?? block.Confidence;
+            result[^1] = previous with { Text = previous.Text + "\n" + block.Text,
+                Region = UnionRegions([region, next]), Confidence = confidence };
+        }
+        return result;
+    }
+
     private static IReadOnlyList<ExtractedSection> ImageOcrSections(OcrResult ocr, SourceLocation location) =>
-        OcrBlocks(ocr).Select((block, index) => new ExtractedSection(block.Text,
+        GroupImageOcrBlocks(GroupOcrParagraphs(GroupImageOcrLines(OcrBlocks(ocr)))).Select((block, index) => new ExtractedSection(block.Text,
             location with { Region = block.Region, StructurePath = block.IsTable ? $"table[{index + 1}]" : $"block[{index + 1}]",
                 LayoutWarning = block.Warning }, ExtractionMethod.Ocr, block.Confidence,
             SectionKey: $"image:{location.ImageFrame ?? location.Page ?? 1}")).ToArray();
+
+    // OCR can detect individual words of a short label as separate boxes. Rejoin only
+    // close, similarly sized boxes on the same baseline before vertical context grouping.
+    private static IReadOnlyList<PdfTextBlock> GroupImageOcrLines(IReadOnlyList<PdfTextBlock> blocks)
+    {
+        var result = new List<PdfTextBlock>();
+        foreach (var block in blocks)
+        {
+            var previous = result.LastOrDefault();
+            if (previous is not { IsTable: false, Region: { } region } || block is not { IsTable: false, Region: { } next } ||
+                previous.Warning is not null || block.Warning is not null || previous.Text.Contains('\n') || block.Text.Contains('\n'))
+            { result.Add(block); continue; }
+            var gap = next.X - (region.X + region.Width);
+            if (previous.Text.Length + block.Text.Length > 160 ||
+                Math.Abs(region.Y + region.Height / 2 - next.Y - next.Height / 2) > Math.Max(region.Height, next.Height) * .4 ||
+                next.Height < region.Height * .65 || next.Height > region.Height * 1.5 ||
+                gap < -Math.Min(region.Width, next.Width) * .05 || gap > Math.Min(region.Width, next.Width) * .3)
+            { result.Add(block); continue; }
+            var confidence = previous.Confidence is { } first && block.Confidence is { } second
+                ? (first * previous.Text.Length + second * block.Text.Length) / Math.Max(1, previous.Text.Length + block.Text.Length)
+                : previous.Confidence ?? block.Confidence;
+            result[^1] = previous with { Text = previous.Text + " " + block.Text, Region = UnionRegions([region, next]), Confidence = confidence };
+        }
+        return result;
+    }
+
+    // Standalone images often use short, spaced label/value blocks rather than prose paragraphs.
+    // Keep nearby blocks in one bounded same-column context so a label search can return its value.
+    // This does not change PDF grouping or merge across inferred tables/layout warnings.
+    private static IReadOnlyList<PdfTextBlock> GroupImageOcrBlocks(IReadOnlyList<PdfTextBlock> blocks)
+    {
+        var result = new List<PdfTextBlock>();
+        foreach (var block in blocks)
+        {
+            var previous = result.LastOrDefault();
+            if (previous is not { IsTable: false, Region: { } region } || block is not { IsTable: false, Region: { } next } ||
+                previous.Warning is not null || block.Warning is not null)
+            { result.Add(block); continue; }
+            var lines = previous.Text.Count(value => value == '\n') + 1;
+            var nextLines = block.Text.Count(value => value == '\n') + 1;
+            var previousHeight = region.Height / lines;
+            var nextHeight = next.Height / nextLines;
+            var gap = next.Y - (region.Y + region.Height);
+            var words = (previous.Text + " " + block.Text).Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).Length;
+            if (lines + nextLines > 4 || words > 64 || Math.Abs(region.X - next.X) > 0.015 ||
+                nextHeight < previousHeight * 0.5 || nextHeight > previousHeight * 2 || gap < -nextHeight * 0.2 ||
+                gap > Math.Max(previousHeight, nextHeight) * 2.5 ||
+                Math.Min(region.X + region.Width, next.X + next.Width) - Math.Max(region.X, next.X) < Math.Min(region.Width, next.Width) * 0.8)
+            { result.Add(block); continue; }
+            var confidence = previous.Confidence is { } first && block.Confidence is { } second
+                ? (first * previous.Text.Length + second * block.Text.Length) / Math.Max(1, previous.Text.Length + block.Text.Length)
+                : previous.Confidence ?? block.Confidence;
+            result[^1] = previous with { Text = previous.Text + "\n" + block.Text, Region = UnionRegions([region, next]), Confidence = confidence };
+        }
+        return result;
+    }
 
     private static string EvidenceKey(string text) => string.Concat(TextNormalization.ForSearch(text).Normalize()
         .Where(char.IsLetterOrDigit)).ToUpperInvariant();
@@ -299,7 +414,7 @@ public sealed partial class DocumentExtractionRegistry
         foreach (var item in sizes)
         { cumulative += item.Weight; if (cumulative > midpoint) { typicalSize = item.Size; break; } }
         var ordinal = 0;
-        foreach (var block in blocks)
+        foreach (var block in GroupOcrParagraphs(blocks))
         {
             if (string.IsNullOrWhiteSpace(block.Text)) continue;
             var isHeading = typicalSize > 0 && block.FontSize >= typicalSize * 1.2 &&

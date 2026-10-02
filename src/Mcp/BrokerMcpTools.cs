@@ -18,7 +18,7 @@ public sealed class BrokerMcpTools(BrokerRpcClient broker, ILogger<BrokerMcpTool
     private readonly ILogger<BrokerMcpTools> _logger = logger;
 
     [McpServerTool(Name = "list_projects", OutputSchemaType = typeof(ProjectListResponse), ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false, UseStructuredContent = true)]
-    [Description("Use when the project ID is unknown or to inspect available indexes. Lists every initialized project, including paused projects, with authorized folders, search generation, and document status counts; it does not search file contents.")]
+    [Description("Use when the project ID is unknown or to inspect available indexes. Lists every initialized project, including paused projects, with authorized folders, search generation, included supported-document status counts, and the count of explicit exact-path exclusion rules. Excluded paths and their attachments are absent from indexing and search; exclusion rules may also name paths outside the currently watched folders. Searchable counts can include retained previous revisions and do not guarantee complete attachment coverage. It does not search file contents.")]
     public Task<CallToolResult> ListProjects(CancellationToken cancellationToken) =>
         RunAsync(BrokerToolMethods.ListProjects, new { }, cancellationToken);
 

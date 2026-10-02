@@ -10,6 +10,8 @@ public sealed record VidoreManifest(
 {
     public const string SupportedDataset = "vidore/vidore_v3_hr";
     public const string SupportedRevision = "0cdf0979f2c5a0fd3e335e6373b9da48a9fe3bc3";
+    public const string ComputerScienceDataset = "vidore/vidore_v3_computer_science";
+    public const string ComputerScienceRevision = "d5cc75883d92e294f0c0fc2662551c9708a06ebc";
     [JsonPropertyName("unusable_bounding_box_count")]
     public int UnusableBoundingBoxCount { get; init; }
     [JsonPropertyName("annotation_warnings")]
@@ -18,7 +20,7 @@ public sealed record VidoreManifest(
     public void Validate()
     {
         if (Version != 1 || CoordinatesFrame != "imageNormalizedTopLeft" ||
-            Dataset != SupportedDataset || Revision != SupportedRevision || string.IsNullOrWhiteSpace(Selection) ||
+            !IsSupportedPin(Dataset, Revision) || string.IsNullOrWhiteSpace(Selection) ||
             UnusableBoundingBoxCount < 0 || AnnotationWarnings is null ||
             Documents is null || Pages is null || Queries is null ||
             Documents.Length == 0 || Pages.Length == 0 || Queries.Length == 0)
@@ -57,6 +59,10 @@ public sealed record VidoreManifest(
                     throw new InvalidDataException($"Invalid or out-of-selection relevance judgment: {query.Id}/{qrel.CorpusId}.");
         }
     }
+
+    private static bool IsSupportedPin(string dataset, string revision) =>
+        dataset == SupportedDataset && revision == SupportedRevision ||
+        dataset == ComputerScienceDataset && revision == ComputerScienceRevision;
 
     public static string ResolvePdfPath(string manifestPath, string relativeFile)
     {

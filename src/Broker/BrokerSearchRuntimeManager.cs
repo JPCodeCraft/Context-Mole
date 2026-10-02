@@ -221,14 +221,8 @@ public sealed class BrokerSearchRuntimeManager : IAsyncDisposable
         _modelSettings.RefreshFromDisk();
         var model = GraniteEmbeddingModels.Get(_modelSettings.Model);
         var directory = Path.Combine(_paths.AssetsDirectory, "granite", model.Revision);
-        var quantized = System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture ==
-                        System.Runtime.InteropServices.Architecture.X64 &&
-                        System.Runtime.Intrinsics.X86.Avx2.IsSupported &&
-                        !File.Exists(Path.Combine(directory, "quantization-disabled"));
-        var policy = new EmbeddingPolicy(model.ModelId, model.Revision,
-            quantized ? model.QuantizedSha : model.Fp32Sha, model.TokenizerSha,
-            quantized ? "quint8-avx2" : "fp32", model.SourceDimensions, model.Dimensions,
-            model.Pooling, model.Normalization);
+        var quantized = GraniteEmbeddingProfiles.UseQuantized(directory, model);
+        var policy = model.CreatePolicy(quantized);
         var complete = File.Exists(Path.Combine(directory, "installation-complete")) &&
                        !File.Exists(Path.Combine(directory, "repair-required")) &&
                        File.Exists(Path.Combine(directory, "tokenizer.json")) &&
@@ -240,7 +234,9 @@ public sealed class BrokerSearchRuntimeManager : IAsyncDisposable
                 "ONNX Runtime 1.29 does not provide an Intel macOS native library; using keyword search on osx-x64.",
                 policy);
         return new Broker.Protocol.BrokerEmbeddingStatus(complete,
-            complete ? "The semantic model is installed and will load on first use." : $"{model.DisplayName} is not installed.",
+            complete ? GraniteEmbeddingProfiles.NeedsTokenizationValidation(directory, model)
+                ? "The full-precision semantic model is ready. Repair the model to revalidate optimized inference for its updated input format."
+                : "The semantic model is installed and will load on first use." : $"{model.DisplayName} is not installed.",
             policy);
     }
 

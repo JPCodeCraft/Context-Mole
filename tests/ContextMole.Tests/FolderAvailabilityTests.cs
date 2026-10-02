@@ -68,8 +68,10 @@ public sealed class FolderAvailabilityTests
         Assert.True(project.HasFolderIssues);
         project.UpdateFrom(summary with { Folders = [] });
         project.UpdateFolderIssues([issue]);
+        project.UpdateRuntime(new([], null, 0), isInitialScanComplete: true);
         Assert.False(project.HasFolderIssues);
-        Assert.True(project.IsReady);
+        Assert.False(project.IsReady);
+        Assert.Equal("No supported files", project.Phase);
     }
 
     private static async Task WaitUntilAsync(Func<bool> condition, CancellationToken cancellationToken)

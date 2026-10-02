@@ -44,8 +44,8 @@
             <TextBlock x:Name="StatusBlock" Text="Ready to download." TextWrapping="Wrap"
                        AutomationProperties.LiveSetting="Assertive" />
             <ProgressBar x:Name="DownloadProgress" Minimum="0" Maximum="1" Value="0" Height="7"
-                         AutomationProperties.Name="Semantic model setup progress" />
-            <TextBlock x:Name="BytesBlock" Classes="quiet" FontSize="12" />
+                         AutomationProperties.Name="Current model file download or verification progress" />
+            <TextBlock x:Name="BytesBlock" Classes="quiet" FontSize="12" TextWrapping="Wrap" />
           </StackPanel>
         </Border>
       </StackPanel>
@@ -53,9 +53,9 @@
 
     <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Right"
                 Spacing="8" Margin="0,18,0,0">
-      <Button x:Name="CancelButton" Classes="ghost" Content="Cancel" Click="Cancel" IsCancel="True" />
+      <Button x:Name="CancelButton" Classes="ghost" Content="Cancel" Click="Cancel" IsCancel="True" IsDefault="True" />
       <Button x:Name="InstallButton" Classes="primary" Content="Download and enable"
-              IsEnabled="False" Click="Install" IsDefault="True" />
+              IsEnabled="False" Click="Install" />
     </StackPanel>
   </Grid>
 </Window>

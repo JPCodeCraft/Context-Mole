@@ -126,6 +126,8 @@ public sealed partial class DocumentExtractionRegistry
         var workbook = workbookPart.Workbook ?? throw new InvalidDataException("XLSX has no workbook XML.");
         var shared = workbookPart.SharedStringTablePart?.SharedStringTable?
             .Elements<SharedStringItem>().Select(OpenXmlText).ToArray() ?? [];
+        var dateStyles = new SpreadsheetDateStyles(new WorkbookPartContext(workbookPart.WorkbookStylesPart?.Stylesheet,
+            workbook.WorkbookProperties?.Date1904?.Value == true));
         var sections = new List<ExtractedSection>();
         var sheetNumber = 0;
 
@@ -151,7 +153,7 @@ public sealed partial class DocumentExtractionRegistry
                     var reference = cell.CellReference?.Value;
                     first ??= reference;
                     last = reference;
-                    var value = CellText(cell, shared);
+                    var value = dateStyles.Format(cell, CellText(cell, shared));
                     if (!string.IsNullOrWhiteSpace(value))
                         values.Add($"{reference}: {value}");
                 }
@@ -340,7 +342,7 @@ public sealed partial class DocumentExtractionRegistry
                         }
                         catch (AttachmentSizeLimitException exception)
                         {
-                            attachments.Add(Rejected(attachmentName, "message/rfc822", "email-attachment", context,
+                            attachments.Add(RejectedAttachment(attachmentName, "message/rfc822", "email-attachment", context,
                                 "attachment_size_limit", exception.Message));
                         }
                         break;
@@ -360,7 +362,7 @@ public sealed partial class DocumentExtractionRegistry
                         }
                         catch (AttachmentSizeLimitException exception)
                         {
-                            attachments.Add(Rejected(attachmentName, mimePart.ContentType.MimeType, attachmentRelationship,
+                            attachments.Add(RejectedAttachment(attachmentName, mimePart.ContentType.MimeType, attachmentRelationship,
                                 context, "attachment_size_limit", exception.Message));
                         }
                         break;
@@ -428,6 +430,7 @@ public sealed partial class DocumentExtractionRegistry
     private async Task<ExtractedNode> MsgObjectNodeAsync(Storage.Message message, string name, string relationship, int depth,
         ExpansionContext context, CancellationToken cancellationToken)
     {
+        using var component = context.EnterComponent(name, relationship);
         if (depth > context.Request.MaxDepth)
             return Rejected(name, "application/vnd.ms-outlook", relationship, context, "attachment_depth_limit", "Attachment depth exceeds the limit.");
         var sections = new List<ExtractedSection>
@@ -473,6 +476,8 @@ public sealed partial class DocumentExtractionRegistry
     {
         if (cell.DataType?.Value == CellValues.InlineString)
             return OpenXmlText(cell.InlineString);
+        if (cell.CellFormula is not null && string.IsNullOrWhiteSpace(cell.CellValue?.Text))
+            return $"{cell.CellFormula.Text} (formula; no cached value)";
         var raw = cell.CellValue?.Text ?? cell.InnerText;
         if (cell.DataType?.Value == CellValues.SharedString && int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var index)
             && index >= 0 && index < shared.Count)

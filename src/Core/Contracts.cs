@@ -113,6 +113,18 @@ public interface IIndexWriter
         CancellationToken cancellationToken = default);
     Task<RetryFailedFilesResult> RetryFailedFilesAsync(Guid projectId,
         CancellationToken cancellationToken = default);
+    Task<RetryFailedFilesResult> RetryFileAsync(Guid projectId, Guid documentId,
+        CancellationToken cancellationToken = default) => throw new NotSupportedException();
+    Task<HideProjectIssuesResult> HideProjectIssuesAsync(Guid projectId, string sourcePath,
+        CancellationToken cancellationToken = default) => throw new NotSupportedException();
+    Task RestoreProjectIssueAcknowledgementsAsync(Guid projectId, IReadOnlyList<Guid> acknowledgementIds,
+        CancellationToken cancellationToken = default) => throw new NotSupportedException();
+    Task RestoreProjectIssuesAsync(Guid projectId, string? sourcePath = null,
+        CancellationToken cancellationToken = default) => throw new NotSupportedException();
+    Task<FileExclusionResult> ExcludeFileAsync(Guid projectId, string sourcePath,
+        CancellationToken cancellationToken = default) => throw new NotSupportedException();
+    Task<FileExclusionResult> IncludeFileAsync(Guid projectId, string sourcePath,
+        CancellationToken cancellationToken = default) => throw new NotSupportedException();
     Task RemoveProjectAsync(Guid projectId, CancellationToken cancellationToken = default);
     Task<ObservationResult> ObserveFileAsync(FileObservation observation, CancellationToken cancellationToken = default);
     Task HandleRenamedAsync(Guid projectId, Guid folderId, string oldPath, string newPath, CancellationToken cancellationToken = default);
@@ -144,6 +156,20 @@ public interface ISearchStore
         CancellationToken cancellationToken = default);
     Task<DocumentListResponse> ListDocumentsAsync(DocumentListRequest request,
         CancellationToken cancellationToken = default);
+    async Task<ProjectIssueListResponse> ListProjectIssuesAsync(ProjectIssueListRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        if ((await ListProjectErrorsAsync(request.ProjectId, 1, cancellationToken).ConfigureAwait(false)).Count == 0)
+            return new ProjectIssueListResponse(request.ProjectId, 0, 0, 0, 0, 0, [], null);
+        throw new NotSupportedException("This store does not expose grouped project issues.");
+    }
+    Task<ProjectIssueDetailsResponse> ListProjectIssueDetailsAsync(Guid projectId, string sourcePath,
+        ProjectIssueVisibility visibility = ProjectIssueVisibility.All, int limit = 50, string? cursor = null,
+        CancellationToken cancellationToken = default) => throw new NotSupportedException();
+    Task<bool> IsFileExcludedAsync(Guid projectId, string sourcePath,
+        CancellationToken cancellationToken = default) => Task.FromResult(false);
+    Task<IReadOnlyList<ExcludedFileInfo>> ListExcludedFilesAsync(Guid projectId,
+        CancellationToken cancellationToken = default) => Task.FromResult<IReadOnlyList<ExcludedFileInfo>>([]);
     Task<IReadOnlyList<ProjectErrorInfo>> ListProjectErrorsAsync(Guid projectId, int limit, CancellationToken cancellationToken = default, int offset = 0);
     Task<KeywordSearchPage> KeywordSearchAsync(Guid projectId, string ftsQuery, int count, SearchFilters? filters, CancellationToken cancellationToken = default);
     Task<KeywordSearchPage> KeywordSearchAsync(Guid projectId, string ftsQuery, int count, SearchFilters? filters,

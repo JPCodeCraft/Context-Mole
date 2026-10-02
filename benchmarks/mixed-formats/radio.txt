@@ -1,0 +1,4 @@
+Harbor watch radio plan
+The harbor watch uses radio channel 14 during the night patrol.
+The maintenance crew uses channel 6 during daytime repairs.
+Contact Noémie Silva for roster corrections.

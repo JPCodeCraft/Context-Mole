@@ -1,3 +1,5 @@
+using ContextMole.Core;
+
 namespace ContextMole.Indexing;
 
 /// <summary>
@@ -5,6 +7,14 @@ namespace ContextMole.Indexing;
 /// </summary>
 public interface IProjectIndexingControl
 {
+    /// <summary>Durably excludes an exact source path and cancels its admitted in-process work.</summary>
+    Task<FileExclusionResult> ExcludeFileAsync(Guid projectId, string sourcePath,
+        CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+    /// <summary>Includes an exact source path again and queues a fresh source-backed revision.</summary>
+    Task<FileExclusionResult> IncludeFileAsync(Guid projectId, string sourcePath,
+        CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
     /// <summary>
     /// Prevents new work for <paramref name="projectId"/> and immediately requests cancellation of work
     /// already admitted by this process.

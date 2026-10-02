@@ -1,0 +1,31 @@
+From: =?utf-8?B?U29maWEgTWVuZG9uw6dh?= <sofia@fixtures.invalid>
+To: Ellis Carter <ellis@fixtures.invalid>
+Date: Mon, 05 Oct 2026 08:00:00 +0000
+Message-ID: <duplicate@fixtures.invalid>
+Subject: =?utf-8?B?VHdvIHN0YXR1cyBub3RpY2Vz?=
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="cm-duplicate-mixed-v1"
+
+--cm-duplicate-mixed-v1
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: base64
+
+VGhlIHR3byBhdHRhY2hlZCBzdGF0dXMgbm90aWNlcyBoYXZlIHRoZSBzYW1lIGZpbGVuYW1lLiBU
+cmVhdCB0aGVtIGFzIGRpc3RpbmN0IHJlY29yZHMuCg==
+--cm-duplicate-mixed-v1
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="status.txt"
+Content-ID: <birch-status@fixtures.invalid>
+
+VGhlIEJpcmNoIGRvY2tldCBpcyBCaXJjaC0zMTQuIFRoZSBCaXJjaCByZXZpZXcgaXMgY29tcGxl
+dGUuCg==
+--cm-duplicate-mixed-v1
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="status.txt"
+Content-ID: <willow-status@fixtures.invalid>
+
+VGhlIFdpbGxvdyBkb2NrZXQgaXMgV2lsbG93LTI3MS4gVGhlIFdpbGxvdyByZXZpZXcgaXMgcGVu
+ZGluZy4K
+--cm-duplicate-mixed-v1--

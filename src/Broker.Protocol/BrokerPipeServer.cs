@@ -249,7 +249,7 @@ public sealed class BrokerPipeServer : IAsyncDisposable
         }
     }
 
-    private BrokerHandshakeResponse ValidateHandshake(BrokerHandshakeRequest request)
+    internal BrokerHandshakeResponse ValidateHandshake(BrokerHandshakeRequest request)
     {
         if (request.ProtocolMajor != BrokerProtocol.MajorVersion)
             return Rejected("protocol_mismatch", "The client and broker protocol major versions differ.");

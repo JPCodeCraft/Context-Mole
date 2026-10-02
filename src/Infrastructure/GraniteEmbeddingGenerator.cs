@@ -1,5 +1,4 @@
 using System.Runtime.InteropServices;
-using System.Runtime.Intrinsics.X86;
 
 using ContextMole.Core;
 
@@ -91,15 +90,10 @@ public sealed class GraniteEmbeddingGenerator : IEmbeddingGenerator
     {
         var modelDirectory = GraniteModelInstallation.GetDirectory(_paths, model);
         var tokenizerPath = Path.Combine(modelDirectory, "tokenizer.json");
-        var quantizedSupported = RuntimeInformation.ProcessArchitecture == Architecture.X64 && Avx2.IsSupported;
-        var useQuantized = quantizedSupported &&
-            !File.Exists(Path.Combine(modelDirectory, "quantization-disabled"));
+        var useQuantized = GraniteEmbeddingProfiles.UseQuantized(modelDirectory, model);
         var modelFile = useQuantized ? "model_quint8_avx2.onnx" : "model.onnx";
         var modelPath = Path.Combine(modelDirectory, modelFile);
-        var modelSha = useQuantized ? model.QuantizedSha : model.Fp32Sha;
-        var policy = new EmbeddingPolicy(model.ModelId, model.Revision, modelSha, model.TokenizerSha,
-            useQuantized ? "quint8-avx2" : "fp32", model.SourceDimensions, model.Dimensions,
-            model.Pooling, model.Normalization);
+        var policy = model.CreatePolicy(useQuantized);
 
         // ONNX Runtime stopped publishing Intel macOS binaries after 1.23. The
         // mandated 1.29 package therefore cannot load natively for osx-x64.
@@ -193,17 +187,17 @@ public sealed class GraniteEmbeddingGenerator : IEmbeddingGenerator
 
             lock (_tokenizer)
             {
-                return 1 + _tokenizer.Encode(text, false).First().Ids.Count;
+                return GraniteEmbeddingInputEncoding.CountTokens(_tokenizer, text);
             }
         }
     }
 
     public Task<EmbeddingBatch> EmbedPassagesAsync(IReadOnlyList<string> passages, CancellationToken cancellationToken) =>
-        EmbedAsync(passages, 512, cancellationToken);
+        EmbedAsync(passages, GraniteEmbeddingInputEncoding.PassageMaximumTokens, cancellationToken);
 
     public async Task<QueryEmbedding> EmbedQueryAsync(string query, CancellationToken cancellationToken)
     {
-        var result = await EmbedAsync([query], 256, cancellationToken).ConfigureAwait(false);
+        var result = await EmbedAsync([query], GraniteEmbeddingInputEncoding.QueryMaximumTokens, cancellationToken).ConfigureAwait(false);
         return new QueryEmbedding(result.Vectors[0], result.Policy);
     }
 
@@ -258,15 +252,9 @@ public sealed class GraniteEmbeddingGenerator : IEmbeddingGenerator
                         for (var index = 0; index < count; index++)
                         {
                             cancellationToken.ThrowIfCancellationRequested();
-                            var tokens = tokenizer.Encode(texts[offset + index], false).First().Ids;
-                            if (maximumTokens == 512 && tokens.Count > maximumTokens - 1)
-                                throw new ContextMoleException("embedding_input_too_long",
-                                    "A prepared passage exceeds the complete embedding token budget; reindex with the current preparation pipeline.");
-                            var tokenCount = Math.Min(tokens.Count, maximumTokens - 1);
-                            var ids = new long[tokenCount + 1];
-                            ids[0] = selectedModel.BosTokenId;
-                            for (var token = 0; token < tokenCount; token++) ids[token + 1] = tokens[token];
-                            encoded[index] = ids;
+                            encoded[index] = GraniteEmbeddingInputEncoding.Encode(tokenizer, texts[offset + index],
+                                selectedModel, maximumTokens,
+                                rejectOverlong: maximumTokens == GraniteEmbeddingInputEncoding.PassageMaximumTokens);
                         }
                     }
 

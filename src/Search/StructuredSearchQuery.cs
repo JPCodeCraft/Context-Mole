@@ -1,10 +1,8 @@
-using System.Text.RegularExpressions;
-
 using ContextMole.Core;
 
 namespace ContextMole.Search;
 
-public static partial class StructuredSearchQuery
+public static class StructuredSearchQuery
 {
     private static readonly SearchField[] AllFields = Enum.GetValues<SearchField>();
 
@@ -47,33 +45,11 @@ public static partial class StructuredSearchQuery
     }
 
     public static ClauseEvaluation Evaluate(SearchCandidate candidate, IReadOnlyList<SearchClause> clauses,
-        int minimumShouldMatch)
-    {
-        if (clauses.Count == 0)
-            return new ClauseEvaluation(true, [], []);
+        int minimumShouldMatch) => Prepare(clauses).Evaluate(candidate, minimumShouldMatch);
 
-        var matchedIds = new List<string>();
-        var matchedFields = new HashSet<SearchField>();
-        var shouldMatches = 0;
-
-        foreach (var clause in clauses)
-        {
-            var fields = MatchFields(candidate, clause);
-            var matched = fields.Count > 0;
-            if (clause.Occur == SearchClauseOccur.Must && !matched ||
-                clause.Occur == SearchClauseOccur.MustNot && matched)
-                return new ClauseEvaluation(false, [], []);
-
-            if (!matched || clause.Occur == SearchClauseOccur.MustNot) continue;
-            matchedIds.Add(clause.Id);
-            matchedFields.UnionWith(fields);
-            if (clause.Occur == SearchClauseOccur.Should) shouldMatches++;
-        }
-
-        return shouldMatches < minimumShouldMatch
-            ? new ClauseEvaluation(false, [], [])
-            : new ClauseEvaluation(true, matchedIds, matchedFields.Order().ToArray());
-    }
+    // A prepared query belongs to one request. Keep only small match masks, not token streams,
+    // so shared section text is tokenized once even when hundreds of its vectors are retrieved.
+    internal static PreparedQuery Prepare(IReadOnlyList<SearchClause> clauses) => new(clauses);
 
     public static IReadOnlyList<string> Tokens(string? value) => LexicalText.Tokens(value);
 
@@ -92,47 +68,150 @@ public static partial class StructuredSearchQuery
         _ => null
     };
 
-    public static IReadOnlyList<SearchMatchSpan> FindBodyMatches(string text, IReadOnlyList<SearchClause> clauses)
-    {
-        var tokens = LexicalText.TokenizeWithOffsets(text);
-        var spans = new List<SearchMatchSpan>();
-        foreach (var clause in clauses.Where(clause => clause.Occur != SearchClauseOccur.MustNot &&
-            (clause.Fields is not { Count: > 0 } || clause.Fields.Contains(SearchField.Body))))
-        {
-            var query = Tokens(clause.Text);
-            for (var index = 0; index < tokens.Count; index++)
-            {
-                var matched = clause.Match switch
-                {
-                    SearchMatchKind.Term => tokens[index].Value == query[0],
-                    SearchMatchKind.Prefix => tokens[index].Value.StartsWith(query[0], StringComparison.Ordinal),
-                    SearchMatchKind.Phrase => index + query.Count <= tokens.Count &&
-                        query.Select((value, offset) => value == tokens[index + offset].Value).All(value => value),
-                    _ => false
-                };
-                if (!matched) continue;
-                var last = clause.Match == SearchMatchKind.Phrase ? tokens[index + query.Count - 1] : tokens[index];
-                spans.Add(new SearchMatchSpan(clause.Id, tokens[index].Start, last.Start + last.Length - tokens[index].Start));
-            }
-        }
-        return spans;
-    }
+    public static IReadOnlyList<SearchMatchSpan> FindBodyMatches(string text, IReadOnlyList<SearchClause> clauses) =>
+        Prepare(clauses).FindBodyMatches(text);
 
-    public static IReadOnlyList<SearchFieldMatch> FindFieldMatches(SearchCandidate candidate, IReadOnlyList<SearchClause> clauses)
+    public static IReadOnlyList<SearchFieldMatch> FindFieldMatches(SearchCandidate candidate,
+        IReadOnlyList<SearchClause> clauses) => Prepare(clauses).FindFieldMatches(candidate);
+
+    internal sealed class PreparedQuery
     {
-        var result = new List<SearchFieldMatch>();
-        foreach (var clause in clauses.Where(clause => clause.Occur != SearchClauseOccur.MustNot))
-        foreach (var field in MatchFields(candidate, clause).Where(field => field != SearchField.Body))
+        private readonly PreparedClause[] _clauses;
+        private readonly PreparedClause[] _bodyClauses;
+        // Section hydration shares the same string instance. Reference keys avoid repeatedly
+        // hashing a potentially very large section and do not conflate different metadata.
+        private readonly Dictionary<string, bool[]> _matches = new(ReferenceEqualityComparer.Instance);
+
+        public PreparedQuery(IReadOnlyList<SearchClause> clauses)
         {
-            var text = FieldValue(candidate, field) ?? string.Empty;
-            var bodyClause = clause with { Fields = [SearchField.Body] };
-            var span = FindBodyMatches(text, [bodyClause]).FirstOrDefault();
-            if (span is null) continue;
-            var start = Math.Max(0, span.Start - 60);
-            var end = Math.Min(text.Length, Math.Max(start + 160, span.Start + span.Length));
-            result.Add(new SearchFieldMatch(clause.Id, field, text[start..end], span.Start, span.Length) { ExcerptStart = start });
+            _clauses = clauses.Select(clause => new PreparedClause(clause, Tokens(clause.Text),
+                clause.Fields is { Count: > 0 } ? clause.Fields.Distinct().ToArray() : AllFields)).ToArray();
+            _bodyClauses = _clauses.Where(clause => clause.Clause.Occur != SearchClauseOccur.MustNot &&
+                clause.Fields.Contains(SearchField.Body)).ToArray();
         }
-        return result;
+
+        public ClauseEvaluation Evaluate(SearchCandidate candidate, int minimumShouldMatch)
+        {
+            if (_clauses.Length == 0) return new ClauseEvaluation(true, [], []);
+            var matchedIds = new List<string>();
+            var matchedFields = new HashSet<SearchField>();
+            var shouldMatches = 0;
+            for (var index = 0; index < _clauses.Length; index++)
+            {
+                var clause = _clauses[index];
+                var matched = false;
+                foreach (var field in clause.Fields)
+                {
+                    var text = FieldValue(candidate, field);
+                    if (string.IsNullOrEmpty(text) || !Matches(text)[index]) continue;
+                    matched = true;
+                    if (clause.Clause.Occur != SearchClauseOccur.MustNot) matchedFields.Add(field);
+                }
+                if (clause.Clause.Occur == SearchClauseOccur.Must && !matched ||
+                    clause.Clause.Occur == SearchClauseOccur.MustNot && matched)
+                    return new ClauseEvaluation(false, [], []);
+                if (!matched || clause.Clause.Occur == SearchClauseOccur.MustNot) continue;
+                matchedIds.Add(clause.Clause.Id);
+                if (clause.Clause.Occur == SearchClauseOccur.Should) shouldMatches++;
+            }
+            return shouldMatches < minimumShouldMatch
+                ? new ClauseEvaluation(false, [], [])
+                : new ClauseEvaluation(true, matchedIds, matchedFields.Order().ToArray());
+        }
+
+        public IReadOnlyList<SearchMatchSpan> FindBodyMatches(string text)
+        {
+            // Semantic-only and metadata-only queries have no body spans. In particular, do
+            // not tokenize every section and passage merely to return an empty collection.
+            if (_bodyClauses.Length == 0 || text.Length == 0) return [];
+            var tokens = LexicalText.TokenizeWithOffsets(text);
+            var spans = new List<SearchMatchSpan>();
+            foreach (var clause in _bodyClauses)
+                AddSpans(tokens, clause, spans);
+            return spans;
+        }
+
+        public IReadOnlyList<SearchFieldMatch> FindFieldMatches(SearchCandidate candidate)
+        {
+            var result = new List<SearchFieldMatch>();
+            var tokensByField = new Dictionary<SearchField, IReadOnlyList<LexicalToken>>();
+            foreach (var clause in _clauses)
+            {
+                if (clause.Clause.Occur == SearchClauseOccur.MustNot) continue;
+                foreach (var field in clause.Fields)
+                {
+                    // Body matching is handled separately with literal passage offsets.
+                    if (field == SearchField.Body) continue;
+                    var text = FieldValue(candidate, field);
+                    if (string.IsNullOrEmpty(text)) continue;
+                    if (!tokensByField.TryGetValue(field, out var tokens))
+                        tokensByField[field] = tokens = LexicalText.TokenizeWithOffsets(text);
+                    var span = FirstSpan(tokens, clause);
+                    if (span is null) continue;
+                    var start = Math.Max(0, span.Start - 60);
+                    var end = Math.Min(text.Length, Math.Max(start + 160, span.Start + span.Length));
+                    result.Add(new SearchFieldMatch(clause.Clause.Id, field, text[start..end], span.Start,
+                        span.Length) { ExcerptStart = start });
+                }
+            }
+            return result;
+        }
+
+        private bool[] Matches(string text)
+        {
+            if (_matches.TryGetValue(text, out var matches)) return matches;
+            var tokens = Tokens(text);
+            matches = _clauses.Select(clause => clause.Clause.Match switch
+            {
+                SearchMatchKind.Term => tokens.Contains(clause.Tokens.Single(), StringComparer.Ordinal),
+                SearchMatchKind.Prefix => tokens.Any(token => token.StartsWith(clause.Tokens.Single(), StringComparison.Ordinal)),
+                SearchMatchKind.Phrase => ContainsSequence(tokens, clause.Tokens),
+                _ => false
+            }).ToArray();
+            _matches[text] = matches;
+            return matches;
+        }
+
+        private static void AddSpans(IReadOnlyList<LexicalToken> tokens, PreparedClause clause,
+            List<SearchMatchSpan> spans)
+        {
+            for (var index = 0; index < tokens.Count; index++)
+                if (SpanAt(tokens, clause, index) is { } span) spans.Add(span);
+        }
+
+        private static SearchMatchSpan? FirstSpan(IReadOnlyList<LexicalToken> tokens, PreparedClause clause)
+        {
+            for (var index = 0; index < tokens.Count; index++)
+                if (SpanAt(tokens, clause, index) is { } span) return span;
+            return null;
+        }
+
+        private static SearchMatchSpan? SpanAt(IReadOnlyList<LexicalToken> tokens, PreparedClause clause, int index)
+        {
+            var query = clause.Tokens;
+            if (query.Count == 0) return null;
+            var matched = clause.Clause.Match switch
+            {
+                SearchMatchKind.Term => tokens[index].Value == query[0],
+                SearchMatchKind.Prefix => tokens[index].Value.StartsWith(query[0], StringComparison.Ordinal),
+                SearchMatchKind.Phrase => MatchesSequence(tokens, query, index),
+                _ => false
+            };
+            if (!matched) return null;
+            var last = clause.Clause.Match == SearchMatchKind.Phrase ? tokens[index + query.Count - 1] : tokens[index];
+            return new SearchMatchSpan(clause.Clause.Id, tokens[index].Start,
+                last.Start + last.Length - tokens[index].Start);
+        }
+
+        private static bool MatchesSequence(IReadOnlyList<LexicalToken> source, IReadOnlyList<string> query, int start)
+        {
+            if (start + query.Count > source.Count) return false;
+            for (var offset = 0; offset < query.Count; offset++)
+                if (!string.Equals(source[start + offset].Value, query[offset], StringComparison.Ordinal)) return false;
+            return true;
+        }
+
+        private sealed record PreparedClause(SearchClause Clause, IReadOnlyList<string> Tokens, SearchField[] Fields);
     }
 
     private static string BuildClauseExpression(SearchClause clause)
@@ -152,26 +231,6 @@ public static partial class StructuredSearchQuery
             SearchMatchKind.Phrase => Quote(string.Join(' ', tokens)),
             _ => throw new ContextMoleException("invalid_clause", $"Clause '{clause.Id}' has an invalid match type.")
         };
-    }
-
-    private static IReadOnlyList<SearchField> MatchFields(SearchCandidate candidate, SearchClause clause)
-    {
-        var fields = clause.Fields is { Count: > 0 } ? clause.Fields.Distinct() : AllFields;
-        var matches = new List<SearchField>();
-        foreach (var field in fields)
-        {
-            var tokens = Tokens(FieldValue(candidate, field));
-            var queryTokens = Tokens(clause.Text);
-            var matched = clause.Match switch
-            {
-                SearchMatchKind.Term => tokens.Contains(queryTokens.Single(), StringComparer.Ordinal),
-                SearchMatchKind.Prefix => tokens.Any(token => token.StartsWith(queryTokens.Single(), StringComparison.Ordinal)),
-                SearchMatchKind.Phrase => ContainsSequence(tokens, queryTokens),
-                _ => false
-            };
-            if (matched) matches.Add(field);
-        }
-        return matches;
     }
 
     private static bool ContainsSequence(IReadOnlyList<string> source, IReadOnlyList<string> query)
@@ -206,8 +265,6 @@ public static partial class StructuredSearchQuery
 
     private static string Quote(string value) => $"\"{value.Replace("\"", "\"\"", StringComparison.Ordinal)}\"";
 
-    [GeneratedRegex(@"[\p{L}\p{M}\p{N}_]+")]
-    private static partial Regex WordTokens();
 }
 
 public sealed record ClauseEvaluation(

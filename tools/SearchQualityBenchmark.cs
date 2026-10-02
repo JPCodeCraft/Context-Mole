@@ -21,7 +21,7 @@ using Microsoft.Data.Sqlite;
 
 if (args.Contains("--help", StringComparer.Ordinal))
 {
-    Console.WriteLine("dotnet run --file tools/SearchQualityBenchmark.cs -- [--semantic] [--model Granite97M|Granite311M] [--output artifacts/search-quality.json]");
+    Console.WriteLine("dotnet run --file tools/SearchQualityBenchmark.cs -- [--semantic] [--model Granite97M] [--output artifacts/search-quality.json]");
     Console.WriteLine("Indexes the labeled synthetic benchmarks/search/corpus.json in an owned temporary SQLite database, then runs the actual HybridSearchService. No downloads or changes to the application index/settings. Default: lexical passage/section retrieval. --semantic requires installed model assets and adds semantic and hybrid retrieval, comparing an explicit metadata-first/raw baseline with the production semantic preparation functions. Three warm search timings per query, Recall@5, MRR@5, nDCG@5, compact/full serialized response bytes, token/truncation diagnostics and literal preview/read consistency are reported. This small corpus is a regression workload, not a model quality or latency guarantee.");
     return;
 }
@@ -124,7 +124,7 @@ async Task<object> RunAsync(string profile)
                 var offset = 0;
                 foreach (var original in display)
                 {
-                    foreach (var chunk in Chunks(original, document.Title, section.Heading, Path.GetFileName(path)))
+                    foreach (var chunk in Chunks(original, document.Title, section.Heading, Path.GetFileName(path), document.EmailBody))
                     {
                         var text = chunk.Text;
                         var passageId = Id($"{document.Id}/{section.Id}/{ordinal}");
@@ -136,10 +136,10 @@ async Task<object> RunAsync(string profile)
                         if (!semantic) continue;
                         var representation = profile == "raw"
                             ? $"Title: {document.Title}\nFile: {Path.GetFileName(path)}\nHeading: {section.Heading}\n{text}"
-                            : SemanticTextPreparation.Compose(profile == "prepared" ? SemanticTextPreparation.CleanBody(text, section.Boilerplate) : text,
+                            : SemanticTextPreparation.Compose(profile == "prepared" ? SemanticTextPreparation.CleanBody(text, section.Boilerplate, document.EmailBody) : text,
                                 [("Title", document.Title), ("Heading", section.Heading)], embeddings.CountTokens);
                         // Production boilerplate has lexical evidence but no semantic vector.
-                        if (profile == "prepared" && (section.Boilerplate || SemanticTextPreparation.CleanBody(text).Length == 0))
+                        if (profile == "prepared" && (section.Boilerplate || SemanticTextPreparation.CleanBody(text, emailBody: document.EmailBody).Length == 0))
                         {
                             passages[^1] = passages[^1] with { SemanticEligible = false };
                             continue;
@@ -231,7 +231,7 @@ async Task<object> RunAsync(string profile)
             }).ToArray(), query_results = rows
         };
 
-        IEnumerable<(string Text, int Start)> Chunks(string text, string title, string heading, string fileName)
+        IEnumerable<(string Text, int Start)> Chunks(string text, string title, string heading, string fileName, bool emailBody)
         {
             if (!semantic) { yield return (text, 0); yield break; }
             // A shared chunk partition keeps raw/prepared comparisons controlled. Both complete
@@ -261,7 +261,7 @@ async Task<object> RunAsync(string profile)
                 start += length;
             }
             bool Fits(string body) => embeddings.CountTokens($"Title: {title}\nFile: {fileName}\nHeading: {heading}\n{body}") <= 512 &&
-                embeddings.CountTokens(SemanticTextPreparation.Compose(SemanticTextPreparation.CleanBody(body),
+                embeddings.CountTokens(SemanticTextPreparation.Compose(SemanticTextPreparation.CleanBody(body, emailBody: emailBody),
                     [("Title", title), ("Heading", heading)], embeddings.CountTokens)) <= 512;
         }
     }
@@ -289,7 +289,7 @@ static (double Recall, double Mrr, double Ndcg) Metrics(IReadOnlyList<string> ra
 }
 
 sealed record Corpus(int Version, CorpusDocument[] Documents, CorpusQuery[] Queries);
-sealed record CorpusDocument(string Id, string Title, CorpusSection[] Sections);
+sealed record CorpusDocument(string Id, string Title, CorpusSection[] Sections, bool EmailBody = false);
 sealed record CorpusSection(string Id, string Heading, string[] Passages, int PrefixRepeat = 0, bool Boilerplate = false);
 sealed record CorpusQuery(string Id, SearchScope Scope, string SemanticQuery, SearchClause[] Clauses, string[] Relevant);
 sealed record QueryRow(string QueryId, string Mode, string Scope, string[] Returned, string[] Relevant,

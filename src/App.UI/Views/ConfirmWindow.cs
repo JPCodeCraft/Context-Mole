@@ -25,7 +25,7 @@ public sealed class ConfirmWindow : Window
         {
             Content = acceptLabel,
             MinWidth = 96,
-            IsDefault = true,
+            IsDefault = !destructive || singleAction,
         };
         accept.Classes.Add(destructive ? "destructive" : "primary");
         accept.Click += (_, _) => Close(true);
@@ -43,10 +43,12 @@ public sealed class ConfirmWindow : Window
                 Content = "Cancel",
                 MinWidth = 90,
                 IsCancel = true,
+                IsDefault = destructive,
             };
             cancel.Classes.Add("ghost");
             cancel.Click += (_, _) => Close(false);
             buttons.Children.Add(cancel);
+            if (destructive) Opened += (_, _) => cancel.Focus();
         }
         buttons.Children.Add(accept);
 

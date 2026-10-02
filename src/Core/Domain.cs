@@ -18,8 +18,9 @@ public enum CpuUsageProfile
 
 public enum EmbeddingModelChoice
 {
-    Granite311M,
-    Granite97M
+    // Retain the persisted numeric value for decoding legacy settings; never an app model choice.
+    Granite311M = 0,
+    Granite97M = 1
 }
 
 public enum IndexJobKind
@@ -173,6 +174,7 @@ public sealed record ProjectSummary(
     public int AttentionCount { get; init; } = ErrorCount;
     public int ErrorFileCount { get; init; } = ErrorCount;
     public int SearchableCount { get; init; } = IndexedCount;
+    public int ExcludedPathCount { get; init; }
 
     [JsonIgnore]
     public ProjectWorkSummary Work { get; init; } = new(
@@ -193,6 +195,41 @@ public sealed record ProjectErrorInfo(
     int Attempt,
     DateTimeOffset CreatedUtc,
     string? SourcePath);
+
+public enum ProjectIssueImpact { All, Unsearchable, Partial, RetainedSearchable }
+public enum ProjectIssueRetryState { Manual, Queued, Running, Scheduled, Exhausted, Paused }
+public enum ProjectIssueVisibility { Visible, Hidden, All }
+
+public sealed record ProjectIssueListRequest(Guid ProjectId, string? Query = null, string? Code = null,
+    ProjectIssueImpact Impact = ProjectIssueImpact.All, ProjectIssueVisibility Visibility = ProjectIssueVisibility.Visible,
+    int Limit = 25, string? Cursor = null);
+
+public sealed record ProjectIssueDetail(long Id, string Signature, Guid? ContentId, string ComponentKey,
+    string? ComponentName, string Code, string Message, bool Retryable, int Attempt,
+    DateTimeOffset CreatedUtc, bool IsHidden)
+{
+    public DateTimeOffset FirstSeenUtc { get; init; } = CreatedUtc;
+    public DateTimeOffset LastSeenUtc { get; init; } = CreatedUtc;
+    public int OccurrenceCount { get; init; } = 1;
+}
+
+public sealed record ProjectIssueGroup(Guid? DocumentId, string SourcePath, string FileName,
+    ProjectIssueImpact Impact, int IssueCount, int HiddenIssueCount, ProjectIssueRetryState RetryState,
+    DateTimeOffset? NextRetryUtc, bool CanRetry, IReadOnlyList<ProjectIssueDetail> Details, string? DetailsCursor);
+
+public sealed record ProjectIssueListResponse(Guid ProjectId, int TotalFileCount, int VisibleFileCount,
+    int HiddenFileCount, int TotalIssueCount, int HiddenIssueCount, IReadOnlyList<ProjectIssueGroup> Groups,
+    string? NextCursor)
+{
+    public int FilteredFileCount { get; init; }
+    public int FilteredIssueCount { get; init; }
+    public bool IssuesChangedDuringPaging { get; init; }
+}
+
+public sealed record ProjectIssueDetailsResponse(IReadOnlyList<ProjectIssueDetail> Details, string? NextCursor);
+public sealed record HideProjectIssuesResult(IReadOnlyList<Guid> AcknowledgementIds, int HiddenIssueCount);
+public sealed record ExcludedFileInfo(string SourcePath, DateTimeOffset ExcludedUtc);
+public sealed record FileExclusionResult(bool Changed, bool Queued);
 
 public sealed record DocumentListRequest(
     Guid ProjectId,
@@ -247,7 +284,10 @@ public sealed record FileObservation(
     bool Force = false,
     bool VerifyContent = false);
 
-public sealed record ObservationResult(Guid DocumentId, long ObservationEpoch, bool Queued);
+public sealed record ObservationResult(Guid DocumentId, long ObservationEpoch, bool Queued)
+{
+    public bool IsExcluded { get; init; }
+}
 
 public sealed record RetryFailedFilesResult(int QueuedCount, int AlreadyPendingCount);
 
@@ -312,7 +352,12 @@ public sealed record ExtractionError(
     string Code,
     string Message,
     bool Retryable,
-    string? ItemName = null);
+    string? ItemName = null)
+{
+    // Set when the extractor/indexer can identify the exact attachment; IDs may change between revisions.
+    public Guid? ContentId { get; init; }
+    public string? ComponentKey { get; init; }
+}
 
 public sealed record ExtractionResult(
     ExtractedNode Root,
@@ -355,10 +400,19 @@ public sealed record EmbeddingPolicy(
     int Dimensions,
     string Pooling,
     string Normalization,
-    string PreparationVersion = IndexPreparation.Version)
+    string PreparationVersion = IndexPreparation.Version,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? TokenizationVersion = null)
 {
-    public string Key => string.Join(':', ModelId, Revision, ModelSha256, TokenizerSha256, Precision,
-        SourceDimensions, Dimensions, Pooling, Normalization, PreparationVersion);
+    public string Key
+    {
+        get
+        {
+            var legacyKey = string.Join(':', ModelId, Revision, ModelSha256, TokenizerSha256, Precision,
+                SourceDimensions, Dimensions, Pooling, Normalization, PreparationVersion);
+            // Missing means the historical BOS-only format. Keep its persisted key byte-for-byte stable.
+            return TokenizationVersion is null ? legacyKey : $"{legacyKey}:{TokenizationVersion}";
+        }
+    }
 }
 
 public sealed record EmbeddingBatch(
@@ -474,7 +528,7 @@ public enum SearchDetail { Compact, Full }
 
 public sealed record SearchResultOptions(
     int GroupLimit = 10,
-    int PreviewsPerGroup = 1,
+    int PreviewsPerGroup = 2,
     int MaxGroupsPerDocument = 2,
     double SemanticSimilarityThreshold = 0.25,
     bool StrictSemanticThreshold = false);
@@ -778,6 +832,8 @@ public sealed record VectorSnapshotMetadata(
     int RepairQueuedDocumentCount = 0,
     long TotalPassageCount = 0)
 {
+    public int ReextractionRequiredDocumentCount { get; init; }
+    public int EmbeddingRepairEligibleDocumentCount { get; init; }
     public int ExcludedDocumentCount => Math.Max(0, TotalDocumentCount - CompatibleDocumentCount);
     public bool HasPartialCoverage => ExcludedDocumentCount > 0;
     public bool IsRepairQueued => HasPartialCoverage && RepairQueuedDocumentCount >= ExcludedDocumentCount;

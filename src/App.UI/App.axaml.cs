@@ -3,6 +3,7 @@ using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
 using Avalonia.Platform;
+using Avalonia.Threading;
 
 using ContextMole.App.UI.ViewModels;
 using ContextMole.App.UI.Views;
@@ -17,21 +18,89 @@ public partial class App : Application
     private TrayIcon? _trayIcon;
     private bool _quitting;
 
-    public override void Initialize() => AvaloniaXamlLoader.Load(this);
+    public override void Initialize()
+    {
+        AvaloniaXamlLoader.Load(this);
+        Dispatcher.UIThread.UnhandledException += (_, args) =>
+        {
+            // Avalonia 12.1.1 posts its async Linux tray-watch cancellation after Dispose.
+            // Only that exact expected shutdown path is handled; runtime/startup failures
+            // and cancellation from our own services still follow the normal error path.
+            if (DesktopShutdownExceptionPolicy.IsExpectedTrayCancellation(_quitting,
+                    OperatingSystem.IsLinux(), args.Exception)) args.Handled = true;
+        };
+    }
 
     public override void OnFrameworkInitializationCompleted()
     {
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
-            if (Program.StartupFailureMessage is { } startupFailure)
+            var startup = new StartupWindow(Program.LaunchInBackground);
+            desktop.MainWindow = startup;
+            var cancelRequested = false;
+            startup.CancelRequested += () =>
             {
-                var errorWindow = ConfirmWindow.CreateStartupError(startupFailure);
-                desktop.MainWindow = errorWindow;
-                errorWindow.Closed += (_, _) => desktop.Shutdown(1);
-                base.OnFrameworkInitializationCompleted();
-                return;
-            }
+                cancelRequested = true;
+                Program.CancelStartup();
+                if (Program.StartupFailureMessage is not null)
+                {
+                    startup.CompleteAndClose();
+                    desktop.Shutdown(1);
+                }
+            };
+            Action<string> report = stage => Dispatcher.UIThread.Post(() => startup.Report(stage));
+            Program.StartupProgressChanged += report;
+            // Post after framework initialization so a visible startup window can render before
+            // any migration/cache work. The normal workspace cannot open against an unready host.
+            Dispatcher.UIThread.Post(async () =>
+            {
+                try
+                {
+                    await Program.InitializeHostAsync();
+                    if (cancelRequested)
+                    {
+                        await Program.ShutdownHostAsync();
+                        startup.CompleteAndClose();
+                        desktop.Shutdown();
+                        return;
+                    }
+                    if (Program.StartupFailureMessage is { } failure)
+                    {
+                        startup.ShowFailure(failure);
+                        return;
+                    }
+                    OpenWorkspace(desktop);
+                    startup.CompleteAndClose();
+                }
+                catch (OperationCanceledException)
+                {
+                    await Program.ShutdownHostAsync();
+                    startup.CompleteAndClose();
+                    desktop.Shutdown();
+                }
+                catch (Exception exception)
+                {
+                    await Program.ShutdownHostAsync(closeLog: false);
+                    startup.ShowFailure(Program.FormatStartupFailure(exception.Message, Program.StartupDatabasePath, Program.StartupLogsDirectory));
+                    startup.CancelRequested += () =>
+                    {
+                        startup.CompleteAndClose();
+                        desktop.Shutdown(1);
+                    };
+                }
+                finally
+                {
+                    Program.StartupProgressChanged -= report;
+                }
+            });
+        }
+        base.OnFrameworkInitializationCompleted();
+    }
+
+    private void OpenWorkspace(IClassicDesktopStyleApplicationLifetime desktop)
+    {
             var viewModel = Program.Services.GetRequiredService<MainViewModel>();
+            viewModel.ReportRetiredModelCleanup(Program.RetiredModelCleanupResult);
             var window = new MainWindow { DataContext = viewModel };
             if (Program.LaunchInBackground)
             {
@@ -59,8 +128,7 @@ public partial class App : Application
                 window.Opacity = 1;
             }
             viewModel.StartPolling();
-        }
-        base.OnFrameworkInitializationCompleted();
+            window.Show();
     }
 
     public async Task QuitAsync()

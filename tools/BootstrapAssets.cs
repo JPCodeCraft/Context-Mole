@@ -1,4 +1,6 @@
 #:property TargetFramework=net10.0
+#:property PublishAot=false
+#:property NuGetLockFilePath=../artifacts/BootstrapAssets.packages.lock.json
 #:project ../src/Core/ContextMole.Core.csproj
 #:project ../src/Infrastructure/ContextMole.Infrastructure.csproj
 

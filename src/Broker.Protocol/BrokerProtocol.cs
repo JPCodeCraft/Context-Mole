@@ -8,9 +8,11 @@ namespace ContextMole.Broker.Protocol;
 
 public static class BrokerProtocol
 {
-    // Isolate the shared desktop runtime from legacy brokers that may still run
-    // against an MSIX-private database and authentication token after an update.
-    public const int MajorVersion = 3;
+    // v4 requires clients to preserve EmbeddingPolicy.TokenizationVersion. A v3
+    // client silently drops that field and would label BOS+EOS vectors with a
+    // legacy BOS-only key, even when deployment arbitration permits a newer broker.
+    // Keep the endpoint and handshake isolated from those incompatible clients.
+    public const int MajorVersion = 4;
     public const int MinorVersion = 0;
     public const int MaximumFrameBytes = 32 * 1024 * 1024;
     public static readonly TimeSpan DefaultStartupTimeout = TimeSpan.FromSeconds(10);

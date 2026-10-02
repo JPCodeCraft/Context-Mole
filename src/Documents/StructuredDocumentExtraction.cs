@@ -349,7 +349,7 @@ public sealed partial class DocumentExtractionRegistry
             if (!IsEpubTextItem(item)) continue;
             if (++chapter > context.Request.MaxAttachments)
             {
-                context.Errors.Add(new ExtractionError("package_entry_limit",
+                context.AddError(new ExtractionError("package_entry_limit",
                     "EPUB contains more readable sections than the configured safety limit.", false, name));
                 break;
             }

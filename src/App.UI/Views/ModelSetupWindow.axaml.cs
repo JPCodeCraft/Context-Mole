@@ -26,6 +26,7 @@ public partial class ModelSetupWindow : Window
 
     public ModelSetupWindow(GraniteModelInstaller installer, GraniteEmbeddingModelDefinition model)
     {
+        GraniteEmbeddingModels.EnsureSupported(model);
         _installer = installer;
         _model = model;
         InitializeComponent();
@@ -39,7 +40,7 @@ public partial class ModelSetupWindow : Window
             InstallButton.Content = "Verify and repair";
         }
         ModelNameBlock.Text = _model.DisplayName;
-        ModelDescriptionBlock.Text = $"{_model.Description}. It supports Portuguese, English, Spanish, and 200+ languages. Keyword search remains available without this download.";
+        ModelDescriptionBlock.Text = "Find passages with similar meaning across languages using the local Granite Multilingual 97M model. Keyword search needs no model download.";
         DownloadDescriptionBlock.Text = isRepair
             ? "Existing files will be verified. Only missing or damaged model files will be downloaded again. Your documents are never included."
             : $"{_model.DisplayName} is stored only on this computer. Downloads are checksum-verified, resumable, and never include your documents.";
@@ -87,7 +88,8 @@ public partial class ModelSetupWindow : Window
         _installation = new CancellationTokenSource();
         AcceptTermsCheckBox.IsEnabled = false;
         InstallButton.IsEnabled = false;
-        CancelButton.Content = "Cancel download";
+        CancelButton.Content = "Cancel setup";
+        CancelButton.IsEnabled = true;
         var progress = new Progress<ModelInstallProgress>(value => Dispatcher.UIThread.Post(() => ShowProgress(value)));
         try
         {
@@ -108,11 +110,13 @@ public partial class ModelSetupWindow : Window
         {
             _installing = false;
             StatusBlock.Text = $"Setup failed: {exception.Message}";
-            BytesBlock.Text = "The verified part of the download is retained so setup can resume.";
+            BytesBlock.Text = "Any completed files and partial downloads that remain are kept. Retry to resume; files will be verified before use.";
             DownloadProgress.IsIndeterminate = false;
             AcceptTermsCheckBox.IsEnabled = _model.RequiresGemmaTerms && !_installer.HasRecordedTermsAcceptance;
             InstallButton.IsEnabled = !_model.RequiresGemmaTerms || AcceptTermsCheckBox.IsChecked == true;
             CancelButton.Content = "Close";
+            CancelButton.IsEnabled = true;
+            InstallButton.Content = "Retry setup";
         }
         finally
         {
@@ -135,19 +139,21 @@ public partial class ModelSetupWindow : Window
 
     private void ShowProgress(ModelInstallProgress progress)
     {
+        if (!_installing) return;
         StatusBlock.Text = progress.Stage switch
         {
             "downloading" => $"Downloading {progress.AssetName}…",
             "verifying" => $"Verifying {progress.AssetName}…",
             "verified" => $"Verified {progress.AssetName}.",
+            "waiting_cpu" => "Waiting for processor capacity before validating the optimized model…",
             "validating" => "Validating the optimized model on this computer…",
             "complete" => "Download complete.",
             _ => progress.AssetName
         };
-        DownloadProgress.IsIndeterminate = progress.Stage is "verifying" or "validating" || progress.Fraction is null;
+        DownloadProgress.IsIndeterminate = progress.Stage is "verifying" or "waiting_cpu" or "validating" || progress.Fraction is null;
         if (progress.Fraction is { } fraction) DownloadProgress.Value = fraction;
         BytesBlock.Text = progress.TotalBytes is { } total
-            ? $"{FormatBytes(progress.BytesReceived)} of {FormatBytes(total)}"
+            ? $"Current file: {FormatBytes(progress.BytesReceived)} of {FormatBytes(total)}"
             : progress.BytesReceived > 0 ? FormatBytes(progress.BytesReceived) : string.Empty;
     }
 

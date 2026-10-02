@@ -60,7 +60,7 @@ public sealed class CodexConfigurationTests
     }
 
     [Fact]
-    public async Task ConnectRepairsInvalidManagedCodexCommand()
+    public async Task ConnectRefusesMalformedManagedCodexCommand()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         using var paths = new StorageTestPaths();
@@ -90,10 +90,11 @@ public sealed class CodexConfigurationTests
             Environment.SetEnvironmentVariable("CONTEXTMOLE_MCP_PATH", server);
 
             var service = new CodexMcpConfigurationService(paths);
-            Assert.Equal(AiConnectionState.UpdateRequired, (await service.GetStatusAsync(cancellationToken)).State);
-            Assert.Equal(AiConnectionState.Connected, (await service.ConnectAsync(cancellationToken)).State);
-            Assert.Contains(Path.GetFileName(server), await File.ReadAllTextAsync(service.ConfigPath, cancellationToken),
-                StringComparison.Ordinal);
+            var original = await File.ReadAllTextAsync(service.ConfigPath, cancellationToken);
+            Assert.Equal(AiConnectionState.Conflict, (await service.GetStatusAsync(cancellationToken)).State);
+            Assert.Equal(AiConnectionState.Conflict, (await service.ConnectAsync(cancellationToken)).State);
+            Assert.Equal(AiConnectionState.Conflict, (await service.DisconnectAsync(cancellationToken)).State);
+            Assert.Equal(original, await File.ReadAllTextAsync(service.ConfigPath, cancellationToken));
         }
         finally
         {

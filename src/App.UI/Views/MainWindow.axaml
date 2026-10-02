@@ -7,17 +7,17 @@
         Width="1280" Height="800" MinWidth="980" MinHeight="640"
         Icon="/Assets/context-mole.ico"
         Title="Context Mole">
-  <Grid ColumnDefinitions="268,*">
+  <Grid ColumnDefinitions="240,*">
     <Border Background="{DynamicResource SidebarBrush}"
             BorderBrush="{DynamicResource BorderBrush}"
             BorderThickness="0,0,1,0">
-      <Grid RowDefinitions="Auto,Auto,Auto,*,Auto" Margin="16,18,16,14">
+      <Grid RowDefinitions="Auto,Auto,Auto,*,Auto,Auto" Margin="16,18,16,14">
         <StackPanel Orientation="Horizontal" Spacing="11" Margin="6,0,6,20">
           <Image Width="36" Height="36" Source="/Assets/context-mole-app-icon.png"
                  Stretch="Uniform" />
           <StackPanel VerticalAlignment="Center" Spacing="1">
             <TextBlock Text="Context Mole" FontWeight="SemiBold" FontSize="15" />
-            <TextBlock Text="Local document search" Classes="quiet" FontSize="11" />
+            <TextBlock Text="Search from your AI assistant" Classes="quiet" FontSize="12" />
           </StackPanel>
         </StackPanel>
 
@@ -45,31 +45,32 @@
                       PointerPressed="ProjectCardPressed">
                 <Grid ColumnDefinitions="Auto,*" ColumnSpacing="8">
                   <TextBlock Text="⠿" Classes="projectDragHandle" Cursor="SizeAll"
-                             VerticalAlignment="Center" ToolTip.Tip="Drag to reorder"
+                             VerticalAlignment="Center" ToolTip.Tip="Drag to reorder, or use the Move up and Move down buttons. Keyboard: Ctrl+Shift+Up/Down."
                              PointerPressed="ProjectDragHandlePressed"
                              PointerMoved="ProjectDragHandleMoved"
                              PointerReleased="ProjectDragHandleReleased"
                              PointerCaptureLost="ProjectDragHandleCaptureLost" />
                   <StackPanel Grid.Column="1" Spacing="7">
-                    <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                    <StackPanel Spacing="4">
                       <TextBlock Text="{Binding Name}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"
-                                 ToolTip.Tip="{Binding Name}" />
-                      <Border Grid.Column="1" Classes="phaseBadge" Classes.paused="{Binding IsPaused}"
+                                 TextWrapping="Wrap" MaxLines="2"
+                                 ToolTip.Tip="{Binding Name}" AutomationProperties.Name="{Binding Name}" />
+                      <Border HorizontalAlignment="Left" Classes="phaseBadge" Classes.paused="{Binding IsPaused}"
                               Classes.ready="{Binding IsReady}" Classes.retrying="{Binding IsRetryStatus}"
                               Classes.attention="{Binding NeedsAttention}"
                               Padding="7,2" CornerRadius="8" ToolTip.Tip="{Binding PhaseDetails}">
                         <TextBlock Text="{Binding Phase}" Classes="phaseText"
                                    Classes.paused="{Binding IsPaused}" Classes.ready="{Binding IsReady}"
                                    Classes.retrying="{Binding IsRetryStatus}" Classes.attention="{Binding NeedsAttention}"
-                                   FontSize="10" FontWeight="SemiBold" />
+                                   FontSize="12" FontWeight="SemiBold" />
                       </Border>
-                    </Grid>
+                    </StackPanel>
                     <StackPanel Orientation="Horizontal" Spacing="5">
-                      <TextBlock Text="{Binding DocumentCountDisplay}" Classes="muted" FontSize="11" />
+                      <TextBlock Text="{Binding DocumentCountDisplay}" Classes="muted" FontSize="12" />
                       <StackPanel IsVisible="{Binding HasErrors}" Orientation="Horizontal" Spacing="5">
-                        <TextBlock Text="·" Classes="quiet" FontSize="11" />
+                        <TextBlock Text="·" Classes="quiet" FontSize="12" />
                         <TextBlock Text="{Binding SidebarErrorCountDisplay}" Foreground="{DynamicResource DangerBrush}"
-                                   FontSize="11" />
+                                   FontSize="12" />
                       </StackPanel>
                     </StackPanel>
                     <ProgressBar Minimum="0" Maximum="{Binding ProgressMaximum}" Value="{Binding ReadyCount}"
@@ -83,14 +84,22 @@
           </ListBox.ItemTemplate>
         </ListBox>
 
-        <StackPanel Grid.Row="4" Spacing="10" Margin="3,12,3,0">
+        <WrapPanel Grid.Row="4" Margin="0,5,0,0">
+          <Button Content="Move up" Classes="compact" Click="MoveProjectUp" Margin="0,0,6,0"
+                  IsEnabled="{Binding CanMoveSelectedProjectUp}"
+                  AutomationProperties.Name="Move selected project up, Control Shift Up" />
+          <Button Content="Move down" Classes="compact" Click="MoveProjectDown"
+                  IsEnabled="{Binding CanMoveSelectedProjectDown}"
+                  AutomationProperties.Name="Move selected project down, Control Shift Down" />
+        </WrapPanel>
+        <StackPanel Grid.Row="5" Spacing="10" Margin="3,12,3,0">
           <Border Background="{DynamicResource SurfaceBrush}" CornerRadius="8" Padding="10,9">
             <Grid ColumnDefinitions="Auto,*" ColumnSpacing="8">
               <Border Classes="statusDot" Classes.busy="{Binding IsStatusBusy}" Classes.ready="{Binding IsStatusReady}"
                       Classes.warning="{Binding IsStatusWarning}" Classes.error="{Binding IsStatusError}"
                       Width="7" Height="7" CornerRadius="4"
                       VerticalAlignment="Top" Margin="0,4,0,0" />
-              <TextBlock Grid.Column="1" Text="{Binding StatusMessage}" Classes="quiet" FontSize="11"
+              <TextBlock Grid.Column="1" Text="{Binding StatusMessage}" Classes="quiet" FontSize="12"
                          TextWrapping="Wrap" ToolTip.Tip="{Binding StatusDetails}"
                          AutomationProperties.HelpText="{Binding StatusDetails}" AutomationProperties.LiveSetting="Polite" />
             </Grid>
@@ -99,7 +108,7 @@
                   Click="QuitApplication" />
         </StackPanel>
 
-        <Canvas x:Name="ProjectDragOverlay" Grid.RowSpan="5" ZIndex="100"
+        <Canvas x:Name="ProjectDragOverlay" Grid.RowSpan="6" ZIndex="100"
                 IsHitTestVisible="False" ClipToBounds="False">
           <Border x:Name="ProjectDropSlot" Classes="projectDropSlot" IsVisible="False"
                   CornerRadius="9" BorderThickness="1" />
@@ -111,13 +120,17 @@
       </Grid>
     </Border>
 
-    <Grid Grid.Column="1" RowDefinitions="Auto,Auto,Auto,*">
+    <Grid Grid.Column="1" RowDefinitions="Auto,Auto,Auto,Auto,*">
       <Border Grid.Row="0" Background="{DynamicResource AppBackgroundBrush}"
               BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,0,0,1" Padding="30,21">
         <Grid ColumnDefinitions="*,Auto" ColumnSpacing="20">
           <StackPanel IsVisible="{Binding IsProjectsSection}" Spacing="3">
             <TextBlock Text="Projects" Classes="pageTitle" />
-            <TextBlock Text="Monitor and manage your local indexes." Classes="muted" />
+            <TextBlock Text="Build a local index, then search it from your AI assistant." Classes="muted" TextWrapping="Wrap" />
+            <WrapPanel Margin="0,8,0,0">
+              <Button Content="Connect an assistant" Click="ShowAiConnections" Classes="compact" Margin="0,0,8,0" />
+              <Button Content="Copy starter question" Click="CopyStarterPrompt" IsVisible="{Binding HasSelection}" Classes="compact" />
+            </WrapPanel>
           </StackPanel>
           <StackPanel IsVisible="{Binding IsSettingsSection}" Spacing="3">
             <TextBlock Text="Settings" Classes="pageTitle" />
@@ -139,7 +152,19 @@
         </Grid>
       </Border>
 
-      <Border Grid.Row="2" Classes="notificationBanner" Classes.error="{Binding IsNotificationError}" IsVisible="{Binding HasNotification}"
+      <Border Grid.Row="2" IsVisible="{Binding HasStaleProjectData}"
+              Background="{DynamicResource DangerSubtleBrush}" BorderBrush="{DynamicResource DangerBrush}"
+              BorderThickness="0,0,0,1" Padding="30,14">
+        <StackPanel Spacing="7">
+          <TextBlock Text="Index status could not be refreshed" FontWeight="SemiBold" FontSize="15"
+                     AutomationProperties.LiveSetting="Polite" />
+          <TextBlock Text="{Binding LastProjectRefreshLabel}" TextWrapping="Wrap" />
+          <SelectableTextBlock Text="{Binding ProjectLoadError}" TextWrapping="Wrap" FontSize="12" />
+          <Button Content="Check index status again" Click="RetryProjectStatus" HorizontalAlignment="Left" />
+        </StackPanel>
+      </Border>
+
+      <Border Grid.Row="3" Classes="notificationBanner" Classes.error="{Binding IsNotificationError}" IsVisible="{Binding HasNotification}"
               BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,0,0,1" Padding="30,10">
         <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
           <StackPanel Spacing="3" VerticalAlignment="Center">
@@ -147,12 +172,15 @@
             <TextBlock Text="{Binding NotificationMessage}" TextWrapping="Wrap"
                        AutomationProperties.LiveSetting="Polite" />
           </StackPanel>
-          <Button Grid.Column="1" Classes="ghost compact" Content="Dismiss" Click="DismissNotification"
-                  AutomationProperties.Name="Dismiss operation message" />
+          <WrapPanel Grid.Column="1" VerticalAlignment="Center">
+            <Button IsVisible="{Binding NotificationCanOpenSettings}" Content="Open settings" Click="ShowSettings" Margin="0,0,8,0" />
+            <Button Classes="ghost compact" Content="Dismiss" Click="DismissNotification"
+                    AutomationProperties.Name="Dismiss operation message" />
+          </WrapPanel>
         </Grid>
       </Border>
-      <views:ProjectsView Grid.Row="3" IsVisible="{Binding IsProjectsSection}" />
-      <views:SettingsView Grid.Row="3" IsVisible="{Binding IsSettingsSection}" />
+      <views:ProjectsView Grid.Row="4" IsVisible="{Binding IsProjectsSection}" />
+      <views:SettingsView Grid.Row="4" IsVisible="{Binding IsSettingsSection}" />
     </Grid>
   </Grid>
 

@@ -350,15 +350,7 @@ public sealed class BrokerRpcClient
                 _clientVersion,
                 _deploymentId), token).ConfigureAwait(false);
             var handshake = await BrokerFrameCodec.ReadAsync<BrokerHandshakeResponse>(pipe, token).ConfigureAwait(false);
-            if (!handshake.Accepted)
-            {
-                var error = handshake.Error ?? new BrokerRpcError("protocol_mismatch",
-                    "The broker rejected the protocol handshake.", false);
-                throw new BrokerRpcException(error.Code, error.Message, error.Retryable);
-            }
-            if (handshake.ProtocolMajor != BrokerProtocol.MajorVersion)
-                throw new BrokerRpcException("protocol_mismatch",
-                    "The client and shared broker use incompatible protocol versions.", false);
+            ValidateHandshakeResponse(handshake);
             var deploymentRelation = BrokerProtocol.CompareDeployments(_clientVersion, _deploymentId,
                 handshake.BrokerVersion, handshake.DeploymentId);
             if (deploymentMode == BrokerDeploymentMode.ShutdownOlderOnly)
@@ -398,6 +390,19 @@ public sealed class BrokerRpcClient
             throw new BrokerRpcException("deadline_exceeded", "The broker request deadline elapsed.", true,
                 exception);
         }
+    }
+
+    internal static void ValidateHandshakeResponse(BrokerHandshakeResponse handshake)
+    {
+        if (!handshake.Accepted)
+        {
+            var error = handshake.Error ?? new BrokerRpcError("protocol_mismatch",
+                "The broker rejected the protocol handshake.", false);
+            throw new BrokerRpcException(error.Code, error.Message, error.Retryable);
+        }
+        if (handshake.ProtocolMajor != BrokerProtocol.MajorVersion)
+            throw new BrokerRpcException("protocol_mismatch",
+                "The client and shared broker use incompatible protocol versions.", false);
     }
 
     private async Task EnsureBrokerStartedAsync(CancellationToken cancellationToken)

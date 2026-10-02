@@ -1,0 +1,16 @@
+CC0 1.0 Universal dedication
+SPDX-License-Identifier: CC0-1.0
+
+The authors dedicate the independently authored synthetic mixed-format fixture
+content, gold labels, queries, README and generation tool to the public domain.
+To the extent possible under law, the authors waive all copyright and related
+or neighboring rights to these works. The works are provided without warranty.
+
+You may copy, modify, distribute and perform these works, even for commercial
+purposes, without asking permission. All names, data and scenarios are fictional.
+
+The governing CC0 1.0 Universal legal code is available at:
+https://creativecommons.org/publicdomain/zero/1.0/legalcode
+
+No third-party documents, fonts, artwork or private data are included. Standard
+file-format identifiers and names describe compatibility, not endorsement.

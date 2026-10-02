@@ -21,7 +21,8 @@
         <Grid Grid.Row="2" ColumnDefinitions="*,Auto,Auto" Margin="0,0,0,8">
           <StackPanel Spacing="2">
             <TextBlock Text="FOLDERS" Classes="eyebrow" />
-            <TextBlock Text="Files in these locations are indexed locally." Classes="quiet" FontSize="12" />
+            <TextBlock Text="Removing a folder also removes its saved search evidence when you save. Original files are untouched."
+                       TextWrapping="Wrap" Classes="quiet" FontSize="12" />
           </StackPanel>
           <Button Grid.Column="1" Classes="compact" Content="Add folders" Click="AddFolders" Margin="8,0" />
           <Button x:Name="RemoveFolderButton" Grid.Column="2" Classes="ghost compact"

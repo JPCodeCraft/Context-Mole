@@ -5,8 +5,9 @@ namespace ContextMole.Indexing;
 /// <summary>Removes semantic distractors without modifying canonical reading or lexical evidence.</summary>
 public static partial class SemanticTextPreparation
 {
-    public static int? SignatureStart(string text)
+    public static int? SignatureStart(string text, bool emailBody = false)
     {
+        if (!emailBody) return null;
         var offset = 0;
         foreach (var line in text.Split('\n'))
         {
@@ -16,7 +17,7 @@ public static partial class SemanticTextPreparation
         return null;
     }
 
-    public static string CleanBody(string text, bool boilerplate = false)
+    public static string CleanBody(string text, bool boilerplate = false, bool emailBody = false)
     {
         if (boilerplate) return string.Empty;
         var lines = text.Split('\n');
@@ -26,9 +27,9 @@ public static partial class SemanticTextPreparation
         foreach (var line in lines)
         {
             // An explicit RFC-style signature delimiter is stronger evidence than contact words.
-            if (line.Trim() == "--" && result.Any(value => !string.IsNullOrWhiteSpace(value))) break;
+            if (emailBody && line.Trim() == "--" && result.Any(value => !string.IsNullOrWhiteSpace(value))) break;
             var normalized = TextNormalization.ForSearch(line).TrimStart('>').Trim();
-            if (StartsDisclaimer(normalized)) inDisclaimer = true;
+            if (emailBody && StartsDisclaimer(normalized)) inDisclaimer = true;
             if (inDisclaimer)
             {
                 if (normalized.Length == 0) inDisclaimer = false;

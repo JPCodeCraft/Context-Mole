@@ -51,7 +51,78 @@ public sealed class IndexingCoordinator(
     private readonly Dictionary<Guid, HashSet<ProjectJobOperation>> _projectOperations = [];
     private readonly Dictionary<Guid, ProjectPauseGate> _projectPauseGates = [];
     private readonly HashSet<LeaseClaim> _leaseClaims = [];
+    private readonly HashSet<(Guid ProjectId, string PathKey)> _excludedPaths = [];
+    private readonly ConcurrentDictionary<(Guid ProjectId, string PathKey), SemaphoreSlim> _fileChangeGates = new();
     private bool _stopping;
+
+    public async Task<FileExclusionResult> ExcludeFileAsync(Guid projectId, string sourcePath,
+        CancellationToken cancellationToken = default)
+    {
+        var key = FileKey(projectId, sourcePath);
+        var gate = _fileChangeGates.GetOrAdd(key, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            // Storage invalidates running leases and removes searchable evidence atomically before
+            // cancellation is reported. A parser ignoring cancellation can never republish its lease.
+            var result = await _writer.ExcludeFileAsync(projectId, sourcePath, cancellationToken)
+                .ConfigureAwait(false);
+            ProjectJobOperation[] operations;
+            lock (_projectWorkGate)
+            {
+                _excludedPaths.Add(key);
+                operations = MatchingOperations(key);
+            }
+            foreach (var operation in operations)
+            {
+                try { operation.CancelForExclusion(); }
+                catch (Exception exception)
+                {
+                    _logger.LogWarning(exception, "A cancellation callback failed while excluding {Path}", sourcePath);
+                }
+            }
+            return result;
+        }
+        finally { gate.Release(); }
+    }
+
+    public async Task<FileExclusionResult> IncludeFileAsync(Guid projectId, string sourcePath,
+        CancellationToken cancellationToken = default)
+    {
+        var key = FileKey(projectId, sourcePath);
+        var gate = _fileChangeGates.GetOrAdd(key, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            Task[] cleanup;
+            lock (_projectWorkGate) cleanup = MatchingOperations(key).Select(operation => operation.Completion).ToArray();
+            await Task.WhenAll(cleanup).WaitAsync(cancellationToken).ConfigureAwait(false);
+            // Remove process admission before the durable include can release a fresh job to workers.
+            // Storage still excludes the path until that transaction completes.
+            bool wasExcluded;
+            lock (_projectWorkGate) wasExcluded = _excludedPaths.Remove(key);
+            try
+            {
+                return await _writer.IncludeFileAsync(projectId, sourcePath, cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                if (wasExcluded) lock (_projectWorkGate) _excludedPaths.Add(key);
+                throw;
+            }
+        }
+        finally { gate.Release(); }
+    }
+
+    private ProjectJobOperation[] MatchingOperations((Guid ProjectId, string PathKey) key) =>
+        _projectOperations.TryGetValue(key.ProjectId, out var operations)
+            ? operations.Where(operation => operation.PathKey == key.PathKey).ToArray() : [];
+
+    private static (Guid ProjectId, string PathKey) FileKey(Guid projectId, string sourcePath)
+    {
+        if (projectId == Guid.Empty) throw new ArgumentException("A project ID is required.", nameof(projectId));
+        return (projectId, ProjectValidation.FolderKey(sourcePath));
+    }
 
     public void BeginPause(Guid projectId)
     {
@@ -221,6 +292,8 @@ public sealed class IndexingCoordinator(
     private async Task RefreshWatchersAsync(CancellationToken cancellationToken, bool queueReconciliation = true)
     {
         var projects = await _searchStore.ListProjectsAsync(cancellationToken).ConfigureAwait(false);
+        _activities.RetainProjects(projects);
+        await RetainExclusionMarkersAsync(projects, cancellationToken).ConfigureAwait(false);
         var desired = projects.SelectMany(project => project.Folders.Select(folder => (project.Id, Folder: folder)))
             .ToDictionary(item => item.Folder.Id);
         _activities.RetainFolderIssues(desired.Keys.ToHashSet());
@@ -242,6 +315,7 @@ public sealed class IndexingCoordinator(
                 lock (_watchersGate) _watchers.Remove(item.Folder.Id, out existing);
                 existing?.Dispose();
                 _activities.ClearFolderIssue(item.Id, item.Folder.Id);
+                _activities.CompleteInitialScan(item.Id, item.Folder.Id);
                 continue;
             }
             // Check accessibility before accepting an existing watcher. A disconnected drive can
@@ -250,6 +324,7 @@ public sealed class IndexingCoordinator(
             {
                 _activities.SetFolderIssue(item.Id, item.Folder.Id, item.Folder.Path,
                     "This folder is unavailable. Reconnect its drive or restore access to the folder.");
+                _activities.CompleteInitialScan(item.Id, item.Folder.Id);
                 lock (_watchersGate) _watchers.Remove(item.Folder.Id, out existing);
                 existing?.Dispose();
                 continue;
@@ -292,6 +367,24 @@ public sealed class IndexingCoordinator(
                 _activities.SetFolderIssue(item.Id, item.Folder.Id, item.Folder.Path,
                     "Changes in this folder could not be watched. Check folder permissions and drive availability.");
             }
+        }
+    }
+
+    private async Task RetainExclusionMarkersAsync(IReadOnlyList<ProjectSummary> projects,
+        CancellationToken cancellationToken)
+    {
+        Guid[] markedProjects;
+        lock (_projectWorkGate) markedProjects = _excludedPaths.Select(key => key.ProjectId).Distinct().ToArray();
+        foreach (var projectId in markedProjects)
+        {
+            var includedProject = projects.Any(project => project.Id == projectId);
+            var durableKeys = includedProject
+                ? (await _searchStore.ListExcludedFilesAsync(projectId, cancellationToken).ConfigureAwait(false))
+                    .Select(file => ProjectValidation.FolderKey(file.SourcePath)).ToHashSet(StringComparer.Ordinal)
+                : [];
+            lock (_projectWorkGate)
+                _excludedPaths.RemoveWhere(key => key.ProjectId == projectId && !durableKeys.Contains(key.PathKey) &&
+                    MatchingOperations(key).Length == 0);
         }
     }
 
@@ -417,6 +510,13 @@ public sealed class IndexingCoordinator(
             }
             if (File.Exists(change.Path) && SupportedContent.IsSupported(change.Path))
             {
+                if (await _searchStore.IsFileExcludedAsync(change.ProjectId, change.Path, cancellationToken)
+                        .ConfigureAwait(false))
+                {
+                    await _writer.HandleDeletedAsync(change.ProjectId, change.FolderId, change.OldPath,
+                        cancellationToken).ConfigureAwait(false);
+                    return;
+                }
                 await _writer.HandleRenamedAsync(change.ProjectId, change.FolderId, change.OldPath, change.Path,
                     cancellationToken).ConfigureAwait(false);
                 await ObservePathAsync(change.ProjectId, change.FolderId, change.Path, null, true,
@@ -476,6 +576,7 @@ public sealed class IndexingCoordinator(
     private async Task ReconcileAllAsync(CancellationToken cancellationToken)
     {
         var projects = await _searchStore.ListProjectsAsync(cancellationToken).ConfigureAwait(false);
+        _activities.RetainProjects(projects);
         foreach (var project in projects)
             foreach (var folder in project.Folders)
                 await ReconcileFolderAsync(project.Id, folder.Id, folder.Path, cancellationToken).ConfigureAwait(false);
@@ -532,6 +633,7 @@ public sealed class IndexingCoordinator(
     {
         await _reconciliationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         _activities.SetDiscovering(projectId, true);
+        var scanSettled = false;
         try
         {
             if (!Directory.Exists(root))
@@ -539,6 +641,7 @@ public sealed class IndexingCoordinator(
                 _logger.LogInformation("Retaining index state because folder is unavailable: {Folder}", root);
                 _activities.SetFolderIssue(projectId, folderId, root,
                     "This folder is unavailable. Reconnect its drive or restore access to the folder.");
+                scanSettled = true;
                 return;
             }
 
@@ -559,20 +662,24 @@ public sealed class IndexingCoordinator(
                     _logger.LogInformation("Retaining index state because folder became unavailable: {Folder}", root);
                     _activities.SetFolderIssue(projectId, folderId, root,
                         "This folder became unavailable during a scan. Reconnect its drive or restore access.");
+                    scanSettled = true;
                     return;
                 }
                 await _writer.CompleteReconciliationAsync(projectId, folderId, token, cancellationToken).ConfigureAwait(false);
                 _activities.ClearFolderIssue(projectId, folderId);
+                scanSettled = true;
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             {
                 _logger.LogWarning(exception, "Folder reconciliation was incomplete; no deletions were inferred for {Folder}", root);
                 _activities.SetFolderIssue(projectId, folderId, root,
                     "Not all files in this folder could be checked. Check folder permissions and drive availability.");
+                scanSettled = true;
             }
         }
         finally
         {
+            if (scanSettled) _activities.CompleteInitialScan(projectId, folderId);
             _activities.SetDiscovering(projectId, false);
             _reconciliationGate.Release();
         }
@@ -581,7 +688,8 @@ public sealed class IndexingCoordinator(
     private async Task ObservePathAsync(Guid projectId, Guid folderId, string path, string? token, bool force,
         CancellationToken cancellationToken)
     {
-        if (IsAppDataPath(path)) return;
+        if (IsAppDataPath(path) ||
+            await _searchStore.IsFileExcludedAsync(projectId, path, cancellationToken).ConfigureAwait(false)) return;
         var info = new FileInfo(path);
         if (!info.Exists || IsFileSystemLink(info))
             return;
@@ -603,7 +711,7 @@ public sealed class IndexingCoordinator(
                     job = await _writer.LeaseNextJobAsync(TimeSpan.FromMinutes(20), cancellationToken)
                         .ConfigureAwait(false);
                     if (job is not null)
-                        operation = await BeginProjectOperationAsync(job.ProjectId, cancellationToken)
+                        operation = await BeginProjectOperationAsync(job, cancellationToken)
                             .ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -689,6 +797,12 @@ public sealed class IndexingCoordinator(
                             return;
                         }
                     }
+                    catch (Exception exception) when (operation.IsExclusionCancellationRequested)
+                    {
+                        _logger.LogInformation("Indexing canceled for excluded source {Path}: {Reason}",
+                            job.SourcePath, exception.Message);
+                        activity.Complete(false);
+                    }
                     catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                     {
                         activity.Complete(false);
@@ -720,7 +834,7 @@ public sealed class IndexingCoordinator(
                 }
 
                 if (!retryAfterPauseRollback) break;
-                operation = await BeginProjectOperationAsync(job.ProjectId, cancellationToken).ConfigureAwait(false);
+                operation = await BeginProjectOperationAsync(job, cancellationToken).ConfigureAwait(false);
             }
         }
     }
@@ -729,6 +843,8 @@ public sealed class IndexingCoordinator(
         IndexingActivityHandle activity, CancellationToken cancellationToken)
     {
         activity.SetStage(IndexingPipelineStage.InspectingSource);
+        if (await _searchStore.IsFileExcludedAsync(job.ProjectId, job.SourcePath, cancellationToken)
+                .ConfigureAwait(false)) return null;
         var before = new FileInfo(job.SourcePath);
         if (!before.Exists)
         {
@@ -779,6 +895,9 @@ public sealed class IndexingCoordinator(
     private async Task<bool> ProcessJobAsync(IndexJobLease job, PreparedIndexSource? source,
         IndexingActivityHandle activity, CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (await _searchStore.IsFileExcludedAsync(job.ProjectId, job.SourcePath, cancellationToken)
+                .ConfigureAwait(false)) return false;
         if (job.Kind == IndexJobKind.EmbeddingRefresh)
             return await ProcessEmbeddingRefreshAsync(job, activity, cancellationToken).ConfigureAwait(false);
 
@@ -801,17 +920,18 @@ public sealed class IndexingCoordinator(
 
         activity.SetStage(IndexingPipelineStage.ExtractingContent);
         var extraction = await _extractor.ExtractAsync(new ExtractionRequest(job.SourcePath), cancellationToken).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
         activity.SetStage(IndexingPipelineStage.ChunkingText);
         var (contentNodes, passageSeeds, sections) = FlattenAndChunk(extraction.Root, job.SourcePath, job.DocumentId);
-        if (passageSeeds.Count == 0 && extraction.Errors.Count > 0)
+        var indexingErrors = BindExtractionErrors(extraction.Root, job.DocumentId, extraction.Errors).ToList();
+        if (passageSeeds.Count == 0 && indexingErrors.Count > 0)
         {
-            var failure = extraction.Errors.FirstOrDefault(error => error.Retryable) ?? extraction.Errors[0];
+            var failure = indexingErrors.FirstOrDefault(error => error.Retryable) ?? indexingErrors[0];
             throw new ContextMoleException(failure.Code,
                 failure.ItemName is null ? failure.Message : $"{failure.ItemName}: {failure.Message}",
                 failure.Retryable);
         }
 
-        var indexingErrors = extraction.Errors.ToList();
         IReadOnlyList<float[]> vectors = [];
         EmbeddingPolicy? embeddingPolicy = null;
         var eligibleSeeds = passageSeeds.Where(seed => seed.SemanticEligible).ToArray();
@@ -840,7 +960,8 @@ public sealed class IndexingCoordinator(
                 indexingErrors.Add(new ExtractionError("embedding_refresh_failed",
                     $"Semantic embeddings could not be generated: {exception.Message}",
                     IsTemporary(exception) || exception is ContextMoleException { Code: "model_unavailable" },
-                    Path.GetFileName(job.SourcePath)));
+                    Path.GetFileName(job.SourcePath))
+                    { ContentId = contentNodes.First(node => node.ParentId is null).Id, ComponentKey = "root" });
                 vectors = [];
                 embeddingPolicy = null;
             }
@@ -1011,6 +1132,7 @@ public sealed class IndexingCoordinator(
             var title = IndependentTitle(node.Title, node.Name, depth == 0 ? fileName : null);
             var emailSubject = ExtractEmailSubject(node.Sections);
             var keyedSections = AssignSectionKeys(node.Sections);
+            var separatedListMarkers = SemanticEvidenceEligibility.FindSeparatedListMarkers(keyedSections, node.Title);
             var offsets = new Dictionary<int, int>();
             var sectionIds = new Dictionary<string, Guid>(StringComparer.Ordinal);
             foreach (var group in keyedSections.Select((section, index) => (Section: section, Index: index))
@@ -1022,7 +1144,7 @@ public sealed class IndexingCoordinator(
                 var text = new StringBuilder();
                 foreach (var item in group)
                 {
-                    var canonical = TextNormalization.ForDisplay(item.Section.Text);
+                    var canonical = CanonicalSectionText(item.Section);
                     if (text.Length > 0 && canonical.Length > 0) text.Append('\n');
                     offsets[item.Index] = text.Length;
                     text.Append(canonical);
@@ -1036,19 +1158,24 @@ public sealed class IndexingCoordinator(
             {
                 var chunkOrdinal = 0;
                 var section = prepared.Section;
-                var signatureStart = SemanticTextPreparation.SignatureStart(prepared.Text);
+                var emailBody = section.Location.Kind == LocationKind.EmailPart &&
+                    section.Location.EmailPart == "body";
+                var signatureStart = SemanticTextPreparation.SignatureStart(prepared.Text, emailBody);
                 string Semantic(string body) => BuildSemanticText(SemanticTextPreparation.CleanBody(body,
-                    section.IsBoilerplate || section.Location.EmailPart == "headers"), title, fileName, sourcePath,
+                    section.IsBoilerplate || section.Location.EmailPart == "headers", emailBody), title, fileName, sourcePath,
                     node.Name, section.Heading, section.Location.Sheet, emailSubject, prepared.TableHeader);
-                foreach (var chunk in Chunk(prepared.Text, Semantic))
+                foreach (var chunk in Chunk(prepared.Text, Semantic, TableBoundary(section.Location) is not null))
                 {
                     var body = LexicalText.Canonicalize(chunk.Text);
                     var semanticBody = signatureStart is { } signature
                         ? chunk.Start >= signature ? string.Empty : chunk.Text[..Math.Min(chunk.Text.Length, signature - chunk.Start)]
                         : chunk.Text;
                     var cleanBody = SemanticTextPreparation.CleanBody(semanticBody,
-                        section.IsBoilerplate || section.Location.EmailPart == "headers");
-                    var semanticText = cleanBody.Length == 0 ? string.Empty : Semantic(semanticBody);
+                        section.IsBoilerplate || section.Location.EmailPart == "headers", emailBody);
+                    // Only eligibility changes: keep the original chunk text, boundaries and IDs.
+                    var separatedMarker = prepared.FirstSectionOrdinal == prepared.LastSectionOrdinal &&
+                        separatedListMarkers.Contains(prepared.FirstSectionOrdinal);
+                    var semanticText = cleanBody.Length == 0 || separatedMarker ? string.Empty : Semantic(semanticBody);
                     var passageId = DeterministicId(contentId, "passage",
                         $"{prepared.FirstSectionOrdinal}:{prepared.LastSectionOrdinal}:{LocationIdentity(section.Location)}:{chunkOrdinal++}");
                     passages.Add(new PassageDraft(passageId, contentId, passageOrdinal++, chunk.Text,
@@ -1072,13 +1199,49 @@ public sealed class IndexingCoordinator(
         }
     }
 
+    internal static IReadOnlyList<ExtractionError> BindExtractionErrors(ExtractedNode root, Guid documentId,
+        IReadOnlyList<ExtractionError> errors)
+    {
+        var components = new List<(string Key, Guid Id, string Name, string Display)>();
+        Add(root, "root", root.Name);
+        return errors.Select(error =>
+        {
+            var matching = error.ComponentKey is { } key
+                ? components.Where(component => key == component.Key ||
+                    key.StartsWith(component.Key + "/", StringComparison.Ordinal))
+                    .OrderByDescending(component => component.Key.Length).Take(1).ToArray()
+                : components.Where(component => string.Equals(component.Name, error.ItemName,
+                    StringComparison.Ordinal)).ToArray();
+            if (matching.Length != 1) return error;
+            var owner = matching[0];
+            var location = error.ComponentKey is { } locator && locator.Length > owner.Key.Length
+                ? locator[(owner.Key.Length + 1)..] : null;
+            var display = location is null ? owner.Display : $"{owner.Display} › {location.Replace(':', ' ')}";
+            return error with { ContentId = owner.Id, ComponentKey = error.ComponentKey ?? owner.Key, ItemName = display };
+        }).ToArray();
+
+        void Add(ExtractedNode node, string key, string display)
+        {
+            components.Add((key, DeterministicId(documentId, "content", key), node.Name, display));
+            var occurrences = new Dictionary<string, int>(StringComparer.Ordinal);
+            foreach (var child in node.Attachments)
+            {
+                var siblingKey = $"{TextNormalization.NameKey(child.Relationship)}\u001f{TextNormalization.NameKey(child.Name)}";
+                var occurrence = occurrences.GetValueOrDefault(siblingKey);
+                occurrences[siblingKey] = occurrence + 1;
+                Add(child, $"{key}/{siblingKey}\u001f{occurrence}",
+                    $"{display} › {child.Name} (item {occurrence + 1})");
+            }
+        }
+    }
+
     private static IReadOnlyList<PreparedSection> PrepareSections(IReadOnlyList<ExtractedSection> sections)
     {
         var normalized = sections.Select((section, ordinal) => new
             {
                 Section = section,
                 Ordinal = ordinal,
-                Text = TextNormalization.ForDisplay(section.Text)
+                Text = CanonicalSectionText(section)
             })
             .Where(item => item.Text.Length > 0)
             .ToArray();
@@ -1127,7 +1290,10 @@ public sealed class IndexingCoordinator(
             value.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).Length;
     }
 
-    private static bool CanMerge(ExtractedSection section) => section.Location.Kind switch
+    private static string CanonicalSectionText(ExtractedSection section) =>
+        TextNormalization.ForDisplay(section.Text, preserveTableWhitespace: TableBoundary(section.Location) is not null);
+
+    private static bool CanMerge(ExtractedSection section) => TableBoundary(section.Location) is null && section.Location.Kind switch
     {
         LocationKind.Sheet => false,
         LocationKind.Structure when IsStandaloneStructure(section.Location.StructurePath) => false,
@@ -1203,8 +1369,10 @@ public sealed class IndexingCoordinator(
         if (location.Kind == LocationKind.Sheet && !string.IsNullOrWhiteSpace(location.CellRange) &&
             string.IsNullOrWhiteSpace(location.StructurePath))
             return $"{location.Sheet}\u001fgrid";
-        if (location.Kind == LocationKind.Structure && IsTableStructure(location.StructurePath))
-            return location.StructurePath;
+        if (IsTableStructure(location.StructurePath) &&
+            !location.StructurePath!.EndsWith("/caption", StringComparison.OrdinalIgnoreCase))
+            return $"{location.Kind}:{location.Page}:{location.Slide}:{location.Sheet}:" +
+                $"{location.EmailPart}:{location.ImageFrame}:{location.StructurePath}";
         return null;
     }
 
@@ -1282,11 +1450,12 @@ public sealed class IndexingCoordinator(
 
     private sealed record TextChunk(string Text, int Start);
 
-    private IEnumerable<TextChunk> Chunk(string source, Func<string, string> prepareSemantic)
+    private IEnumerable<TextChunk> Chunk(string source, Func<string, string> prepareSemantic, bool preserveTableWhitespace)
     {
-        var normalized = TextNormalization.ForDisplay(source);
+        var normalized = source; // PrepareSections already produced canonical, offset-bearing evidence.
         if (string.IsNullOrWhiteSpace(normalized)) yield break;
         var words = System.Text.RegularExpressions.Regex.Matches(normalized, @"\S+");
+        var overlapTokenBudget = ChunkOverlapTokens + _embeddings.CountTokens(string.Empty);
         var start = 0;
         while (start < words.Count)
         {
@@ -1323,18 +1492,18 @@ public sealed class IndexingCoordinator(
                     while (length > 1 && _embeddings.CountTokens(prepareSemantic(chunk.Substring(offset, length))) > ChunkMaximumTokens)
                         length /= 2;
                     if (length < chunk.Length - offset && length > 1 && char.IsHighSurrogate(chunk[offset + length - 1])) length--;
-                    yield return new TextChunk(chunk.Substring(offset, length), words[start].Index + offset);
+                    yield return new TextChunk(chunk.Substring(offset, length), SourceStart(start) + offset);
                     offset += length;
                 }
             }
-            else yield return new TextChunk(chunk, words[start].Index);
+            else yield return new TextChunk(chunk, SourceStart(start));
             if (bestEnd >= words.Count) yield break;
 
             var overlapStart = bestEnd;
             while (overlapStart > start)
             {
                 var probeStart = Math.Max(start, overlapStart - TokenProbeWordCount);
-                if (CountBodyTokens(probeStart, bestEnd) <= ChunkOverlapTokens + 1)
+                if (CountBodyTokens(probeStart, bestEnd) <= overlapTokenBudget)
                 {
                     overlapStart = probeStart;
                     continue;
@@ -1342,7 +1511,7 @@ public sealed class IndexingCoordinator(
 
                 while (overlapStart > probeStart)
                 {
-                    if (CountBodyTokens(overlapStart - 1, bestEnd) > ChunkOverlapTokens + 1) break;
+                    if (CountBodyTokens(overlapStart - 1, bestEnd) > overlapTokenBudget) break;
                     overlapStart--;
                 }
                 break;
@@ -1352,12 +1521,14 @@ public sealed class IndexingCoordinator(
 
         int CountTokens(int first, int end) => _embeddings.CountTokens(prepareSemantic(JoinWords(first, end)));
         // Repeated metadata is part of the input limit, but must not consume the body overlap.
-        // CountTokens includes BOS, hence the extra token for this 64-token body window.
+        // CountTokens includes model-specific special tokens; those must not consume body overlap.
         int CountBodyTokens(int first, int end) => _embeddings.CountTokens(JoinWords(first, end));
+        int SourceStart(int first) => preserveTableWhitespace && first == 0 ? 0 : words[first].Index;
         string JoinWords(int first, int end)
         {
-            var begin = words[first].Index;
-            var finish = words[end - 1].Index + words[end - 1].Length;
+            var begin = SourceStart(first);
+            var finish = preserveTableWhitespace && end == words.Count
+                ? normalized.Length : words[end - 1].Index + words[end - 1].Length;
             return normalized[begin..finish];
         }
     }
@@ -1484,35 +1655,54 @@ public sealed class IndexingCoordinator(
         return claim;
     }
 
-    private async ValueTask<ProjectJobOperation?> BeginProjectOperationAsync(Guid projectId,
+    private async ValueTask<ProjectJobOperation?> BeginProjectOperationAsync(IndexJobLease job,
         CancellationToken workerCancellationToken)
     {
+        var projectId = job.ProjectId;
+        var key = FileKey(projectId, job.SourcePath);
         while (true)
         {
             Task<ProjectPauseResolution>? pauseResolution = null;
+            Task? exclusionCleanup = null;
             lock (_projectWorkGate)
             {
-                if (_projectPauseGates.TryGetValue(projectId, out var pauseGate))
+                if (_excludedPaths.Contains(key))
                 {
-                    if (pauseGate.Resolution.IsCompletedSuccessfully &&
-                        pauseGate.Resolution.Result == ProjectPauseResolution.DurablyPaused)
-                        return null;
-                    pauseResolution = pauseGate.Resolution;
+                    var oldOperations = MatchingOperations(key);
+                    if (oldOperations.Length > 0)
+                        exclusionCleanup = Task.WhenAll(oldOperations.Select(operation => operation.Completion));
+                    else
+                        _excludedPaths.Remove(key);
                 }
-                else
+                if (exclusionCleanup is null)
                 {
-                    var operation = new ProjectJobOperation(this, projectId, workerCancellationToken);
-                    if (!_projectOperations.TryGetValue(projectId, out var operations))
+                    if (_projectPauseGates.TryGetValue(projectId, out var pauseGate))
                     {
-                        operations = [];
-                        _projectOperations.Add(projectId, operations);
+                        if (pauseGate.Resolution.IsCompletedSuccessfully &&
+                            pauseGate.Resolution.Result == ProjectPauseResolution.DurablyPaused)
+                            return null;
+                        pauseResolution = pauseGate.Resolution;
                     }
-                    operations.Add(operation);
-                    return operation;
+                    else
+                    {
+                        var operation = new ProjectJobOperation(this, projectId, key.PathKey, workerCancellationToken);
+                        if (!_projectOperations.TryGetValue(projectId, out var operations))
+                        {
+                            operations = [];
+                            _projectOperations.Add(projectId, operations);
+                        }
+                        operations.Add(operation);
+                        return operation;
+                    }
                 }
             }
 
-            var resolution = await pauseResolution.WaitAsync(workerCancellationToken).ConfigureAwait(false);
+            if (exclusionCleanup is not null)
+            {
+                await exclusionCleanup.WaitAsync(workerCancellationToken).ConfigureAwait(false);
+                continue;
+            }
+            var resolution = await pauseResolution!.WaitAsync(workerCancellationToken).ConfigureAwait(false);
             if (resolution == ProjectPauseResolution.DurablyPaused) return null;
         }
     }
@@ -1575,6 +1765,7 @@ public sealed class IndexingCoordinator(
     private sealed class ProjectJobOperation(
         IndexingCoordinator owner,
         Guid projectId,
+        string pathKey,
         CancellationToken workerCancellationToken) : IDisposable
     {
         private readonly object _gate = new();
@@ -1584,12 +1775,21 @@ public sealed class IndexingCoordinator(
             new(TaskCreationOptions.RunContinuationsAsynchronously);
         private bool _completed;
         private int _pauseCancellationRequested;
+        private int _exclusionCancellationRequested;
         private Task<ProjectPauseResolution>? _pauseResolution;
 
         public Guid ProjectId { get; } = projectId;
+        public string PathKey { get; } = pathKey;
         public CancellationToken CancellationToken => _cancellation.Token;
         public bool IsPauseCancellationRequested => Volatile.Read(ref _pauseCancellationRequested) != 0;
+        public bool IsExclusionCancellationRequested => Volatile.Read(ref _exclusionCancellationRequested) != 0;
         public Task Completion => _completion.Task;
+
+        public void CancelForExclusion()
+        {
+            Interlocked.Exchange(ref _exclusionCancellationRequested, 1);
+            lock (_gate) if (!_completed) _cancellation.Cancel();
+        }
 
         public void CancelForPause(ProjectPauseGate pauseGate)
         {
