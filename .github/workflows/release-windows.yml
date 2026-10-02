@@ -1,9 +1,13 @@
-name: Release Windows
+name: Release Windows v0.3.0 bridge
 
 on:
   push:
-    tags:
-      - "v*"
+    branches:
+      - "release/v0.3.0"
+
+env:
+  RELEASE_TAG: v0.3.0
+  RELEASE_SHA: 3daa900114357dd6158f78e0304b80b726e312ac
 
 permissions:
   contents: write
@@ -22,14 +26,17 @@ jobs:
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          ref: ${{ env.RELEASE_SHA }}
 
       - name: Validate stable tag
         shell: pwsh
         run: |
-          if ($env:GITHUB_REF_NAME -cnotmatch '^v[0-9]+\.[0-9]+\.[0-9]+$') {
+          if ($env:RELEASE_TAG -cnotmatch '^v[0-9]+\.[0-9]+\.[0-9]+$') {
             throw "Release tags must use the exact vMAJOR.MINOR.PATCH format."
           }
-          "VERSION=$($env:GITHUB_REF_NAME.Substring(1))" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $actualCommit = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $actualCommit -cne $env:RELEASE_SHA) { throw "The checkout is not the reviewed release commit." }
+          "VERSION=$($env:RELEASE_TAG.Substring(1))" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Set up the pinned .NET SDK
         uses: actions/setup-dotnet@v6
@@ -54,7 +61,7 @@ jobs:
         run: dotnet restore ContextMole.slnx --locked-mode
 
       - name: Build the complete solution
-        run: dotnet build ContextMole.slnx -c Release --no-restore -p:ContinuousIntegrationBuild=true -p:Version=${{ env.VERSION }} -p:SourceRevisionId=${{ github.sha }}
+        run: dotnet build ContextMole.slnx -c Release --no-restore -p:ContinuousIntegrationBuild=true -p:Version=${{ env.VERSION }} -p:SourceRevisionId=${{ env.RELEASE_SHA }}
 
       - name: Run automated tests
         run: dotnet test --solution ContextMole.slnx -c Release --no-restore --no-build
@@ -70,7 +77,7 @@ jobs:
             --no-restore `
             -o artifacts/publish/win-x64 `
             -p:Version=$env:VERSION `
-            -p:SourceRevisionId=$env:GITHUB_SHA `
+            -p:SourceRevisionId=$env:RELEASE_SHA `
             -p:ContinuousIntegrationBuild=true `
             -p:PublishSingleFile=false `
             -p:PublishTrimmed=false `
@@ -88,7 +95,7 @@ jobs:
           foreach ($required in @($main, $sidecar, $broker, $uninstallHelper, $icon)) {
             if (-not (Test-Path -LiteralPath $required -PathType Leaf)) { throw "Missing required publish file: $required" }
           }
-          $expectedProductVersion = "$env:VERSION+$env:GITHUB_SHA"
+          $expectedProductVersion = "$env:VERSION+$env:RELEASE_SHA"
           foreach ($versionedFile in @($main, $sidecar, $broker, $uninstallHelper)) {
             $actualProductVersion = (Get-Item -LiteralPath $versionedFile).VersionInfo.ProductVersion
             if ($actualProductVersion -cne $expectedProductVersion) {
@@ -105,12 +112,12 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path artifacts | Out-Null
           $generatedNotes = gh api --method POST "repos/$env:GITHUB_REPOSITORY/releases/generate-notes" `
-            -f tag_name="$env:GITHUB_REF_NAME" `
-            -f target_commitish="$env:GITHUB_SHA" `
+            -f tag_name="$env:RELEASE_TAG" `
+            -f target_commitish="$env:RELEASE_SHA" `
             --jq .body
           if ($LASTEXITCODE -ne 0) { throw "GitHub could not generate release notes." }
           $sections = [System.Collections.Generic.List[string]]::new()
-          $curatedPath = "docs/releases/$env:GITHUB_REF_NAME.md"
+          $curatedPath = "docs/releases/$env:RELEASE_TAG.md"
           if (Test-Path -LiteralPath $curatedPath -PathType Leaf) {
             $curatedNotes = (Get-Content -LiteralPath $curatedPath -Raw).Trim()
             if ($curatedNotes.Length -gt 0) { $sections.Add($curatedNotes) }
@@ -191,6 +198,21 @@ jobs:
             throw "The win-x64 feed must contain exactly one full-package entry for version $env:VERSION and file $fullPackageName."
           }
 
+          $newFeedAssets = @($feedDocument.Assets | Where-Object { $_.Version -ceq $env:VERSION })
+          if ($newFeedAssets.Count -lt 1 -or $newFeedAssets.Count -gt 2) { throw "Unexpected new-package count in the release feed." }
+          foreach ($asset in $newFeedAssets) {
+            if ($asset.PackageId -cne "JPCodeCraft.ContextMole" -or $asset.Type -cnotin @("Full", "Delta")) {
+              throw "Unexpected package identity or type in the new release feed."
+            }
+            $expectedName = "JPCodeCraft.ContextMole-$env:VERSION-win-x64-$($asset.Type.ToLowerInvariant()).nupkg"
+            if ($asset.FileName -cne $expectedName) { throw "Unexpected package filename in the new release feed." }
+            $assetPath = Join-Path "artifacts/velopack" $expectedName
+            if (-not (Test-Path -LiteralPath $assetPath -PathType Leaf)) { throw "A feed package is missing." }
+            if ([long] $asset.Size -ne (Get-Item -LiteralPath $assetPath).Length) { throw "Feed package size mismatch." }
+            if ($asset.SHA1 -ine (Get-FileHash -LiteralPath $assetPath -Algorithm SHA1).Hash) { throw "Feed package SHA1 mismatch." }
+            if ($asset.SHA256 -ine (Get-FileHash -LiteralPath $assetPath -Algorithm SHA256).Hash) { throw "Feed package SHA256 mismatch." }
+          }
+
           $expanded = Join-Path $env:RUNNER_TEMP "contextmole-package-$env:VERSION"
           [System.IO.Compression.ZipFile]::ExtractToDirectory(
             (Resolve-Path -LiteralPath $fullPackagePath).Path,
@@ -203,7 +225,7 @@ jobs:
             throw "The full package ID does not match JPCodeCraft.ContextMole."
           }
           if ($nuspec.package.metadata.version -cne $env:VERSION) {
-            throw "The full package version does not match tag $env:GITHUB_REF_NAME."
+            throw "The full package version does not match tag $env:RELEASE_TAG."
           }
 
           $packagedApplications = @(Get-ChildItem -LiteralPath $expanded -Recurse -File -Filter ContextMole.App.UI.exe)
@@ -221,6 +243,11 @@ jobs:
           if (-not (Test-Path -LiteralPath $packagedHelper -PathType Leaf)) {
             throw "The full package does not contain the uninstall helper at uninstall-helper/ContextMole.UninstallHelper.exe."
           }
+          foreach ($versionedFile in @($packagedApplications[0].FullName, $packagedSidecar, $packagedBroker, $packagedHelper)) {
+            if ((Get-Item -LiteralPath $versionedFile).VersionInfo.ProductVersion -cne "$env:VERSION+$env:RELEASE_SHA") {
+              throw "A packaged executable does not have the reviewed release version and commit."
+            }
+          }
           ./tools/ValidatePublicPayload.ps1 -PublishedDirectory $expanded
           ./tools/ValidateWindowsBranding.ps1 -SetupExecutable $setupPath
 
@@ -232,11 +259,40 @@ jobs:
             -InstallDirectory (Join-Path $env:RUNNER_TEMP "ContextMole-package-smoke-$env:GITHUB_RUN_ID") `
             -DisposableProfileConfirmed
 
+      - name: Record the validated release artifact identities
+        shell: pwsh
+        run: |
+          $feed = Get-Content -LiteralPath "artifacts/velopack/releases.win-x64.json" -Raw | ConvertFrom-Json
+          $names = @("JPCodeCraft.ContextMole-win-x64-Setup.exe") + @($feed.Assets | Where-Object { $_.Version -ceq $env:VERSION } | ForEach-Object { $_.FileName })
+          $identities = @($names | ForEach-Object {
+            $path = Join-Path "artifacts/velopack" $_
+            [pscustomobject]@{ Name = $_; Size = (Get-Item -LiteralPath $path).Length; SHA256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash }
+          })
+          $proof = [pscustomobject]@{ Tag = $env:RELEASE_TAG; SourceRevisionId = $env:RELEASE_SHA; Assets = $identities }
+          $json = $proof | ConvertTo-Json -Depth 4
+          [System.IO.File]::WriteAllText((Join-Path $PWD "artifacts/validated-release-artifacts.json"), $json)
+          Write-Host "Validated release artifact identities: $json"
+
       - name: Publish GitHub Release and update feed
         shell: pwsh
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
+          git fetch origin --tags
+          if ($LASTEXITCODE -ne 0) { throw "Could not recheck release tags." }
+          git show-ref --verify --quiet "refs/tags/$env:RELEASE_TAG"
+          if ($LASTEXITCODE -eq 0) {
+            $existingTagCommit = (git rev-parse "$($env:RELEASE_TAG)^{commit}").Trim()
+            if ($LASTEXITCODE -ne 0 -or $existingTagCommit -cne $env:RELEASE_SHA) { throw "The stable tag already points to a different commit." }
+          } else {
+            gh api --method POST "repos/$env:GITHUB_REPOSITORY/git/refs" -f "ref=refs/tags/$env:RELEASE_TAG" -f "sha=$env:RELEASE_SHA"
+            if ($LASTEXITCODE -ne 0) {
+              git fetch origin "refs/tags/${env:RELEASE_TAG}:refs/tags/${env:RELEASE_TAG}"
+              if ($LASTEXITCODE -ne 0) { throw "Could not create or verify the stable tag." }
+              $racedTagCommit = (git rev-parse "$($env:RELEASE_TAG)^{commit}").Trim()
+              if ($LASTEXITCODE -ne 0 -or $racedTagCommit -cne $env:RELEASE_SHA) { throw "The stable tag was concurrently created for a different commit." }
+            }
+          }
           dnx vpk upload github `
             --repoUrl "https://github.com/$env:GITHUB_REPOSITORY" `
             --outputDir artifacts/velopack `
@@ -244,24 +300,27 @@ jobs:
             --token "$env:GITHUB_TOKEN" `
             --publish `
             --merge `
-            --tag "$env:GITHUB_REF_NAME" `
-            --targetCommitish "$env:GITHUB_SHA" `
-            --releaseName "Context Mole $env:GITHUB_REF_NAME" `
+            --tag "$env:RELEASE_TAG" `
+            --targetCommitish "$env:RELEASE_SHA" `
+            --releaseName "Context Mole $env:RELEASE_TAG" `
             --version 1.2.0 `
             --yes
-          gh release edit "$env:GITHUB_REF_NAME" --notes-file artifacts/release-notes.md --repo "$env:GITHUB_REPOSITORY"
+          if ($LASTEXITCODE -ne 0) { throw "Velopack release upload failed." }
+          gh release edit "$env:RELEASE_TAG" --notes-file artifacts/release-notes.md --repo "$env:GITHUB_REPOSITORY"
 
       - name: Verify published GitHub Release assets
         shell: pwsh
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
-          $release = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$env:GITHUB_REF_NAME" | ConvertFrom-Json
+          $release = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$env:RELEASE_TAG" | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0) { throw "GitHub Release lookup failed." }
-          if ($release.tag_name -cne $env:GITHUB_REF_NAME) { throw "The published release tag is incorrect." }
+          if ($release.tag_name -cne $env:RELEASE_TAG) { throw "The published release tag is incorrect." }
           if ($release.draft -or $release.prerelease) { throw "The stable release must be published and not marked as a prerelease." }
-          $tagCommit = (git rev-parse "$($env:GITHUB_REF_NAME)^{commit}").Trim()
-          if ($LASTEXITCODE -ne 0 -or $tagCommit -cne $env:GITHUB_SHA) {
+          git fetch origin "refs/tags/${env:RELEASE_TAG}:refs/tags/${env:RELEASE_TAG}"
+          if ($LASTEXITCODE -ne 0) { throw "Could not fetch the published stable tag." }
+          $tagCommit = (git rev-parse "$($env:RELEASE_TAG)^{commit}").Trim()
+          if ($LASTEXITCODE -ne 0 -or $tagCommit -cne $env:RELEASE_SHA) {
             throw "The release tag does not resolve to the workflow commit."
           }
 
@@ -279,3 +338,37 @@ jobs:
             $response = Invoke-WebRequest -Uri $matches[0].browser_download_url -Method Head -MaximumRedirection 5
             if ($response.StatusCode -ne 200) { throw "Release asset $expectedAsset is not downloadable." }
           }
+
+          $proof = Get-Content -LiteralPath "artifacts/validated-release-artifacts.json" -Raw | ConvertFrom-Json
+          if ($proof.Tag -cne $env:RELEASE_TAG -or $proof.SourceRevisionId -cne $env:RELEASE_SHA) { throw "The validated artifact identity is for another release." }
+          foreach ($identity in $proof.Assets) {
+            $uploaded = @($release.assets | Where-Object { $_.name -ceq $identity.Name })
+            if ($uploaded.Count -ne 1 -or $uploaded[0].state -cne "uploaded" -or
+                [long] $uploaded[0].size -ne [long] $identity.Size -or
+                $uploaded[0].digest -ine "sha256:$($identity.SHA256)") {
+              throw "An uploaded artifact differs from the locally validated and smoke-tested artifact: $($identity.Name)."
+            }
+          }
+
+          $liveFeedAsset = @($release.assets | Where-Object { $_.name -ceq "releases.win-x64.json" })[0]
+          $liveFeed = Invoke-RestMethod -Uri $liveFeedAsset.browser_download_url
+          $liveVersionAssets = @($liveFeed.Assets | Where-Object { $_.Version -ceq $env:VERSION })
+          $localFeed = Get-Content -LiteralPath "artifacts/velopack/releases.win-x64.json" -Raw | ConvertFrom-Json
+          $localVersionAssets = @($localFeed.Assets | Where-Object { $_.Version -ceq $env:VERSION })
+          if ($liveVersionAssets.Count -ne $localVersionAssets.Count) { throw "The live feed package count differs from the validated feed." }
+          foreach ($localAsset in $localVersionAssets) {
+            $matchingLive = @($liveVersionAssets | Where-Object { $_.FileName -ceq $localAsset.FileName })
+            if ($matchingLive.Count -ne 1) { throw "The live feed has a missing or duplicate package." }
+            foreach ($property in @("PackageId", "Version", "Type", "FileName", "Size", "SHA1", "SHA256")) {
+              if ([string] $matchingLive[0].$property -cne [string] $localAsset.$property) {
+                throw "The live feed differs from the validated package metadata: $property."
+              }
+            }
+            $uploadedPackage = @($release.assets | Where-Object { $_.name -ceq $localAsset.FileName })
+            if ($uploadedPackage.Count -ne 1 -or $uploadedPackage[0].state -cne "uploaded" -or
+                [long] $uploadedPackage[0].size -ne [long] $localAsset.Size -or
+                $uploadedPackage[0].digest -ine "sha256:$($localAsset.SHA256)") {
+              throw "A live package does not match the validated feed size and SHA256."
+            }
+          }
+
