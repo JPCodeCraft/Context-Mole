@@ -209,7 +209,8 @@ public sealed class IssueStorageLifecycleRegressionTests
     [Fact]
     public async Task MigrationFromEightPreservesUnicodeFailureSignatureThroughReplacement()
     {
-        using var paths = new StorageTestPaths();
+        await using var database = StorageTestDatabase.CreateUninitialized();
+        var paths = database.Paths;
         await using (var connection = new SqliteConnection($"Data Source={paths.DatabasePath}"))
         {
             await connection.OpenAsync(Token);
@@ -252,9 +253,9 @@ public sealed class IssueStorageLifecycleRegressionTests
             command.Parameters.AddWithValue("$now", now);
             await command.ExecuteNonQueryAsync(Token);
         }
-        using var writer = new DatabaseWriterService(paths);
+        var writer = database.Writer;
         await writer.StartAsync(Token);
-        var store = new SqliteSearchStore(paths);
+        var store = database.Store;
         var before = Assert.Single((await store.ListProjectIssuesAsync(new(project), Token)).Groups).Details[0];
         await writer.HideProjectIssuesAsync(project, source, Token);
         await writer.RetryFileAsync(project, document, Token);
@@ -263,7 +264,6 @@ public sealed class IssueStorageLifecycleRegressionTests
         var after = Assert.Single((await store.ListProjectIssuesAsync(new(project, Visibility: ProjectIssueVisibility.Hidden), Token)).Groups).Details[0];
         Assert.Equal(before.Signature, after.Signature);
         Assert.Equal(9, await ScalarAsync(paths.DatabasePath, "SELECT MAX(version) FROM schema_migrations;"));
-        await writer.StopAsync(Token);
     }
 
     [Fact]
@@ -434,7 +434,8 @@ public sealed class IssueStorageLifecycleRegressionTests
     [Fact]
     public async Task MigratedEmojiAttachmentIdentitySurvivesNewContentIdAndRicherBreadcrumbLabel()
     {
-        using var paths = new StorageTestPaths();
+        await using var database = StorageTestDatabase.CreateUninitialized();
+        var paths = database.Paths;
         await using (var connection = new SqliteConnection($"Data Source={paths.DatabasePath}"))
         {
             await connection.OpenAsync(Token);
@@ -483,8 +484,8 @@ public sealed class IssueStorageLifecycleRegressionTests
                 command.Parameters.AddWithValue(key,value);
             await command.ExecuteNonQueryAsync(Token);
         }
-        using var writer = new DatabaseWriterService(paths); await writer.StartAsync(Token);
-        var store = new SqliteSearchStore(paths);
+        var writer = database.Writer; await writer.StartAsync(Token);
+        var store = database.Store;
         var prior = Assert.Single((await store.ListProjectIssuesAsync(new(project),Token)).Groups).Details[0];
         Assert.Contains("SCAN🦔.PDF",prior.ComponentKey);
         await writer.HideProjectIssuesAsync(project,source,Token);
@@ -500,7 +501,6 @@ public sealed class IssueStorageLifecycleRegressionTests
         var after=Assert.Single((await store.ListProjectIssuesAsync(new(project,Visibility:ProjectIssueVisibility.Hidden),Token)).Groups).Details[0];
         Assert.Equal(prior.ComponentKey,after.ComponentKey); Assert.Equal(prior.Signature,after.Signature);
         Assert.NotEqual(prior.ContentId,after.ContentId); Assert.Equal(2,after.OccurrenceCount);
-        await writer.StopAsync(Token);
     }
 
     [Fact]

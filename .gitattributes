@@ -1,0 +1,4 @@
+# Frozen benchmark corpora are pinned by SHA256, including text-format fixtures.
+# Preserve their original bytes regardless of core.autocrlf or platform defaults.
+/benchmarks/extraction/** -text
+/benchmarks/mixed-formats/** -text

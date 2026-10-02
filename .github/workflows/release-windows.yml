@@ -7,7 +7,7 @@ on:
 
 env:
   RELEASE_TAG: v0.3.0
-  RELEASE_SHA: 3daa900114357dd6158f78e0304b80b726e312ac
+  RELEASE_SHA: 39893709793f0153001162935d565abbab80e5ae
 
 permissions:
   contents: write

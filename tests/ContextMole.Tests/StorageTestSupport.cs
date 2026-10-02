@@ -25,14 +25,22 @@ internal sealed class StorageTestDatabase : IAsyncDisposable
     public DatabaseWriterService Writer { get; }
     public SqliteSearchStore Store { get; }
 
-    public static async Task<StorageTestDatabase> CreateAsync(CancellationToken cancellationToken)
+    // Migration tests seed a legacy schema before starting the writer, but still
+    // need the same writer shutdown and pooled-connection cleanup as other tests.
+    public static StorageTestDatabase CreateUninitialized()
     {
         var paths = new StorageTestPaths();
         var writer = new DatabaseWriterService(paths);
         var store = new SqliteSearchStore(paths);
-        await writer.StartAsync(cancellationToken);
-        await writer.Ready.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
         return new StorageTestDatabase(paths, writer, store);
+    }
+
+    public static async Task<StorageTestDatabase> CreateAsync(CancellationToken cancellationToken)
+    {
+        var database = CreateUninitialized();
+        await database.Writer.StartAsync(cancellationToken);
+        await database.Writer.Ready.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+        return database;
     }
 
     public async Task<(Guid ProjectId, Guid FolderId)> CreateProjectAsync(
