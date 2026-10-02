@@ -240,15 +240,18 @@ public sealed class IssueStorageLifecycleRegressionTests
             await using var command = connection.CreateCommand();
             command.CommandText = """
                 INSERT INTO projects(id,name,name_key,state,created_utc,updated_utc) VALUES($project,'Migration','MIGRATION',0,$now,$now);
-                INSERT INTO project_folders(id,project_id,path,path_key,created_utc) VALUES($folder,$project,$root,$root,$now);
+                INSERT INTO project_folders(id,project_id,path,path_key,created_utc) VALUES($folder,$project,$root,$root_key,$now);
                 INSERT INTO documents(id,project_id,folder_id,path,path_key,file_name,extension,size,modified_utc,created_utc,updated_utc)
-                  VALUES($document,$project,$folder,$path,$path,'file🦔.txt','.txt',$size,$modified,$now,$now);
+                  VALUES($document,$project,$folder,$path,$path_key,'file🦔.txt','.txt',$size,$modified,$now,$now);
                 INSERT INTO project_errors(project_id,document_id,code,message,retryable,attempt,source_path,created_utc)
                   VALUES($project,$document,'failure','Unicode 🦔 failure',0,1,$path,$now);
                 """;
             command.Parameters.AddWithValue("$project", project.ToString()); command.Parameters.AddWithValue("$folder", folder.ToString());
             command.Parameters.AddWithValue("$document", document.ToString()); command.Parameters.AddWithValue("$root", paths.SourceDirectory);
             command.Parameters.AddWithValue("$path", source); command.Parameters.AddWithValue("$size", file.Length);
+            // Legacy writers store canonical keys separately from case-preserving display paths.
+            command.Parameters.AddWithValue("$root_key", ProjectValidation.FolderKey(paths.SourceDirectory));
+            command.Parameters.AddWithValue("$path_key", ProjectValidation.FolderKey(source));
             command.Parameters.AddWithValue("$modified", new DateTimeOffset(file.LastWriteTimeUtc, TimeSpan.Zero).ToString("O"));
             command.Parameters.AddWithValue("$now", now);
             await command.ExecuteNonQueryAsync(Token);
@@ -257,7 +260,10 @@ public sealed class IssueStorageLifecycleRegressionTests
         await writer.StartAsync(Token);
         var store = database.Store;
         var before = Assert.Single((await store.ListProjectIssuesAsync(new(project), Token)).Groups).Details[0];
-        await writer.HideProjectIssuesAsync(project, source, Token);
+        var hide = await writer.HideProjectIssuesAsync(project, source, Token);
+        Assert.Equal(1, hide.HiddenIssueCount);
+        Assert.Single(hide.AcknowledgementIds);
+        Assert.Empty((await store.ListProjectIssuesAsync(new(project), Token)).Groups);
         await writer.RetryFileAsync(project, document, Token);
         var retry = (await writer.LeaseNextJobAsync(TimeSpan.FromMinutes(1), Token))!;
         await writer.FailJobAsync(retry, "failure", "Unicode 🦔 failure", false, Token);
@@ -467,9 +473,9 @@ public sealed class IssueStorageLifecycleRegressionTests
             await connection.OpenAsync(Token); await using var command = connection.CreateCommand();
             command.CommandText = """
                 INSERT INTO projects(id,name,name_key,state,created_utc,updated_utc) VALUES($project,'Attachment migration','ATTACHMENT MIGRATION',0,$now,$now);
-                INSERT INTO project_folders(id,project_id,path,path_key,created_utc) VALUES($folder,$project,$folderpath,$folderpath,$now);
+                INSERT INTO project_folders(id,project_id,path,path_key,created_utc) VALUES($folder,$project,$folderpath,$folder_key,$now);
                 INSERT INTO documents(id,project_id,folder_id,path,path_key,file_name,extension,size,modified_utc,sha256,created_utc,updated_utc)
-                  VALUES($document,$project,$folder,$path,$path,'file🦔.txt','.txt',$size,$modified,$sha,$now,$now);
+                  VALUES($document,$project,$folder,$path,$path_key,'file🦔.txt','.txt',$size,$modified,$sha,$now,$now);
                 INSERT INTO document_revisions(id,document_id,sha256,status,created_utc) VALUES($revision,$document,$sha,'active',$now);
                 UPDATE documents SET active_revision_id=$revision WHERE id=$document;
                 INSERT INTO content_nodes(id,revision_id,ordinal,name,relationship,depth) VALUES($root,$revision,0,'file🦔.txt','root',0);
@@ -480,6 +486,7 @@ public sealed class IssueStorageLifecycleRegressionTests
             foreach (var (key, value) in new (string, object)[] { ("$project",project.ToString()),("$folder",folder.ToString()),
                 ("$document",document.ToString()),("$revision",revision.ToString()),("$root",root.ToString()),
                 ("$attachment",attachment.ToString()),("$folderpath",paths.SourceDirectory),("$path",source),
+                ("$folder_key",ProjectValidation.FolderKey(paths.SourceDirectory)),("$path_key",ProjectValidation.FolderKey(source)),
                 ("$size",file.Length),("$modified",modified.ToString("O")),("$sha",sha),("$now",now) })
                 command.Parameters.AddWithValue(key,value);
             await command.ExecuteNonQueryAsync(Token);
@@ -488,7 +495,10 @@ public sealed class IssueStorageLifecycleRegressionTests
         var store = database.Store;
         var prior = Assert.Single((await store.ListProjectIssuesAsync(new(project),Token)).Groups).Details[0];
         Assert.Contains("SCAN🦔.PDF",prior.ComponentKey);
-        await writer.HideProjectIssuesAsync(project,source,Token);
+        var hide = await writer.HideProjectIssuesAsync(project,source,Token);
+        Assert.Equal(1,hide.HiddenIssueCount);
+        Assert.Single(hide.AcknowledgementIds);
+        Assert.Empty((await store.ListProjectIssuesAsync(new(project),Token)).Groups);
         await writer.RetryFileAsync(project,document,Token);
         var job = (await writer.LeaseNextJobAsync(TimeSpan.FromMinutes(1),Token))!;
         var begin = await writer.BeginRevisionAsync(job,sha,file.Length,modified,Token);
