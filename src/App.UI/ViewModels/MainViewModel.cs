@@ -161,8 +161,19 @@ internal partial class MainViewModel : ViewModelBase
     public partial string IndexingTimingSummary { get; set; } = "No files are currently active.";
 
     [ObservableProperty]
+    public partial string IndexingActivityStatusLabel { get; set; } = "WAITING";
+
+    [ObservableProperty]
+    public partial string IndexingLastCompletionDisplay { get; set; } = "No successful job completion recorded in this app session.";
+
+    [ObservableProperty]
+    public partial string IndexingIdleMessage { get; set; } = "Waiting for project status.";
+
+    public bool HasNoActiveIndexingItems => !HasActiveIndexingItems;
+
+    [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsActiveIndexingCollapsed))]
-    public partial bool IsActiveIndexingExpanded { get; set; } = true;
+    public partial bool IsActiveIndexingExpanded { get; set; }
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsAiConnectionsCollapsed))]
@@ -410,7 +421,7 @@ internal partial class MainViewModel : ViewModelBase
         Interlocked.Increment(ref _semanticRefreshSequence);
         _nextSemanticStatusRefreshUtc = DateTimeOffset.MinValue;
         if (value)
-            foreach (var project in Projects) project.BeginSemanticIndexRefresh();
+            foreach (var project in Projects) project.BeginSemanticIndexRefresh(invalidate: true);
     }
 
     public void ShowProjects() => CurrentSection = MainSection.Projects;
@@ -1357,7 +1368,8 @@ internal partial class MainViewModel : ViewModelBase
             Interlocked.Increment(ref _semanticRefreshSequence));
         await Dispatcher.UIThread.InvokeAsync(() =>
         {
-            if (IsCurrentSemanticRefresh(stamp)) SelectedProject!.BeginSemanticIndexRefresh();
+            if (IsCurrentSemanticRefresh(stamp))
+                SelectedProject!.BeginSemanticIndexRefreshForPolicy(policy?.Key, modelAvailable);
         });
         try
         {
@@ -1483,23 +1495,13 @@ internal partial class MainViewModel : ViewModelBase
         while (ActiveIndexingItems.Count > snapshot.ActiveItems.Count)
             ActiveIndexingItems.RemoveAt(ActiveIndexingItems.Count - 1);
 
-        var workParts = new List<string>(4);
-        if (snapshot.ProcessingCount > 0)
-        {
-            var retrySuffix = snapshot.RetryingCount > 0
-                ? $" ({snapshot.RetryingCount} {Pluralize(snapshot.RetryingCount, "retry", "retries")})"
-                : string.Empty;
-            workParts.Add($"{snapshot.ProcessingCount} processing{retrySuffix}");
-        }
-        if (snapshot.WaitingForCpuCount > 0)
-            workParts.Add($"{snapshot.WaitingForCpuCount} waiting for CPU");
-
-        var activeText = workParts.Count == 0 ? "No files active" : string.Join(" · ", workParts);
-        var completedText = snapshot.AverageCompletedDuration is { } average
-            ? $"completed processing average {IndexingActivityItemViewModel.FormatDuration(average)} ({snapshot.CompletedSampleCount} this session)"
-            : "completed processing average —";
-        IndexingTimingSummary = $"{activeText} · {completedText}";
+        var progress = IndexingProgressPresentation.Create(SelectedProject, snapshot);
+        IndexingTimingSummary = progress.Summary;
+        IndexingActivityStatusLabel = progress.StatusLabel;
+        IndexingLastCompletionDisplay = progress.LastCompletion;
+        IndexingIdleMessage = progress.IdleMessage;
         OnPropertyChanged(nameof(HasActiveIndexingItems));
+        OnPropertyChanged(nameof(HasNoActiveIndexingItems));
         RefreshPresentation();
     }
 

@@ -33,6 +33,7 @@ public sealed class ProjectItemViewModel : ViewModelBase
     private VectorSnapshotMetadata? _semanticIndex;
     private bool _semanticModelAvailable;
     private bool _isSemanticCoverageLoading = true;
+    private bool _hasSemanticCoverageSnapshot;
     private string? _semanticCoverageError;
     private bool _actionsBusy;
     private bool _isReadinessStale;
@@ -177,27 +178,32 @@ public sealed class ProjectItemViewModel : ViewModelBase
     public bool IsSemanticRepairQueued => _semanticIndex?.IsRepairQueued == true;
     public bool ShowSemanticRepairButton => HasMixedSemanticIndex && !IsSemanticRepairQueued;
     public bool CanRepairSemanticIndex => AreActionsEnabled && ShowSemanticRepairButton && State == ProjectState.Active &&
-                                          _semanticModelAvailable;
+                                          _semanticModelAvailable && !_isReadinessStale && _semanticCoverageError is null && IsSemanticSnapshotCurrent;
+    private bool IsSemanticSnapshotCurrent => _semanticIndex is null || _semanticIndex.SearchGeneration == SearchGeneration;
     public string SemanticIndexStatusLabel => _isReadinessStale ? "LAST CHECK · STALE"
         : _isSemanticCoverageLoading ? "CHECKING"
         : _semanticCoverageError is not null ? "UNABLE TO CHECK"
         : !_semanticModelAvailable ? "KEYWORD ONLY"
         : _semanticIndex is null || _semanticIndex.TotalDocumentCount == 0 ? "NO INDEXED FILES"
         : IsSemanticRepairQueued ? "REPAIR QUEUED"
-        : HasMixedSemanticIndex ? "PARTIAL COVERAGE" : "COMPLETE";
+        : HasMixedSemanticIndex ? "PARTIAL COVERAGE" : !IsSemanticSnapshotCurrent ? "REFRESHING COVERAGE" : "COMPLETE";
     public string SemanticIndexStatusMessage
     {
         get
         {
             if (_isReadinessStale) return "Current meaning-based coverage could not be verified. The last known counts may have changed.";
             if (_isSemanticCoverageLoading) return "Checking meaning-based coverage for the current index and selected model…";
-            if (_semanticCoverageError is not null) return $"Coverage could not be checked. {_semanticCoverageError}";
+            if (_semanticCoverageError is not null)
+                return $"Current coverage could not be checked. {_semanticCoverageError}" +
+                       (_semanticIndex is { } previous ? $" Last verified: {previous.CompatibleDocumentCount:N0} of {previous.TotalDocumentCount:N0} indexed files covered." : string.Empty);
             if (!_semanticModelAvailable) return "Keyword search remains available. Set up a semantic model in Settings to add meaning-based search.";
             if (_semanticIndex is not { } metadata || metadata.TotalDocumentCount == 0)
                 return "No indexed files are available for meaning-based search yet.";
             var excluded = metadata.ExcludedDocumentCount;
-            var coverage = $"Meaning-based search currently covers {metadata.CompatibleDocumentCount} of " +
-                           $"{metadata.TotalDocumentCount} indexed files.";
+            var coverage = $"Last verified meaning-based coverage: {metadata.CompatibleDocumentCount:N0} of " +
+                           $"{metadata.TotalDocumentCount:N0} indexed files.";
+            if (!IsSemanticSnapshotCurrent)
+                return $"{coverage} Coverage is refreshing as the index changes. Background work and completed jobs are shown below.";
             if (!metadata.HasPartialCoverage) return coverage;
             if (metadata.IsRepairQueued)
                 return $"{coverage} The remaining {excluded} {(excluded == 1 ? "file is" : "files are")} queued for background repair.";
@@ -216,9 +222,14 @@ public sealed class ProjectItemViewModel : ViewModelBase
     }
     public string RepairSemanticIndexToolTip => State == ProjectState.Paused
         ? "Resume indexing before repairing semantic coverage."
-        : !_semanticModelAvailable
-            ? "The selected semantic model must be available before repair can be queued."
-            : "Queue compatible embedding repair, including source re-extraction where legacy text preparation needs upgrading.";
+        : _isReadinessStale ? "Current coverage could not be verified. Wait for a successful status check before queuing repair."
+        : _isSemanticCoverageLoading ? "Checking meaning-based coverage before repair can be queued."
+        : _semanticCoverageError is not null ? "Coverage could not be checked. Wait for a successful refresh before queuing repair."
+        : !_semanticModelAvailable ? "The selected semantic model must be available before repair can be queued."
+        : !IsSemanticSnapshotCurrent ? "Coverage is refreshing for the current index. Follow indexing activity below."
+        : IsSemanticRepairQueued ? "Coverage repair is already queued. Follow indexing activity below."
+        : IsSemanticCoverageComplete ? "Current meaning-based coverage is complete."
+        : "Queue compatible embedding repair, including source re-extraction where legacy text preparation needs upgrading.";
     public string ReindexToolTip => IsPaused
         ? "Resume indexing before rebuilding this project."
         : "Rebuild the local index from the watched folders.";
@@ -355,10 +366,10 @@ public sealed class ProjectItemViewModel : ViewModelBase
             // Keep the current file keyset and root objects while refreshed details are read.
             // An unrelated published revision must not interrupt ongoing issue triage.
             // Detail rows belong to the published generation that produced them.
-            _semanticIndex = null;
-            _semanticCoverageError = null;
+            // Each committed file advances the generation. Keep the last verified coverage and
+            // inventory on screen while polling; clearing them made every job flash the page.
+            // Coverage is explicitly historical until the matching generation is read.
             BeginSemanticIndexRefresh();
-            UpdateFileTypeCounts([]);
             if (RecentErrors.Count > 0)
             {
                 RecentErrors.Clear();
@@ -526,6 +537,7 @@ public sealed class ProjectItemViewModel : ViewModelBase
         if (_semanticIndex == metadata && _semanticModelAvailable == modelAvailable && !_isSemanticCoverageLoading && _semanticCoverageError is null) return;
         _semanticIndex = metadata;
         _semanticModelAvailable = modelAvailable;
+        _hasSemanticCoverageSnapshot = true;
         _isSemanticCoverageLoading = false;
         _semanticCoverageError = null;
         NotifySemanticCoverageChanged();
@@ -544,9 +556,20 @@ public sealed class ProjectItemViewModel : ViewModelBase
         OnPropertyChanged(nameof(CanRetryVisibleIssueFiles));
     }
 
-    public void BeginSemanticIndexRefresh()
+    public void BeginSemanticIndexRefreshForPolicy(string? policyKey, bool modelAvailable) =>
+        BeginSemanticIndexRefresh(invalidate: _hasSemanticCoverageSnapshot &&
+            (_semanticIndex is { } previous && !string.Equals(previous.Policy?.Key, policyKey, StringComparison.Ordinal) ||
+             _semanticModelAvailable != modelAvailable));
+
+    public void BeginSemanticIndexRefresh(bool invalidate = false)
     {
-        _isSemanticCoverageLoading = true;
+        if (invalidate)
+        {
+            _semanticIndex = null;
+            _hasSemanticCoverageSnapshot = false;
+            _semanticCoverageError = null;
+        }
+        _isSemanticCoverageLoading = !_hasSemanticCoverageSnapshot;
         NotifySemanticCoverageChanged();
     }
 
@@ -554,7 +577,6 @@ public sealed class ProjectItemViewModel : ViewModelBase
     {
         _isSemanticCoverageLoading = false;
         _semanticCoverageError = message;
-        _semanticIndex = null;
         NotifySemanticCoverageChanged();
     }
 

@@ -39,6 +39,7 @@ public sealed record IndexingTimingSnapshot(
     TimeSpan? AverageCompletedDuration,
     long CompletedSampleCount)
 {
+    public DateTimeOffset? LastCompletedUtc { get; init; }
     public int ProcessingCount => ActiveItems.Count(item => item.IsProcessing);
     public int RetryingCount => ActiveItems.Count(item => item.IsRetrying);
     public int WaitingForCpuCount => ActiveItems.Count(item => item.IsWaitingForCpu);
@@ -163,7 +164,8 @@ public sealed class IndexingActivityTracker
                 .ToArray();
             if (!_completedByProject.TryGetValue(projectId.Value, out var completed) || completed.Count == 0)
                 return new(items, null, 0);
-            return new(items, TimeSpan.FromTicks(completed.TotalTicks / completed.Count), completed.Count);
+            return new(items, TimeSpan.FromTicks(completed.TotalTicks / completed.Count), completed.Count)
+            { LastCompletedUtc = completed.LastCompletedUtc };
         }
     }
 
@@ -227,6 +229,7 @@ public sealed class IndexingActivityTracker
                 _completedByProject[activity.ProjectId] = completed;
             }
             completed.Count++;
+            completed.LastCompletedUtc = _time.GetUtcNow();
             completed.TotalTicks += elapsed.Ticks;
         }
     }
@@ -254,6 +257,7 @@ public sealed class IndexingActivityTracker
 
     private sealed class CompletedTiming
     {
+        public DateTimeOffset? LastCompletedUtc { get; set; }
         public long Count { get; set; }
         public long TotalTicks { get; set; }
     }

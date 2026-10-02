@@ -51,7 +51,39 @@ public sealed class IndexingTimingRegressionTests
         activity.Complete(true);
         var completed = tracker.GetSnapshot(job.ProjectId);
         Assert.Equal(1, completed.CompletedSampleCount);
+        Assert.Equal(time.GetUtcNow(), completed.LastCompletedUtc);
         Assert.Equal(TimeSpan.FromSeconds(10), completed.AverageCompletedDuration);
+    }
+
+    [Fact]
+    public void PollingAndLaterFailedAttemptsNeverInventSuccessfulCompletions()
+    {
+        var time = new ManualTimeProvider();
+        var tracker = new IndexingActivityTracker(time);
+        var job = Job(IndexJobKind.EmbeddingRefresh);
+        using (var success = tracker.Start(job))
+        {
+            success.StartProcessing(IndexingPipelineStage.GeneratingEmbeddings);
+            time.Advance(TimeSpan.FromSeconds(2));
+            success.Complete(true);
+        }
+        var completedAt = time.GetUtcNow();
+        for (var poll = 0; poll < 600; poll++)
+        {
+            time.Advance(TimeSpan.FromMilliseconds(250));
+            var snapshot = tracker.GetSnapshot(job.ProjectId);
+            Assert.Equal(1, snapshot.CompletedSampleCount);
+            Assert.Equal(completedAt, snapshot.LastCompletedUtc);
+            Assert.Equal(TimeSpan.FromSeconds(2), snapshot.AverageCompletedDuration);
+        }
+        using (var failure = tracker.Start(job with { JobId = Guid.NewGuid() }))
+        {
+            failure.StartProcessing(IndexingPipelineStage.GeneratingEmbeddings);
+            time.Advance(TimeSpan.FromSeconds(20));
+            failure.Complete(false);
+        }
+        Assert.Equal(1, tracker.GetSnapshot(job.ProjectId).CompletedSampleCount);
+        Assert.Equal(completedAt, tracker.GetSnapshot(job.ProjectId).LastCompletedUtc);
     }
 
     [Fact]
@@ -94,6 +126,7 @@ public sealed class IndexingTimingRegressionTests
             failed.Complete(false);
         }
         Assert.Equal(0, tracker.GetSnapshot(job.ProjectId).CompletedSampleCount);
+        Assert.Null(tracker.GetSnapshot(job.ProjectId).LastCompletedUtc);
         Assert.Null(tracker.GetSnapshot(job.ProjectId).AverageCompletedDuration);
 
         using (var retry = tracker.Start(job with { Attempt = 2 }))

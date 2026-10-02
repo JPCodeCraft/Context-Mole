@@ -42,7 +42,7 @@ internal sealed class StartupWindow : Window
         };
         AutomationProperties.SetLiveSetting(_status, AutomationLiveSetting.Polite);
         _progress = new ProgressBar { IsIndeterminate = true, Height = 7 };
-        AutomationProperties.SetName(_progress, "Opening and upgrading the local index");
+        AutomationProperties.SetName(_progress, "Opening and checking the local index");
         _close = new Button { Content = "Cancel startup", IsCancel = true, IsDefault = true, Margin = new Thickness(0, 0, 8, 8) };
         _close.Click += (_, _) => RequestCancel();
         _actions = new WrapPanel { Orientation = Orientation.Horizontal };
@@ -58,7 +58,7 @@ internal sealed class StartupWindow : Window
                     new TextBlock { Text = "Starting Context Mole", FontSize = 25, FontWeight = Avalonia.Media.FontWeight.SemiBold },
                     new TextBlock
                     {
-                        Text = "Existing indexed evidence is being preserved. Large index upgrades may take a few minutes.",
+                        Text = "This check runs each time the app opens. Saved-index upgrades can take longer on large indexes. File indexing runs in the background when the local index is ready; existing evidence is preserved.",
                         TextWrapping = Avalonia.Media.TextWrapping.Wrap
                     },
                     _status,

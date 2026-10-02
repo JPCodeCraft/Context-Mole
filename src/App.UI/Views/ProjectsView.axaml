@@ -63,7 +63,8 @@
                   </Grid>
                   <TextBlock Text="{Binding ProjectDetailsDisplay}" Classes="muted" TextWrapping="Wrap" />
                   <TextBlock Text="{Binding LastCheckedDisplay}" Classes="quiet" FontSize="11" />
-                  <TextBlock Text="{Binding PhaseDetails}" Classes="quiet" TextWrapping="Wrap" />
+                  <TextBlock Text="{Binding PhaseDetails}" Classes="quiet" TextWrapping="Wrap" Height="36"
+                             MaxLines="2" TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding PhaseDetails}" />
                 </StackPanel>
                 <WrapPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Left"
                            IsEnabled="{Binding AreActionsEnabled}"
@@ -111,8 +112,9 @@
                       <TextBlock Text="{Binding QueuedCount, StringFormat={}{0:N0}}" Classes="metricValue"
                                  ToolTip.Tip="Files waiting for processing, including scheduled retries. A previous indexed version may remain searchable." />
                     </Viewbox>
-                    <TextBlock IsVisible="{Binding HasQueueBreakdown}"
-                               Text="{Binding QueuedBreakdownDisplay}" Classes="quiet" FontSize="10" TextWrapping="Wrap" />
+                    <TextBlock Text="{Binding QueuedBreakdownDisplay}" Classes="quiet" FontSize="10"
+                               Height="26" MaxLines="2" TextWrapping="Wrap" TextTrimming="CharacterEllipsis"
+                               ToolTip.Tip="{Binding QueuedBreakdownDisplay}" />
                   </StackPanel>
                 </Border>
                 <Border Classes="metricCard" Classes.hasErrors="{Binding HasAttentionFiles}">
@@ -127,7 +129,8 @@
                 </Border>
               </UniformGrid>
               <TextBlock Text="{Binding SearchableSummary}"
-                         Classes="quiet" FontSize="11" TextWrapping="Wrap" />
+                         Classes="quiet" FontSize="11" TextWrapping="Wrap" Height="32" MaxLines="2"
+                         TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding SearchableSummary}" />
               <TextBlock Text="Counts cover included supported root files. Unsupported root formats are not counted; unsupported embedded attachments are skipped while supported content stays searchable. Up to date does not mean every byte or attachment is searchable."
                          Classes="quiet" FontSize="11" TextWrapping="Wrap" />
 
@@ -150,30 +153,26 @@
                 </StackPanel>
               </Border>
 
-              <Border Classes="card" Classes.semanticCoverageWarning="{Binding HasSemanticCoverageWarning}">
-                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="18">
-                  <StackPanel Spacing="6">
-                    <WrapPanel Orientation="Horizontal">
-                      <TextBlock Text="Meaning-based search coverage" Classes="sectionTitle" />
-                      <Border Classes="statusBadge" Margin="10,2,0,0" Classes.ready="{Binding IsSemanticCoverageComplete}"
-                              Classes.warning="{Binding HasSemanticCoverageWarning}" VerticalAlignment="Center">
-                        <TextBlock Text="{Binding SemanticIndexStatusLabel}" Classes="statusText"
-                                   Classes.ready="{Binding IsSemanticCoverageComplete}" Classes.warning="{Binding HasSemanticCoverageWarning}" />
-                      </Border>
-                    </WrapPanel>
-                    <TextBlock Text="{Binding SemanticIndexStatusMessage}" Classes="muted"
-                               TextWrapping="Wrap" MaxWidth="720" />
-                  </StackPanel>
-                  <Button Grid.Column="1" IsVisible="{Binding ShowSemanticRepairButton}"
-                          Content="Complete search coverage" Click="RepairSemanticIndex"
-                          IsEnabled="{Binding CanRepairSemanticIndex}"
-                          ToolTip.Tip="{Binding RepairSemanticIndexToolTip}"
+              <Border Classes="card" Classes.semanticCoverageWarning="{Binding HasSemanticCoverageWarning}"
+                      AutomationProperties.Name="Meaning-based search coverage">
+                <Grid ColumnDefinitions="*,210" RowDefinitions="24,22,60" ColumnSpacing="18" Height="106">
+                  <TextBlock Grid.ColumnSpan="2" Text="Meaning-based search coverage" Classes="sectionTitle"
+                             TextTrimming="CharacterEllipsis" />
+                  <Border Grid.Row="1" Grid.ColumnSpan="2" Classes="statusBadge" HorizontalAlignment="Left"
+                          Classes.ready="{Binding IsSemanticCoverageComplete}" Classes.warning="{Binding HasSemanticCoverageWarning}">
+                    <TextBlock Text="{Binding SemanticIndexStatusLabel}" Classes="statusText"
+                               Classes.ready="{Binding IsSemanticCoverageComplete}" Classes.warning="{Binding HasSemanticCoverageWarning}" />
+                  </Border>
+                  <TextBlock Grid.Row="2" Text="{Binding SemanticIndexStatusMessage}" Classes="muted"
+                             TextWrapping="Wrap" MaxLines="3" TextTrimming="CharacterEllipsis"
+                             ToolTip.Tip="{Binding SemanticIndexStatusMessage}" VerticalAlignment="Center" />
+                  <Button Grid.Row="2" Grid.Column="1" Content="Complete search coverage" Click="RepairSemanticIndex"
+                          IsEnabled="{Binding CanRepairSemanticIndex}" ToolTip.Tip="{Binding RepairSemanticIndexToolTip}"
                           VerticalAlignment="Center" />
                 </Grid>
               </Border>
 
-              <Border IsVisible="{Binding $parent[UserControl].((vm:MainViewModel)DataContext).HasActiveIndexingItems}"
-                      Classes="card">
+              <Border Classes="card" AutomationProperties.Name="Indexing activity">
                 <StackPanel Spacing="12">
                   <ToggleButton Classes="sectionToggle"
                                 AutomationProperties.Name="Expand or collapse indexing activity"
@@ -182,11 +181,12 @@
                       <StackPanel Spacing="3">
                         <TextBlock Text="Indexing activity" Classes="sectionTitle" />
                         <TextBlock Text="{Binding $parent[UserControl].((vm:MainViewModel)DataContext).IndexingTimingSummary}"
-                                   Classes="quiet" FontSize="12" />
+                                   Classes="quiet" FontSize="12" TextTrimming="CharacterEllipsis"
+                                   ToolTip.Tip="{Binding $parent[UserControl].((vm:MainViewModel)DataContext).IndexingTimingSummary}" />
                       </StackPanel>
-                      <Border Grid.Column="1" Background="{DynamicResource SuccessSubtleBrush}"
+                      <Border Grid.Column="1" Classes="statusBadge"
                               CornerRadius="10" Padding="9,4" VerticalAlignment="Center">
-                        <TextBlock Text="LIVE" Foreground="{DynamicResource SuccessBrush}"
+                        <TextBlock Text="{Binding $parent[UserControl].((vm:MainViewModel)DataContext).IndexingActivityStatusLabel}" Classes="statusText"
                                    FontSize="10" FontWeight="SemiBold" LetterSpacing="0.6" />
                       </Border>
                       <TextBlock Grid.Column="2" Text="⌃" RenderTransform="rotate(180deg)"
@@ -198,8 +198,19 @@
                                  Classes="muted" FontSize="18" VerticalAlignment="Center" />
                     </Grid>
                   </ToggleButton>
-                  <ItemsControl IsVisible="{Binding $parent[UserControl].((vm:MainViewModel)DataContext).IsActiveIndexingExpanded}"
-                                ItemsSource="{Binding $parent[UserControl].((vm:MainViewModel)DataContext).ActiveIndexingItems}">
+                  <TextBlock Text="{Binding $parent[UserControl].((vm:MainViewModel)DataContext).IndexingLastCompletionDisplay}"
+                             Classes="quiet" FontSize="11" Height="32" MaxLines="2" TextWrapping="Wrap"
+                             TextTrimming="CharacterEllipsis"
+                             ToolTip.Tip="{Binding $parent[UserControl].((vm:MainViewModel)DataContext).IndexingLastCompletionDisplay}" />
+                  <!-- The viewport changes size only when the user expands/collapses it. Empty
+                       gaps and worker-count changes must never move the rest of the project. -->
+                  <Grid Height="166" IsVisible="{Binding $parent[UserControl].((vm:MainViewModel)DataContext).IsActiveIndexingExpanded}">
+                    <TextBlock IsVisible="{Binding $parent[UserControl].((vm:MainViewModel)DataContext).HasNoActiveIndexingItems}"
+                               Text="{Binding $parent[UserControl].((vm:MainViewModel)DataContext).IndexingIdleMessage}"
+                               Classes="quiet" TextWrapping="Wrap" VerticalAlignment="Center" Margin="12" />
+                    <ScrollViewer IsVisible="{Binding $parent[UserControl].((vm:MainViewModel)DataContext).HasActiveIndexingItems}"
+                                  HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
+                    <ItemsControl ItemsSource="{Binding $parent[UserControl].((vm:MainViewModel)DataContext).ActiveIndexingItems}">
                     <ItemsControl.ItemTemplate>
                       <DataTemplate x:DataType="vm:IndexingActivityItemViewModel">
                         <Border Classes="subtleCard" Margin="0,3">
@@ -224,7 +235,9 @@
                         </Border>
                       </DataTemplate>
                     </ItemsControl.ItemTemplate>
-                  </ItemsControl>
+                    </ItemsControl>
+                    </ScrollViewer>
+                  </Grid>
                 </StackPanel>
               </Border>
 
@@ -233,7 +246,7 @@
                   <StackPanel Spacing="13">
                     <StackPanel Spacing="3">
                       <TextBlock Text="File types" Classes="sectionTitle" />
-                      <TextBlock Text="Files currently included in this project." Classes="quiet" FontSize="12" />
+                      <TextBlock Text="Last verified inventory totals by format, not completed-work counts. They change when files are added or removed." Classes="quiet" FontSize="12" TextWrapping="Wrap" />
                     </StackPanel>
                       <TextBlock IsVisible="{Binding HasNoFileTypeCounts}" Text="File-type totals are not available yet."
                                Classes="muted" TextWrapping="Wrap" />

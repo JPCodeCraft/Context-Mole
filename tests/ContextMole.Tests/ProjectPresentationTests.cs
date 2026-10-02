@@ -15,10 +15,10 @@ public sealed class ProjectPresentationTests
         Assert.Equal("COMPLETE", project.SemanticIndexStatusLabel);
         Assert.Contains("2 of 2", project.SemanticIndexStatusMessage);
         project.BeginSemanticIndexRefresh();
-        Assert.Equal("CHECKING", project.SemanticIndexStatusLabel);
+        Assert.Equal("COMPLETE", project.SemanticIndexStatusLabel);
         project.FailSemanticIndexRefresh("Storage is busy.");
         Assert.Equal("UNABLE TO CHECK", project.SemanticIndexStatusLabel);
-        Assert.DoesNotContain("2 of 2", project.SemanticIndexStatusMessage);
+        Assert.Contains("Last verified: 2 of 2", project.SemanticIndexStatusMessage);
         project.UpdateSemanticIndex(new(1, null, 0), true);
         Assert.Equal("NO INDEXED FILES", project.SemanticIndexStatusLabel);
         project.UpdateSemanticIndex(null, false);
@@ -27,7 +27,7 @@ public sealed class ProjectPresentationTests
     }
 
     [Fact]
-    public void PublishedGenerationChangeInvalidatesPreviousCoverageAndIssueRows()
+    public void PublishedGenerationRetainsHistoricalCoverageWithoutClaimingCurrentComplete()
     {
         var summary = Summary(2, ready: 1, attention: 1);
         var project = new ProjectItemViewModel(summary);
@@ -36,7 +36,9 @@ public sealed class ProjectPresentationTests
         Assert.True(project.IsSemanticCoverageComplete);
         Assert.True(project.HasRecentErrors);
         project.UpdateFrom(summary with { SearchGeneration = 2 });
-        Assert.Equal("CHECKING", project.SemanticIndexStatusLabel);
+        Assert.Equal("REFRESHING COVERAGE", project.SemanticIndexStatusLabel);
+        Assert.Contains("Last verified", project.SemanticIndexStatusMessage);
+        Assert.Contains("refreshing", project.SemanticIndexStatusMessage);
         Assert.False(project.IsSemanticCoverageComplete);
         Assert.False(project.HasRecentErrors);
     }

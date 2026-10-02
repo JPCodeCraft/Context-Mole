@@ -140,7 +140,7 @@ internal static class Program
         StartupProgressChanged?.Invoke("Checking the app-managed model cache…");
         cancellationToken.ThrowIfCancellationRequested();
         RetiredModelCleanupResult = RunRetiredModelCleanup(_host.Services.GetRequiredService<RetiredModelCacheCleanup>());
-        StartupProgressChanged?.Invoke("Opening the local index and applying any required upgrades. Existing indexed evidence is being preserved…");
+        StartupProgressChanged?.Invoke("Opening the local index and checking its saved-data format. Any required upgrade runs here before the workspace opens…");
         await _host.StartAsync(cancellationToken).ConfigureAwait(false);
     }
 
