@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 
+using ContextMole.Core;
 using ContextMole.Infrastructure;
 
 namespace ContextMole.Tests;
@@ -165,13 +166,17 @@ public sealed class JsonMcpConfigurationRegressionTests
     [InlineData("CONTEXTMOLE_DATA_DIR")]
     public async Task RelativeOwnedPathsRequireRepairEvenWhenTheyResolveToCurrentPaths(string property)
     {
-        using var fixture = new JsonConnectionFixture();
+        var currentDirectory = Environment.CurrentDirectory;
+        // Windows TEMP and the checkout can be on different drives. Keep these targets
+        // under the current directory so GetRelativePath cannot return an absolute path.
+        using var fixture = new JsonConnectionFixture(parentDirectory: currentDirectory);
         var entry = fixture.ManagedEntry();
         entry["disabledTools"] = new JsonArray("read_passage");
         entry["env"]!["CUSTOM_FLAG"] = "retained-value";
         var absolute = property == "command" ? fixture.ServerPath : fixture.Paths.DataDirectory;
-        var relative = Path.GetRelativePath(Environment.CurrentDirectory, absolute);
+        var relative = Path.GetRelativePath(currentDirectory, absolute);
         Assert.False(Path.IsPathFullyQualified(relative));
+        Assert.Equal(absolute, Path.GetFullPath(relative, currentDirectory));
         Assert.True(property == "command" ? File.Exists(relative) : Directory.Exists(relative));
         if (property == "command") entry[property] = relative;
         else entry["env"]![property] = relative;
@@ -326,9 +331,10 @@ public sealed class JsonMcpConfigurationRegressionTests
     {
         private readonly string? _previousServerOverride;
 
-        public JsonConnectionFixture(string? transportType = null, bool includeAllTools = false)
+        public JsonConnectionFixture(string? transportType = null, bool includeAllTools = false,
+            string? parentDirectory = null)
         {
-            Paths = new StorageTestPaths();
+            Paths = new JsonConnectionTestPaths(parentDirectory ?? Path.GetTempPath());
             ConfigPath = Path.Combine(Paths.DataDirectory, "isolated-client", "mcp.json");
             Directory.CreateDirectory(Path.GetDirectoryName(ConfigPath)!);
             ServerPath = Path.Combine(Paths.DataDirectory,
@@ -341,7 +347,7 @@ public sealed class JsonMcpConfigurationRegressionTests
                 ConfigPath, "mcpServers", Paths, new McpServerDeploymentService(Paths), transportType, includeAllTools);
         }
 
-        public StorageTestPaths Paths { get; }
+        public JsonConnectionTestPaths Paths { get; }
         public string ConfigPath { get; }
         public string ServerPath { get; }
         public JsonMcpConfigurationService Service { get; }
@@ -390,6 +396,39 @@ public sealed class JsonMcpConfigurationRegressionTests
         {
             Environment.SetEnvironmentVariable("CONTEXTMOLE_MCP_PATH", _previousServerOverride);
             Paths.Dispose();
+        }
+    }
+
+    private sealed class JsonConnectionTestPaths : IAppPaths, IDisposable
+    {
+        private readonly string _parentDirectory;
+
+        public JsonConnectionTestPaths(string parentDirectory)
+        {
+            _parentDirectory = Path.GetFullPath(parentDirectory);
+            RootDirectory = Path.Combine(_parentDirectory, $"ContextMole-json-tests-{Guid.NewGuid():N}");
+            DataDirectory = Path.Combine(RootDirectory, "data");
+            SourceDirectory = Path.Combine(RootDirectory, "source");
+            Directory.CreateDirectory(DataDirectory);
+            Directory.CreateDirectory(SourceDirectory);
+        }
+
+        public string RootDirectory { get; }
+        public string SourceDirectory { get; }
+        public string DataDirectory { get; }
+        public string DatabasePath => Path.Combine(DataDirectory, "index.db");
+        public string AssetsDirectory => Path.Combine(DataDirectory, "assets");
+        public string LogsDirectory => Path.Combine(DataDirectory, "logs");
+        public string TempDirectory => Path.Combine(DataDirectory, "temp");
+
+        public void Dispose()
+        {
+            var relative = Path.GetRelativePath(_parentDirectory, RootDirectory);
+            if (Path.IsPathRooted(relative) || relative == "." || relative == ".." ||
+                relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal))
+                throw new InvalidOperationException("The test directory escaped its owned fixture root.");
+
+            if (Directory.Exists(RootDirectory)) Directory.Delete(RootDirectory, recursive: true);
         }
     }
 }

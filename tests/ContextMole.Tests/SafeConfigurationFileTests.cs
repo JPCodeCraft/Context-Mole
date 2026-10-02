@@ -87,9 +87,15 @@ public sealed class SafeConfigurationFileTests
         var prepared = Path.Combine(folder.Path, "prepared.partial");
         await File.WriteAllTextAsync(prepared, "our update", TestContext.Current.CancellationToken);
 
-        await Assert.ThrowsAsync<IOException>(() => SafeConfigurationFile.CommitPreparedFileAsync(
+        Func<Task> commit = () => SafeConfigurationFile.CommitPreparedFileAsync(
             prepared, target, string.Empty, targetExisted: true, "test configuration",
-            TestContext.Current.CancellationToken));
+            TestContext.Current.CancellationToken);
+        // Windows ReplaceFile reports a missing destination as the IOException subclass
+        // FileNotFoundException; the Unix atomic exchange reports IOException directly.
+        if (OperatingSystem.IsWindows())
+            await Assert.ThrowsAsync<FileNotFoundException>(commit);
+        else
+            await Assert.ThrowsAsync<IOException>(commit);
 
         Assert.False(File.Exists(target));
         Assert.Empty(Directory.GetFiles(folder.Path, "*.bak"));

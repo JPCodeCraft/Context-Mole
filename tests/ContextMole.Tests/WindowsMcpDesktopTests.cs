@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.IO.Pipes;
 using System.Reflection;
@@ -10,6 +11,9 @@ using ContextMole.Mcp;
 using ContextMole.Storage;
 
 using Microsoft.Data.Sqlite;
+
+using ModelContextProtocol;
+using ModelContextProtocol.Protocol;
 
 namespace ContextMole.Tests;
 
@@ -32,6 +36,43 @@ public sealed class WindowsMcpDesktopTests
         Assert.False(WindowsMcpDesktopTransport.IsValidPipeName("other-server"));
         Assert.False(WindowsMcpDesktopTransport.IsValidPipeName("context-mole-desktop-../file"));
         Assert.False(WindowsMcpDesktopTransport.IsValidPipeName("context-mole-desktop-"));
+    }
+
+    [Fact]
+    public void ProjectListStructuredContentUsesTheDeclaredProjectsProperty()
+    {
+        var value = JsonSerializer.SerializeToElement(new ProjectListResponse([]), BrokerJson.Options);
+        var response = JsonSerializer.SerializeToElement(new
+        {
+            jsonrpc = "2.0",
+            id = 2,
+            result = new CallToolResult
+            {
+                IsError = false,
+                StructuredContent = value,
+                Content = [new TextContentBlock { Text = value.GetRawText() }]
+            }
+        }, McpJsonUtilities.DefaultOptions);
+
+        Assert.Empty(ReadProjects(response, new ConcurrentQueue<string>()).EnumerateArray());
+    }
+
+    [Theory]
+    [InlineData("""{"jsonrpc":"2.0","id":2,"error":{"code":-32603,"message":"Worker failed"}}""")]
+    [InlineData("""{"jsonrpc":"2.0","id":2,"result":{"isError":true,"structuredContent":{"error":{"code":"broker_unavailable"}}}}""")]
+    [InlineData("""{"jsonrpc":"2.0","id":2,"result":{"isError":false,"structuredContent":{"result":[]}}}""")]
+    [InlineData("""{"jsonrpc":"2.0","id":2,"result":{"isError":false,"structuredContent":{"projects":{}}}}""")]
+    public void InvalidProjectResponsesReportTheActualResponseAndWorkerLog(string json)
+    {
+        using var response = JsonDocument.Parse(json);
+        var log = new ConcurrentQueue<string>();
+        log.Enqueue("Fixture worker diagnostic");
+
+        var exception = Assert.ThrowsAny<Xunit.Sdk.XunitException>(() => ReadProjects(response.RootElement, log));
+
+        Assert.Contains("list_projects", exception.Message);
+        Assert.Contains(json, exception.Message);
+        Assert.Contains("Fixture worker diagnostic", exception.Message);
     }
 
     [Fact]
@@ -63,23 +104,27 @@ public sealed class WindowsMcpDesktopTests
             await Task.WhenAll(input.WaitForConnectionAsync(token), output.WaitForConnectionAsync(token),
                 errors.WaitForConnectionAsync(token)).WaitAsync(TimeSpan.FromSeconds(20), token);
             using var errorReader = new StreamReader(errors);
-            var logTask = errorReader.ReadToEndAsync(token);
+            var workerLog = new ConcurrentQueue<string>();
+            var logTask = CaptureWorkerLogAsync(errorReader, workerLog, token);
             using var reader = new StreamReader(output);
             using var sender = new StreamWriter(input, new UTF8Encoding(false)) { AutoFlush = true };
             await sender.WriteLineAsync("""{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"desktop-regression","version":"1"}}}""");
             using var initialized = await ReadResponseAsync(reader, 1, token);
-            Assert.False(initialized.RootElement.TryGetProperty("error", out _));
+            ReadResult(initialized.RootElement, "initialize", workerLog);
             await sender.WriteLineAsync("""{"jsonrpc":"2.0","method":"notifications/initialized"}""");
             await sender.WriteLineAsync("""{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"list_projects","arguments":{}}}""");
             using var response = await ReadResponseAsync(reader, 2, token);
-            var projects = response.RootElement.GetProperty("result").GetProperty("structuredContent").GetProperty("result");
+            // BrokerMcpTools returns CallToolResult directly with ProjectListResponse as its
+            // output schema. The old SDK-generated { result: [...] } envelope no longer applies.
+            var projects = ReadProjects(response.RootElement, workerLog);
             var project = Assert.Single(projects.EnumerateArray());
             Assert.Equal(projectId, project.GetProperty("id").GetGuid());
             Assert.Equal("Shared desktop index", project.GetProperty("name").GetString());
             sender.Dispose();
             await worker.WaitForExitAsync(token).WaitAsync(TimeSpan.FromSeconds(10), token);
             Assert.Equal(0, worker.ExitCode);
-            var log = await logTask.WaitAsync(TimeSpan.FromSeconds(5), token);
+            await logTask.WaitAsync(TimeSpan.FromSeconds(5), token);
+            var log = string.Join(Environment.NewLine, workerLog);
             Assert.Contains($"physical directory: {paths.DataDirectory}", log);
             Assert.Contains("MCP", log);
             Assert.Contains("starting. Data directory:", log);
@@ -113,6 +158,31 @@ public sealed class WindowsMcpDesktopTests
 
     private static NamedPipeServerStream CreatePipe(string name, PipeDirection direction) =>
         new(name, direction, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+
+    private static async Task CaptureWorkerLogAsync(StreamReader reader, ConcurrentQueue<string> log, CancellationToken token)
+    {
+        while (await reader.ReadLineAsync(token) is { } line)
+            log.Enqueue(line);
+    }
+
+    private static JsonElement ReadResult(JsonElement response, string operation, ConcurrentQueue<string> log)
+    {
+        var diagnostic = $"{operation} response: {response.GetRawText()}{Environment.NewLine}Worker stderr:{Environment.NewLine}{string.Join(Environment.NewLine, log)}";
+        Assert.True(response.ValueKind == JsonValueKind.Object, diagnostic);
+        Assert.False(response.TryGetProperty("error", out _), diagnostic);
+        Assert.True(response.TryGetProperty("result", out var result) && result.ValueKind == JsonValueKind.Object, diagnostic);
+        return result;
+    }
+
+    private static JsonElement ReadProjects(JsonElement response, ConcurrentQueue<string> log)
+    {
+        var result = ReadResult(response, "list_projects", log);
+        var diagnostic = $"list_projects response: {response.GetRawText()}{Environment.NewLine}Worker stderr:{Environment.NewLine}{string.Join(Environment.NewLine, log)}";
+        Assert.True(!result.TryGetProperty("isError", out var isError) || isError.ValueKind == JsonValueKind.False, diagnostic);
+        Assert.True(result.TryGetProperty("structuredContent", out var structured) && structured.ValueKind == JsonValueKind.Object, diagnostic);
+        Assert.True(structured.TryGetProperty("projects", out var projects) && projects.ValueKind == JsonValueKind.Array, diagnostic);
+        return projects;
+    }
 
     private static async Task<JsonDocument> ReadResponseAsync(StreamReader reader, int id, CancellationToken token)
     {
