@@ -4,6 +4,35 @@
              xmlns:controls="using:ContextMole.App.UI.Controls"
              x:Class="ContextMole.App.UI.Views.SettingsView"
              x:DataType="vm:MainViewModel">
+  <UserControl.Resources>
+    <DataTemplate x:Key="AiConnectionRow" x:DataType="vm:AiConnectionItemViewModel">
+      <Border Classes="row" Margin="0,0,0,8">
+        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
+          <StackPanel Spacing="4">
+            <StackPanel Orientation="Horizontal" Spacing="9">
+              <TextBlock Text="{Binding DisplayName}" Classes="cardTitle" VerticalAlignment="Center" />
+              <controls:StatusBadge Text="{Binding StatusLabel}" Tone="{Binding StatusTone}" />
+            </StackPanel>
+            <TextBlock Text="{Binding Description}" Classes="quiet" FontSize="12" TextWrapping="Wrap" />
+            <TextBlock IsVisible="{Binding HasDetailMessage}" Text="{Binding Message}"
+                       Classes="muted" FontSize="13" TextWrapping="Wrap" />
+            <Grid IsVisible="{Binding HasConfigPath}" ColumnDefinitions="*,Auto" ColumnSpacing="8" Margin="0,2,0,0">
+              <SelectableTextBlock Text="{Binding ConfigPath}" Foreground="{DynamicResource TextMutedBrush}" FontSize="12"
+                                   TextWrapping="Wrap" VerticalAlignment="Center"
+                                   AutomationProperties.Name="AI configuration file path" />
+              <Button Grid.Column="1" Classes="ghost compact" Content="Copy path" CommandParameter="{Binding}"
+                      Click="CopyConfigurationPath" AutomationProperties.Name="Copy configuration path" />
+            </Grid>
+          </StackPanel>
+          <StackPanel Grid.Column="1" VerticalAlignment="Top">
+            <Button Content="{Binding ActionLabel}" IsVisible="{Binding CanShowAutomaticSetupAction}"
+                    IsEnabled="{Binding CanChange}" CommandParameter="{Binding}" Click="ToggleAiConnection" MinWidth="110" />
+            <Button Content="Setup guide" IsVisible="{Binding RequiresManualSetup}" Click="OpenManualSetupGuide" MinWidth="110" />
+          </StackPanel>
+        </Grid>
+      </Border>
+    </DataTemplate>
+  </UserControl.Resources>
   <Grid RowDefinitions="Auto,*">
     <Border Classes="pageHeader">
       <StackPanel Spacing="4" MaxWidth="1120">
@@ -30,38 +59,15 @@
                       VerticalAlignment="Top" ToolTip.Tip="Read each assistant's configuration again without changing it."
                       AutomationProperties.Name="Check AI configurations again without changing them" />
             </Grid>
-            <ItemsControl ItemsSource="{Binding VisibleAiConnections}">
-              <ItemsControl.ItemTemplate>
-                <DataTemplate x:DataType="vm:AiConnectionItemViewModel">
-                  <Border Classes="row" Margin="0,0,0,8">
-                    <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
-                      <StackPanel Spacing="4">
-                        <StackPanel Orientation="Horizontal" Spacing="9">
-                          <TextBlock Text="{Binding DisplayName}" Classes="cardTitle" VerticalAlignment="Center" />
-                          <controls:StatusBadge Text="{Binding StatusLabel}" Tone="{Binding StatusTone}" />
-                        </StackPanel>
-                        <TextBlock Text="{Binding Description}" Classes="quiet" FontSize="12" TextWrapping="Wrap" />
-                        <TextBlock IsVisible="{Binding HasDetailMessage}" Text="{Binding Message}"
-                                   Classes="muted" FontSize="13" TextWrapping="Wrap" />
-                        <Grid IsVisible="{Binding HasConfigPath}" ColumnDefinitions="*,Auto" ColumnSpacing="8" Margin="0,2,0,0">
-                          <SelectableTextBlock Text="{Binding ConfigPath}" Foreground="{DynamicResource TextMutedBrush}" FontSize="12"
-                                               TextWrapping="Wrap" VerticalAlignment="Center"
-                                               AutomationProperties.Name="AI configuration file path" />
-                          <Button Grid.Column="1" Classes="ghost compact" Content="Copy path" CommandParameter="{Binding}"
-                                  Click="CopyConfigurationPath" AutomationProperties.Name="Copy configuration path" />
-                        </Grid>
-                      </StackPanel>
-                      <StackPanel Grid.Column="1" VerticalAlignment="Top">
-                        <Button Content="{Binding ActionLabel}" IsVisible="{Binding CanShowAutomaticSetupAction}"
-                                IsEnabled="{Binding CanChange}" CommandParameter="{Binding}" Click="ToggleAiConnection" MinWidth="110" />
-                        <Button Content="Setup guide" IsVisible="{Binding RequiresManualSetup}" Click="OpenManualSetupGuide" MinWidth="110" />
-                      </StackPanel>
-                    </Grid>
-                  </Border>
-                </DataTemplate>
-              </ItemsControl.ItemTemplate>
-            </ItemsControl>
-            <CheckBox Content="Show assistants that aren't available on this PC" IsChecked="{Binding ShowAllAiClients, Mode=TwoWay}" />
+            <ItemsControl ItemsSource="{Binding PrimaryAiConnections}" ItemTemplate="{StaticResource AiConnectionRow}"
+                          IsVisible="{Binding HasPrimaryAiConnections}" />
+            <Expander IsExpanded="{Binding IsOtherAiConnectionsExpanded, Mode=TwoWay}" Header="{Binding OtherAiConnectionsHeader}"
+                      HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch">
+              <StackPanel Spacing="8">
+                <ItemsControl ItemsSource="{Binding OtherAiConnections}" ItemTemplate="{StaticResource AiConnectionRow}" />
+                <CheckBox Content="Show assistants that aren't available on this PC" IsChecked="{Binding ShowAllAiClients, Mode=TwoWay}" />
+              </StackPanel>
+            </Expander>
             <TextBlock Text="Connected assistants can read project names, folder paths and the passages they find in every project. An assistant may send what it reads to its provider, depending on its own settings."
                        Classes="quiet" FontSize="12" TextWrapping="Wrap" />
           </StackPanel>
@@ -120,7 +126,7 @@
               <TextBlock Text="How much of your PC's processor Context Mole may use for indexing. Search speed is not affected."
                          Classes="muted" TextWrapping="Wrap" />
             </StackPanel>
-            <ListBox Classes="optionCards" ItemsSource="{Binding CpuUsageOptions}"
+            <ListBox Classes="optionCards" ItemsSource="{Binding CpuUsageOptions}" AutoScrollToSelectedItem="False"
                      SelectedItem="{Binding SelectedCpuUsageOption, Mode=OneWay}" SelectionChanged="CpuUsageOptionChanged"
                      AutomationProperties.Name="CPU usage profile">
               <ListBox.ItemsPanel>

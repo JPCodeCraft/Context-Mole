@@ -32,7 +32,13 @@
         <Panel Grid.Row="3">
           <ListBox x:Name="FoldersList" Classes="folderPicker"
                    AutomationProperties.Name="Folders to index"
-                   SelectionChanged="FolderSelectionChanged" />
+                   SelectionChanged="FolderSelectionChanged">
+            <ListBox.ItemTemplate>
+              <DataTemplate x:DataType="x:String">
+                <TextBlock Text="{Binding}" TextTrimming="PathSegmentEllipsis" ToolTip.Tip="{Binding}" />
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
           <TextBlock x:Name="NoFoldersHint" Text="No folders yet. Choose Add folders to pick one or more."
                      Classes="quiet" HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False" />
         </Panel>

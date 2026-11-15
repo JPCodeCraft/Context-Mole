@@ -278,7 +278,7 @@ internal partial class MainViewModel : ViewModelBase
     public string OcrStatusMessage => _ocrSetupCanceled && !IsPreparingOcr && !IsOcrAvailable
         ? "This setup attempt was canceled. Any completed files and partial downloads that remain are kept; retry to resume and verify them before use."
         : OcrPresentation.StatusMessage(IsPreparingOcr, IsOcrAvailable, _ocrEngine.UnavailableReason);
-    public string OcrFeatureImpact => "Text documents remain searchable without OCR. Scanned PDF pages and images need OCR. Indexing may prepare OCR again when a file needs it.";
+    public string OcrFeatureImpact => "Reads text in scanned PDF pages and images. Other documents are searchable without it.";
     public bool CanRetryOcrSetup => !IsPreparingOcr && IsOcrUnavailable && IsOcrPlatformSupported;
     public bool CanCancelOcrSetup => IsPreparingOcr && _ocrPreparation is not null && !_ocrPreparation.IsCancellationRequested;
     public bool IsOcrProgressVisible => IsPreparingOcr;
@@ -296,7 +296,7 @@ internal partial class MainViewModel : ViewModelBase
     public bool CanSetUpSemanticSearch => IsSemanticSearchSetupVisible &&
         !IsChangingEmbeddingModel && !IsPreparingEmbeddingModel && !IsSettingUpEmbeddingModel;
     public bool CanChangeEmbeddingModel => false;
-    public string EmbeddingModelSummary => "Local multilingual meaning-based search with the pinned Granite Multilingual 97M model.";
+    public string EmbeddingModelSummary => "Finds passages by meaning, not only by exact words, and works across languages.";
     public string SemanticSearchStatusLabel => IsChangingEmbeddingModel ? "Switching model" : IsPreparingEmbeddingModel ? "Loading"
         : IsSettingUpEmbeddingModel ? "Setting up"
         : IsSemanticSearchUnavailable && !_modelInstaller.IsSupported ? "Unavailable"
@@ -313,7 +313,7 @@ internal partial class MainViewModel : ViewModelBase
         : !IsSemanticSearchUnavailable && NeedsSemanticModelValidation
         ? $"{SelectedEmbeddingModel.DisplayName} is available using full precision. Verify the optimized model with the updated tokenizer before enabling it."
         : !IsSemanticSearchUnavailable
-        ? $"{SelectedEmbeddingModel.DisplayName} is ready for multilingual meaning-based search."
+        ? $"Ready. Uses the {SelectedEmbeddingModel.DisplayName} model on this PC."
         : !_modelInstaller.IsSupported
             ? _embeddingGenerator.UnavailableReason ?? "Semantic search is unavailable on this platform."
             : _modelInstaller.HasModelAssets(SelectedEmbeddingModel.Choice)
@@ -344,10 +344,33 @@ internal partial class MainViewModel : ViewModelBase
     public string SettingsNavigationAutomationName => IsSettingsSection ? "Settings, current section" : "Settings";
     public bool IsActiveIndexingCollapsed => !IsActiveIndexingExpanded;
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(VisibleAiConnections))]
+    [NotifyPropertyChangedFor(nameof(OtherAiConnections))]
+    [NotifyPropertyChangedFor(nameof(OtherAiConnectionsHeader))]
     public partial bool ShowAllAiClients { get; set; }
-    public IReadOnlyList<AiConnectionItemViewModel> VisibleAiConnections => AiConnections
-        .Where(connection => ShowAllAiClients || !connection.IsUnsupportedPlatform).ToArray();
+    // Assistants that Context Mole configured, or that need a fix, stay in view. The rest of the
+    // catalog is folded away once one assistant is connected, so Settings is not a wall of rows.
+    public IReadOnlyList<AiConnectionItemViewModel> PrimaryAiConnections => AiConnections
+        .Where(IsPrimaryAiConnection).ToArray();
+    public IReadOnlyList<AiConnectionItemViewModel> OtherAiConnections => AiConnections
+        .Where(connection => !IsPrimaryAiConnection(connection) && (ShowAllAiClients || !connection.IsUnsupportedPlatform))
+        .ToArray();
+    public bool HasPrimaryAiConnections => AiConnections.Any(IsPrimaryAiConnection);
+    public string OtherAiConnectionsHeader => HasPrimaryAiConnections
+        ? $"Connect another assistant ({OtherAiConnections.Count})"
+        : $"Choose an assistant to connect ({OtherAiConnections.Count})";
+    private bool? _otherAiConnectionsExpandedByUser;
+    public bool IsOtherAiConnectionsExpanded
+    {
+        get => _otherAiConnectionsExpandedByUser ?? !HasPrimaryAiConnections;
+        set
+        {
+            if (value == IsOtherAiConnectionsExpanded) return;
+            _otherAiConnectionsExpandedByUser = value;
+            OnPropertyChanged();
+        }
+    }
+    private static bool IsPrimaryAiConnection(AiConnectionItemViewModel connection) =>
+        connection.HasManagedConfiguration || connection.NeedsAttention;
     public bool HasActiveIndexingItems => ActiveIndexingItems.Count > 0;
     public string AiConnectionsStatusLabel
     {
@@ -1212,7 +1235,11 @@ internal partial class MainViewModel : ViewModelBase
         OnPropertyChanged(nameof(AiConnectionsStatusTone));
         OnPropertyChanged(nameof(ConnectedAssistantsSummary));
         OnPropertyChanged(nameof(HasConnectedAssistants));
-        OnPropertyChanged(nameof(VisibleAiConnections));
+        OnPropertyChanged(nameof(PrimaryAiConnections));
+        OnPropertyChanged(nameof(OtherAiConnections));
+        OnPropertyChanged(nameof(HasPrimaryAiConnections));
+        OnPropertyChanged(nameof(OtherAiConnectionsHeader));
+        OnPropertyChanged(nameof(IsOtherAiConnectionsExpanded));
     }
 
     private void SortAiConnections()

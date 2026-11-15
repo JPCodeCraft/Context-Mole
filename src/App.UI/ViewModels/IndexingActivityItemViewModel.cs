@@ -57,7 +57,7 @@ public sealed class IndexingActivityItemViewModel : ViewModelBase
     private static string StageName(IndexingActivitySnapshot activity) => activity.Stage switch
     {
         IndexingPipelineStage.InspectingSource => "Opening the file",
-        IndexingPipelineStage.WaitingForCpu => "Waiting for CPU",
+        IndexingPipelineStage.WaitingForCpu => "Waiting for CPU or memory",
         IndexingPipelineStage.Hashing => "Checking for changes",
         IndexingPipelineStage.PreparingRevision => "Preparing",
         IndexingPipelineStage.ExtractingContent => "Reading text, attachments and scans",

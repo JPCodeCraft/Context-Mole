@@ -34,7 +34,7 @@
         </StackPanel>
 
         <Grid Grid.Row="2" ColumnDefinitions="*,Auto" Margin="7,22,0,8">
-          <TextBlock Text="Projects" Classes="eyebrow" VerticalAlignment="Center" />
+          <TextBlock Text="Your projects" Classes="eyebrow" VerticalAlignment="Center" />
           <Button Grid.Column="1" Classes="ghost sidebarAdd" Content="+" Click="AddProject"
                   IsEnabled="{Binding CanRunProjectAction}"
                   ToolTip.Tip="Add project" AutomationProperties.Name="Add project" />

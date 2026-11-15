@@ -13,7 +13,7 @@ internal static partial class OcrPresentation
     public static string StatusMessage(bool preparing, bool available, string? reason) =>
         !string.IsNullOrWhiteSpace(reason) ? reason
         : preparing ? "Preparing local OCR files…"
-        : available ? "OCR files are ready. The model loads only when a scanned document or image needs it."
+        : available ? "Ready. The OCR model loads only when a scanned page or image needs it."
         : "OCR could not be prepared. Check your connection and try again.";
 
     public static double? DownloadPercent(string message)
