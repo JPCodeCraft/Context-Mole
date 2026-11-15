@@ -6,6 +6,7 @@ using ContextMole.Core;
 using ContextMole.Search;
 using ContextMole.Storage;
 
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Hosting;
 
 namespace ContextMole.Tests;
@@ -163,6 +164,54 @@ public sealed class EvidenceStorageRegressionTests
             BrokerToolMethods.ReadPassages, payload, DateTimeOffset.UtcNow.AddSeconds(10)), Token);
         Assert.True(response.GetProperty("index_changed_since_search").GetBoolean());
         Assert.Equal("falcon evidence", response.GetProperty("passages")[0].GetProperty("text").GetString());
+    }
+
+    [Fact]
+    public async Task JobHistoryPruningKeepsEachDocumentsNewestJobAndRun()
+    {
+        await using var database = await StorageTestDatabase.CreateAsync(Token);
+        var (project, folder) = await database.CreateProjectAsync("History", Token);
+        var path = Path.Combine(database.Paths.SourceDirectory, "history.txt");
+        await File.WriteAllTextAsync(path, "history evidence", Token);
+        var pending = await database.ObserveAndLeaseAsync(project, folder, path, false, Token);
+        await database.CommitAsync(pending.Job, pending.Sha256, pending.File.Length,
+            new DateTimeOffset(pending.File.LastWriteTimeUtc, TimeSpan.Zero), "history evidence", false,
+            cancellationToken: Token);
+        for (var round = 0; round < 3; round++)
+        {
+            await database.Writer.RequestReindexAsync(project, Token);
+            var job = await database.Writer.LeaseNextJobAsync(TimeSpan.FromMinutes(1), Token);
+            Assert.NotNull(job);
+            await database.CommitAsync(job!, pending.Sha256, pending.File.Length,
+                new DateTimeOffset(pending.File.LastWriteTimeUtc, TimeSpan.Zero), $"history evidence {round}", false,
+                cancellationToken: Token);
+        }
+        var lastCompleted = Assert.Single(await database.Store.ListProjectsAsync(Token)).LastCompletedUtc;
+
+        await using var connection = new SqliteConnection($"Data Source={database.Paths.DatabasePath}");
+        await connection.OpenAsync(Token);
+        Assert.Equal(4L, await CountAsync(connection, "SELECT COUNT(*) FROM index_jobs;"));
+        var newest = await ScalarTextAsync(connection, "SELECT id FROM index_jobs ORDER BY updated_utc DESC,id DESC LIMIT 1;");
+
+        var deleted = await DatabaseWriterService.PruneJobHistoryAsync(connection, project, Token);
+
+        Assert.Equal(3, deleted);
+        Assert.Equal(1L, await CountAsync(connection, "SELECT COUNT(*) FROM index_jobs;"));
+        Assert.Equal(newest, await ScalarTextAsync(connection, "SELECT id FROM index_jobs;"));
+        Assert.Equal(4L, await CountAsync(connection, "SELECT COUNT(*) FROM index_runs;"));
+        Assert.Equal(lastCompleted, Assert.Single(await database.Store.ListProjectsAsync(Token)).LastCompletedUtc);
+        Assert.Equal(0, await DatabaseWriterService.PruneJobHistoryAsync(connection, project, Token));
+
+        static async Task<long> CountAsync(SqliteConnection connection, string sql) =>
+            Convert.ToInt64(await ScalarAsync(connection, sql));
+        static async Task<string?> ScalarTextAsync(SqliteConnection connection, string sql) =>
+            (string?)await ScalarAsync(connection, sql);
+        static async Task<object?> ScalarAsync(SqliteConnection connection, string sql)
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = sql;
+            return await command.ExecuteScalarAsync(Token);
+        }
     }
 
     private sealed class NoopLifetime : IHostApplicationLifetime

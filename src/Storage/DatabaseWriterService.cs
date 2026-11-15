@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
@@ -67,6 +68,7 @@ public sealed partial class DatabaseWriterService : BackgroundService, IIndexWri
             await Schema.MigrateAsync(connection, _logger, stoppingToken).ConfigureAwait(false);
             _logger.LogInformation("Database ready at {DatabasePath}, schema version {SchemaVersion}", _paths.DatabasePath, Schema.CurrentVersion);
             _ready.TrySetResult();
+            await PruneJobHistoryForMaintenanceAsync(connection, null, stoppingToken).ConfigureAwait(false);
 
             await foreach (var command in _commands.Reader.ReadAllAsync(CancellationToken.None).ConfigureAwait(false))
             {
@@ -660,6 +662,8 @@ public sealed partial class DatabaseWriterService : BackgroundService, IIndexWri
     {
         var reconciliation = await EnqueueAsync(async (connection, token) =>
         {
+            if (ShouldPruneJobHistory(projectId))
+                await PruneJobHistoryForMaintenanceAsync(connection, projectId, token).ConfigureAwait(false);
             string? rootPath;
             await using (var folder = connection.CreateCommand())
             {
@@ -1660,6 +1664,67 @@ public sealed partial class DatabaseWriterService : BackgroundService, IIndexWri
                ($semantic=0 AND attempt>0 AND code<>'embedding_refresh_failed'));
         """,
         [new("$project", projectId.ToString()), new("$document", documentId.ToString()), new("$semantic", semanticOnly ? 1 : 0)], cancellationToken);
+
+    /// <summary>Completed index_runs rows kept per project; only the newest completion time is read.</summary>
+    internal const int RetainedRunsPerProject = 1000;
+    private static readonly TimeSpan JobHistoryPruneInterval = TimeSpan.FromHours(1);
+    private readonly ConcurrentDictionary<Guid, DateTimeOffset> _lastJobHistoryPrune = new();
+
+    private bool ShouldPruneJobHistory(Guid projectId)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var last = _lastJobHistoryPrune.GetOrAdd(projectId, DateTimeOffset.MinValue);
+        return now - last >= JobHistoryPruneInterval && _lastJobHistoryPrune.TryUpdate(projectId, now, last);
+    }
+
+    private async Task PruneJobHistoryForMaintenanceAsync(SqliteConnection connection, Guid? projectId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var deleted = await PruneJobHistoryAsync(connection, projectId, cancellationToken).ConfigureAwait(false);
+            if (deleted > 0)
+                _logger.LogInformation("Pruned {Count} finished index job and run records", deleted);
+        }
+        catch (Exception exception) when (exception is SqliteException or InvalidOperationException)
+        {
+            // Maintenance must never stop the writer; the rows are retried at the next opportunity.
+            _logger.LogWarning(exception, "Finished index job history could not be pruned");
+        }
+    }
+
+    /// <summary>
+    /// Deletes finished index_jobs rows that a newer job for the same document has replaced, and all but the newest
+    /// <see cref="RetainedRunsPerProject"/> index_runs rows per project. Queries only read each document's newest
+    /// job (open jobs first) and each project's newest completed run, so their results are unchanged.
+    /// </summary>
+    internal static async Task<int> PruneJobHistoryAsync(SqliteConnection connection, Guid? projectId,
+        CancellationToken cancellationToken)
+    {
+        using var transaction = connection.BeginTransaction();
+        var project = (object?)projectId?.ToString() ?? DBNull.Value;
+        var deleted = await ExecuteAsync(connection, transaction,
+            """
+            DELETE FROM index_jobs WHERE id IN (
+              SELECT id FROM (
+                SELECT id,state,
+                  ROW_NUMBER() OVER (PARTITION BY document_id ORDER BY updated_utc DESC,id DESC) AS job_rank
+                FROM index_jobs WHERE $project IS NULL OR project_id=$project)
+              WHERE job_rank>1 AND state NOT IN ('queued','retry_wait','running'));
+            """, [new("$project", project)], cancellationToken).ConfigureAwait(false);
+        deleted += await ExecuteAsync(connection, transaction,
+            """
+            DELETE FROM index_runs WHERE id IN (
+              SELECT id FROM (
+                SELECT id,
+                  ROW_NUMBER() OVER (PARTITION BY project_id ORDER BY completed_utc DESC,id DESC) AS run_rank
+                FROM index_runs WHERE $project IS NULL OR project_id=$project)
+              WHERE run_rank>$retained);
+            """, [new("$project", project), new("$retained", RetainedRunsPerProject)], cancellationToken)
+            .ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return deleted;
+    }
 
     private static async Task<int> ExecuteAsync(SqliteConnection connection, SqliteTransaction? transaction, string sql,
         IReadOnlyList<SqliteParameter> parameters, CancellationToken cancellationToken)
