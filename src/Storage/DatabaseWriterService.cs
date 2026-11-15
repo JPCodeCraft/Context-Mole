@@ -628,14 +628,10 @@ public sealed partial class DatabaseWriterService : BackgroundService, IIndexWri
                         """,
                         [new("$path", canonicalNew), new("$filename", newName),
                          new("$revision", revision.ToString())], token).ConfigureAwait(false);
-                    await ExecuteAsync(connection, transaction,
-                        "INSERT INTO passages_fts(rowid,body_text,title,heading,filename,path,content_name,sheet,email_subject) SELECT rowid,lexical(body_text),lexical(title),lexical(heading),lexical(filename),lexical(path),lexical(content_name),lexical(sheet),lexical(email_subject) FROM passages WHERE revision_id=$revision;",
-                        [new("$revision", revision.ToString())], token).ConfigureAwait(false);
+                    await InsertPassageFtsRevisionAsync(connection, transaction, revision, token).ConfigureAwait(false);
                     await InsertSectionFtsRevisionAsync(connection, transaction, revision, token).ConfigureAwait(false);
                 }
-                await ExecuteAsync(connection, transaction,
-                    "UPDATE projects SET search_generation=search_generation+1,updated_utc=$now WHERE id=$project;",
-                    [new("$now", now), new("$project", projectId.ToString())], token).ConfigureAwait(false);
+                await AdvanceSearchGenerationAsync(connection, transaction, projectId, now, token).ConfigureAwait(false);
                 if (documentId is { } renamedDocument)
                 {
                     await RefreshIssueRootIdentityAsync(connection, transaction, projectId, renamedDocument, canonicalNew, token).ConfigureAwait(false);
@@ -889,13 +885,9 @@ public sealed partial class DatabaseWriterService : BackgroundService, IIndexWri
                     if (renameCandidates[0].Tombstoned)
                         await ExecuteAsync(connection, transaction, "UPDATE document_revisions SET status='active' WHERE id=$revision;",
                             [new("$revision", preservedRevision.ToString())], token).ConfigureAwait(false);
-                    await ExecuteAsync(connection, transaction,
-                        "INSERT INTO passages_fts(rowid,body_text,title,heading,filename,path,content_name,sheet,email_subject) SELECT rowid,lexical(body_text),lexical(title),lexical(heading),lexical(filename),lexical(path),lexical(content_name),lexical(sheet),lexical(email_subject) FROM passages WHERE revision_id=$revision;",
-                        [new("$revision", preservedRevision.ToString())], token).ConfigureAwait(false);
+                    await InsertPassageFtsRevisionAsync(connection, transaction, preservedRevision, token).ConfigureAwait(false);
                     await InsertSectionFtsRevisionAsync(connection, transaction, preservedRevision, token).ConfigureAwait(false);
-                    await ExecuteAsync(connection, transaction,
-                        "UPDATE projects SET search_generation=search_generation+1,updated_utc=$now WHERE id=$project;",
-                        [new("$now", now), new("$project", job.ProjectId.ToString())], token).ConfigureAwait(false);
+                    await AdvanceSearchGenerationAsync(connection, transaction, job.ProjectId, now, token).ConfigureAwait(false);
                     long preservedEpoch;
                     await using (var preserved = connection.CreateCommand())
                     {
@@ -1077,9 +1069,7 @@ public sealed partial class DatabaseWriterService : BackgroundService, IIndexWri
                 "UPDATE documents SET active_revision_id=$revision,sha256=$sha,size=$size,modified_utc=$modified,available=1,updated_utc=$now WHERE id=$document;",
                 [new("$revision", request.RevisionId.ToString()), new("$sha", request.Sha256), new("$size", request.Size),
                  new("$modified", request.ModifiedUtc.ToString("O")), new("$now", now), new("$document", request.DocumentId.ToString())], token).ConfigureAwait(false);
-            await ExecuteAsync(connection, transaction,
-                "INSERT INTO passages_fts(rowid,body_text,title,heading,filename,path,content_name,sheet,email_subject) SELECT rowid,lexical(body_text),lexical(title),lexical(heading),lexical(filename),lexical(path),lexical(content_name),lexical(sheet),lexical(email_subject) FROM passages WHERE revision_id=$revision;",
-                [new("$revision", request.RevisionId.ToString())], token).ConfigureAwait(false);
+            await InsertPassageFtsRevisionAsync(connection, transaction, request.RevisionId, token).ConfigureAwait(false);
             foreach (var section in request.Sections.Count > 0 ? request.Sections :
                 request.Passages.Select(p => new SectionDraft(p.SectionId ?? p.Id, p.ContentId, p.Ordinal,
                     p.DisplayText, p.Heading, [], "block", p.Location)).DistinctBy(s => s.Id).ToArray())
@@ -1093,9 +1083,7 @@ public sealed partial class DatabaseWriterService : BackgroundService, IIndexWri
                      new("$kind", section.Kind), new("$location", JsonSerializer.Serialize(section.Location, StorageJsonOptions))], token).ConfigureAwait(false);
             }
             await InsertSectionFtsRevisionAsync(connection, transaction, request.RevisionId, token).ConfigureAwait(false);
-            await ExecuteAsync(connection, transaction,
-                "UPDATE projects SET search_generation=search_generation+1,updated_utc=$now WHERE id=$project;",
-                [new("$now", now), new("$project", request.ProjectId.ToString())], token).ConfigureAwait(false);
+            await AdvanceSearchGenerationAsync(connection, transaction, request.ProjectId, now, token).ConfigureAwait(false);
             await ExecuteAsync(connection, transaction,
                 "UPDATE index_jobs SET state='completed',lease_until_utc=NULL,last_error=NULL,updated_utc=$now WHERE id=$job;",
                 [new("$now", now), new("$job", request.JobId.ToString())], token).ConfigureAwait(false);
@@ -1270,9 +1258,7 @@ public sealed partial class DatabaseWriterService : BackgroundService, IIndexWri
             await ExecuteAsync(connection, transaction,
                 "UPDATE document_revisions SET embedding_policy_json=$policy WHERE id=$revision AND status='active';",
                 [new("$policy", policyJson), new("$revision", request.RevisionId.ToString())], token).ConfigureAwait(false);
-            await ExecuteAsync(connection, transaction,
-                "UPDATE projects SET search_generation=search_generation+1,updated_utc=$now WHERE id=$project;",
-                [new("$now", now), new("$project", request.ProjectId.ToString())], token).ConfigureAwait(false);
+            await AdvanceSearchGenerationAsync(connection, transaction, request.ProjectId, now, token).ConfigureAwait(false);
             await ExecuteAsync(connection, transaction,
                 "UPDATE index_jobs SET state='completed',lease_until_utc=NULL,last_error=NULL,updated_utc=$now WHERE id=$job;",
                 [new("$now", now), new("$job", request.JobId.ToString())], token).ConfigureAwait(false);
@@ -1433,9 +1419,7 @@ public sealed partial class DatabaseWriterService : BackgroundService, IIndexWri
         {
             await ExecuteAsync(connection, transaction, "UPDATE document_revisions SET status='superseded' WHERE id=$id;",
                 [new("$id", revisionId.Value.ToString())], cancellationToken).ConfigureAwait(false);
-            await ExecuteAsync(connection, transaction,
-                "UPDATE projects SET search_generation=search_generation+1,updated_utc=$now WHERE id=$project;",
-                [new("$now", now), new("$project", projectId.ToString())], cancellationToken).ConfigureAwait(false);
+            await AdvanceSearchGenerationAsync(connection, transaction, projectId, now, cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -1531,6 +1515,21 @@ public sealed partial class DatabaseWriterService : BackgroundService, IIndexWri
             "DELETE FROM passages_fts WHERE rowid IN (SELECT rowid FROM passages WHERE revision_id=$revision); DELETE FROM sections_fts WHERE rowid IN (SELECT rowid FROM sections WHERE revision_id=$revision);",
             [new("$revision", revisionId.ToString())], cancellationToken).ConfigureAwait(false);
     }
+
+    /// <summary>Marks the project's searchable content as changed so cached vector snapshots and continuations notice.</summary>
+    private static Task<int> AdvanceSearchGenerationAsync(SqliteConnection connection, SqliteTransaction transaction,
+        Guid projectId, string now, CancellationToken cancellationToken) => ExecuteAsync(connection, transaction,
+        "UPDATE projects SET search_generation=search_generation+1,updated_utc=$now WHERE id=$project;",
+        [new("$now", now), new("$project", projectId.ToString())], cancellationToken);
+
+    private static Task<int> InsertPassageFtsRevisionAsync(SqliteConnection connection, SqliteTransaction transaction,
+        Guid revisionId, CancellationToken cancellationToken) => ExecuteAsync(connection, transaction,
+        """
+        INSERT INTO passages_fts(rowid,body_text,title,heading,filename,path,content_name,sheet,email_subject)
+        SELECT rowid,lexical(body_text),lexical(title),lexical(heading),lexical(filename),
+               lexical(path),lexical(content_name),lexical(sheet),lexical(email_subject)
+        FROM passages WHERE revision_id=$revision;
+        """, [new("$revision", revisionId.ToString())], cancellationToken);
 
     private static Task<int> InsertSectionFtsRevisionAsync(SqliteConnection connection, SqliteTransaction transaction,
         Guid revisionId, CancellationToken cancellationToken) => ExecuteAsync(connection, transaction,
