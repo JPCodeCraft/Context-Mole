@@ -165,7 +165,7 @@ public sealed partial class ContentMaterializationService(
     {
         if (ordinal < 0)
             return null;
-        var format = SupportedContent.Resolve(containerName, containerMimeType);
+        var format = ContentFormatDetection.Resolve(containerBytes, containerName, containerMimeType);
         return format?.Kind switch
         {
             ContentFormatKind.Pdf => ExtractPdfChild(containerBytes, ordinal),
