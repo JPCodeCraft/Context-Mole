@@ -246,8 +246,9 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
             }
         }
         var heading = new HeadingContext();
+        var headingProfile = PdfHeadings(pageBlocks.Values);
         foreach (var page in pageBlocks)
-            AddPdfSections(sections, page.Value, page.Key, heading);
+            AddPdfSections(sections, page.Value, page.Key, heading, headingProfile);
         MarkRepeatedPdfMargins(sections);
 
         if (pdf.Advanced.TryGetEmbeddedFiles(out var embeddedFiles))
