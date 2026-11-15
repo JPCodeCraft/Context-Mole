@@ -110,6 +110,11 @@ public partial class App : Application
             }
             desktop.MainWindow = window;
             ConfigureTray(window);
+            window.PropertyChanged += (_, change) =>
+            {
+                if (change.Property == Visual.IsVisibleProperty || change.Property == Window.WindowStateProperty)
+                    viewModel.SetWindowVisible(window.IsVisible && window.WindowState != WindowState.Minimized);
+            };
             if (Program.LaunchInBackground && _trayIcon is not null)
             {
                 EventHandler? hideInitialWindow = null;

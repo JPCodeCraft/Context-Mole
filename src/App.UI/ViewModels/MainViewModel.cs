@@ -45,6 +45,12 @@ internal partial class MainViewModel : ViewModelBase
     private DateTimeOffset _nextAiRefreshUtc = DateTimeOffset.MinValue;
     private CancellationTokenSource? _polling;
     private Task? _pollingTask;
+    private static readonly TimeSpan VisiblePollInterval = TimeSpan.FromMilliseconds(250);
+    /// <summary>While the window is hidden in the tray, only project summaries refresh, at this slower cadence.</summary>
+    internal static readonly TimeSpan HiddenPollInterval = TimeSpan.FromSeconds(15);
+    private volatile bool _windowVisible = true;
+    private int _summaryRefreshRequested;
+    private PeriodicTimer? _pollTimer;
     private bool? _reportedOcrAvailable;
     private string? _reportedOcrMessage;
     private bool _hasAnyActiveIndexingItems;
@@ -559,6 +565,24 @@ internal partial class MainViewModel : ViewModelBase
         }
     }
 
+    /// <summary>
+    /// Tells polling whether anyone can see the window. Hidden or minimized, the 250 ms activity refresh stops and
+    /// summaries refresh every 15 seconds; showing the window again refreshes on the next tick.
+    /// </summary>
+    public void SetWindowVisible(bool visible)
+    {
+        if (_windowVisible == visible) return;
+        _windowVisible = visible;
+        if (visible) Interlocked.Exchange(ref _summaryRefreshRequested, 1);
+        try
+        {
+            if (_pollTimer is { } timer) timer.Period = visible ? VisiblePollInterval : HiddenPollInterval;
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+    }
+
     public void StartPolling()
     {
         if (_polling is not null) return;
@@ -1004,11 +1028,19 @@ internal partial class MainViewModel : ViewModelBase
                 });
             }
 
-            using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(250));
+            using var timer = new PeriodicTimer(_windowVisible ? VisiblePollInterval : HiddenPollInterval);
+            _pollTimer = timer;
             while (await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
             {
                 try
                 {
+                    if (!_windowVisible)
+                    {
+                        // Nobody can see per-file activity; keep summaries current without waking every 250 ms.
+                        await RefreshAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+                        continue;
+                    }
+                    if (Interlocked.Exchange(ref _summaryRefreshRequested, 0) == 1) summaryTick = 3;
                     await Dispatcher.UIThread.InvokeAsync(() =>
                     {
                         foreach (var project in Projects)
@@ -1035,6 +1067,10 @@ internal partial class MainViewModel : ViewModelBase
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
+        }
+        finally
+        {
+            _pollTimer = null;
         }
     }
 
