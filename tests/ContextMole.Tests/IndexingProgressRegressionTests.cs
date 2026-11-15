@@ -23,12 +23,12 @@ public sealed class IndexingProgressRegressionTests
             Assert.True(project.HasFileTypeCounts);
             Assert.Equal(inventory, project.FileTypeCounts);
             Assert.True(project.HasSemanticCoverageWarning);
-            Assert.NotEqual("CHECKING", project.SemanticIndexStatusLabel);
+            Assert.NotEqual("Checking", project.SemanticIndexStatusLabel);
             Assert.False(project.IsSemanticCoverageComplete);
-            Assert.Contains("Last verified", project.SemanticIndexStatusMessage);
+            Assert.Contains("Updating", project.SemanticIndexStatusMessage);
             project.UpdateSemanticIndex(Coverage(generation, completed + 1), true);
         }
-        Assert.Equal("COMPLETE", project.SemanticIndexStatusLabel);
+        Assert.Equal("Complete", project.SemanticIndexStatusLabel);
         Assert.True(project.IsSemanticCoverageComplete);
         Assert.Equal(inventory, project.FileTypeCounts);
     }
@@ -45,11 +45,11 @@ public sealed class IndexingProgressRegressionTests
         project.BeginSemanticIndexRefresh();
         Assert.True(project.CanRepairSemanticIndex);
         project.FailSemanticIndexRefresh("Storage is busy.");
-        Assert.Equal("UNABLE TO CHECK", project.SemanticIndexStatusLabel);
-        Assert.Contains("Last verified: 20 of 600", project.SemanticIndexStatusMessage);
+        Assert.Equal("Couldn't check", project.SemanticIndexStatusLabel);
+        Assert.Contains("Last result: 20 of 600", project.SemanticIndexStatusMessage);
         Assert.False(project.CanRepairSemanticIndex);
         project.BeginSemanticIndexRefresh(invalidate: true);
-        Assert.Equal("CHECKING", project.SemanticIndexStatusLabel);
+        Assert.Equal("Checking", project.SemanticIndexStatusLabel);
         Assert.DoesNotContain("20 of 600", project.SemanticIndexStatusMessage);
     }
 
@@ -63,26 +63,26 @@ public sealed class IndexingProgressRegressionTests
         first.UpdateSemanticIndex(Coverage(1, 600) with { Policy = policyA }, true);
         second.UpdateSemanticIndex(Coverage(1, 600) with { Policy = policyA }, true);
         first.BeginSemanticIndexRefreshForPolicy(policyB.Key, true);
-        Assert.Equal("CHECKING", first.SemanticIndexStatusLabel);
+        Assert.Equal("Checking", first.SemanticIndexStatusLabel);
         first.UpdateSemanticIndex(Coverage(1, 600) with { Policy = policyB }, true);
         // Selecting another project cannot use the first project's last-success policy cache.
         second.BeginSemanticIndexRefreshForPolicy(policyB.Key, true);
-        Assert.Equal("CHECKING", second.SemanticIndexStatusLabel);
+        Assert.Equal("Checking", second.SemanticIndexStatusLabel);
         Assert.False(second.IsSemanticCoverageComplete);
         Assert.DoesNotContain("600 of 600", second.SemanticIndexStatusMessage);
         first.BeginSemanticIndexRefreshForPolicy(policyB.Key, true);
         Assert.True(first.IsSemanticCoverageComplete);
         first.BeginSemanticIndexRefreshForPolicy(null, false);
-        Assert.Equal("CHECKING", first.SemanticIndexStatusLabel);
+        Assert.Equal("Checking", first.SemanticIndexStatusLabel);
         first.UpdateSemanticIndex(null, false);
-        Assert.Equal("KEYWORD ONLY", first.SemanticIndexStatusLabel);
+        Assert.Equal("Off", first.SemanticIndexStatusLabel);
         for (var poll = 0; poll < 10; poll++)
         {
             first.BeginSemanticIndexRefreshForPolicy(policyB.Key, false);
-            Assert.Equal("KEYWORD ONLY", first.SemanticIndexStatusLabel);
+            Assert.Equal("Off", first.SemanticIndexStatusLabel);
         }
         first.BeginSemanticIndexRefreshForPolicy(policyB.Key, true);
-        Assert.Equal("CHECKING", first.SemanticIndexStatusLabel);
+        Assert.Equal("Checking", first.SemanticIndexStatusLabel);
     }
 
     [Fact]
@@ -99,15 +99,15 @@ public sealed class IndexingProgressRegressionTests
         // A durable snapshot can lag a lease. Runtime progress must not claim no activity.
         Assert.Equal(0, project.ProcessingCount);
         var progress = IndexingProgressPresentation.Create(project, runtime);
-        Assert.Equal("ACTIVE", progress.StatusLabel);
-        Assert.Contains("12 completed jobs this app session", progress.Summary);
-        Assert.Contains("1 in flight", progress.Summary);
-        Assert.Contains("600 queued root files", progress.Summary);
-        Assert.Contains("Last successful job completed", progress.LastCompletion);
+        Assert.Equal("Active", progress.StatusLabel);
+        Assert.Contains("12 jobs finished since Context Mole started", progress.Summary);
+        Assert.Contains("1 running now", progress.Summary);
+        Assert.Contains("600 files waiting", progress.Summary);
+        Assert.Contains("Last job finished", progress.LastCompletion);
         runtime = runtime with { ActiveItems = [], CompletedSampleCount = 13 };
         progress = IndexingProgressPresentation.Create(project, runtime);
-        Assert.Equal("WAITING", progress.StatusLabel);
-        Assert.Contains("13 completed jobs", progress.Summary);
+        Assert.Equal("Waiting", progress.StatusLabel);
+        Assert.Contains("13 jobs finished", progress.Summary);
         Assert.Contains("no file is active right now", progress.IdleMessage);
         Assert.DoesNotContain("stalled", progress.IdleMessage);
     }
@@ -120,14 +120,14 @@ public sealed class IndexingProgressRegressionTests
             IndexingPipelineStage.WaitingForCpu, TimeSpan.Zero, TimeSpan.Zero, null);
         var runtime = new IndexingTimingSnapshot([item], null, 0);
         project.UpdateRuntime(runtime);
-        Assert.Equal("WAITING FOR CPU", IndexingProgressPresentation.Create(project, runtime).StatusLabel);
+        Assert.Equal("Waiting for CPU", IndexingProgressPresentation.Create(project, runtime).StatusLabel);
         Assert.False(new IndexingActivityItemViewModel(item).ShowTimers);
         runtime = runtime with { ActiveItems = [item with { Stage = IndexingPipelineStage.ExtractingContent,
             StartedUtc = DateTimeOffset.UtcNow, Attempt = 1 }] };
-        Assert.Equal("RETRYING", IndexingProgressPresentation.Create(project, runtime).StatusLabel);
+        Assert.Equal("Retrying", IndexingProgressPresentation.Create(project, runtime).StatusLabel);
         project.UpdateFrom(project.ToSummary() with { State = ProjectState.Paused });
-        Assert.Equal("PAUSING", IndexingProgressPresentation.Create(project, runtime).StatusLabel);
-        Assert.Equal("PAUSED", IndexingProgressPresentation.Create(project, runtime with { ActiveItems = [] }).StatusLabel);
+        Assert.Equal("Pausing", IndexingProgressPresentation.Create(project, runtime).StatusLabel);
+        Assert.Equal("Paused", IndexingProgressPresentation.Create(project, runtime with { ActiveItems = [] }).StatusLabel);
     }
 
     [Fact]
@@ -135,17 +135,17 @@ public sealed class IndexingProgressRegressionTests
     {
         var project = new ProjectItemViewModel(Summary(10));
         var runtime = new IndexingTimingSnapshot([], null, 0);
-        Assert.Equal("WAITING", IndexingProgressPresentation.Create(project, runtime).StatusLabel);
-        Assert.Contains("No successful job completion", IndexingProgressPresentation.Create(project, runtime).LastCompletion);
+        Assert.Equal("Waiting", IndexingProgressPresentation.Create(project, runtime).StatusLabel);
+        Assert.Contains("No job has finished", IndexingProgressPresentation.Create(project, runtime).LastCompletion);
         project.UpdateFrom(project.ToSummary() with { State = ProjectState.Paused });
-        Assert.Equal("PAUSED", IndexingProgressPresentation.Create(project, runtime).StatusLabel);
+        Assert.Equal("Paused", IndexingProgressPresentation.Create(project, runtime).StatusLabel);
         project.UpdateFrom(project.ToSummary() with { State = ProjectState.Active, Work = new(10, 10, 0, 0, DateTimeOffset.UtcNow.AddMinutes(5)) });
-        Assert.Equal("RETRY SCHEDULED", IndexingProgressPresentation.Create(project, runtime).StatusLabel);
+        Assert.Equal("Retry scheduled", IndexingProgressPresentation.Create(project, runtime).StatusLabel);
         project.SetFreshness(true, DateTimeOffset.UtcNow);
-        Assert.Equal("STATUS UNAVAILABLE", IndexingProgressPresentation.Create(project, runtime).StatusLabel);
+        Assert.Equal("Status unavailable", IndexingProgressPresentation.Create(project, runtime).StatusLabel);
         project.SetFreshness(false, DateTimeOffset.UtcNow);
         project.UpdateFrom(project.ToSummary() with { PendingCount = 0, ReadyCount = 10, Work = new(0, 0, 0, 0, null) });
-        Assert.Equal("IDLE", IndexingProgressPresentation.Create(project, runtime).StatusLabel);
+        Assert.Equal("Idle", IndexingProgressPresentation.Create(project, runtime).StatusLabel);
     }
 
     private static ProjectSummary Summary(int total) => new(Guid.NewGuid(), "Repair fixture", ProjectState.Active,

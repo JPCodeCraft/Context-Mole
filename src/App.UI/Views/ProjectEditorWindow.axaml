@@ -6,22 +6,22 @@
         Icon="/Assets/context-mole.ico">
   <Grid RowDefinitions="Auto,*,Auto,Auto" Margin="26">
     <StackPanel Spacing="5" Margin="0,0,0,18">
-      <TextBlock Text="Project details" Classes="pageTitle" />
-      <TextBlock Text="Give the index a clear name and choose the folders it should watch."
+      <TextBlock x:Name="EditorTitle" Text="Add project" Classes="pageTitle" />
+      <TextBlock Text="Name the project and choose the folders your assistant should be able to search."
                  Classes="muted" TextWrapping="Wrap" />
     </StackPanel>
 
     <Border x:Name="EditorForm" Grid.Row="1" Classes="card">
       <Grid RowDefinitions="Auto,Auto,Auto,*">
-        <TextBlock Text="PROJECT NAME" Classes="eyebrow" />
+        <TextBlock Text="Name" Classes="fieldLabel" />
         <TextBox x:Name="ProjectNameBox" Grid.Row="1" Margin="0,7,0,18"
                  PlaceholderText="e.g. Client research" TextChanged="ProjectNameChanged"
                  AutomationProperties.Name="Project name" AutomationProperties.HelpText="Use 1 to 120 characters." />
 
         <Grid Grid.Row="2" ColumnDefinitions="*,Auto,Auto" Margin="0,0,0,8">
           <StackPanel Spacing="2">
-            <TextBlock Text="FOLDERS" Classes="eyebrow" />
-            <TextBlock Text="Removing a folder also removes its saved search evidence when you save. Original files are untouched."
+            <TextBlock Text="Folders" Classes="fieldLabel" />
+            <TextBlock Text="Subfolders are included. Original files are never changed."
                        TextWrapping="Wrap" Classes="quiet" FontSize="12" />
           </StackPanel>
           <Button Grid.Column="1" Classes="compact" Content="Add folders" Click="AddFolders" Margin="8,0" />
@@ -29,9 +29,13 @@
                   Content="Remove" Click="RemoveFolder" IsEnabled="False" />
         </Grid>
 
-        <ListBox x:Name="FoldersList" Grid.Row="3" Classes="folderPicker"
-                 AutomationProperties.Name="Folders to index"
-                 SelectionChanged="FolderSelectionChanged" />
+        <Panel Grid.Row="3">
+          <ListBox x:Name="FoldersList" Classes="folderPicker"
+                   AutomationProperties.Name="Folders to index"
+                   SelectionChanged="FolderSelectionChanged" />
+          <TextBlock x:Name="NoFoldersHint" Text="No folders yet. Choose Add folders to pick one or more."
+                     Classes="quiet" HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False" />
+        </Panel>
       </Grid>
     </Border>
 
@@ -41,7 +45,7 @@
 
     <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
       <Button x:Name="CancelButton" Classes="ghost" Content="Cancel" Click="Cancel" IsCancel="True" />
-      <Button x:Name="SaveButton" Classes="primary" Content="Save project" Click="Save" IsDefault="True" />
+      <Button x:Name="SaveButton" Classes="primary" Content="Add project" Click="Save" IsDefault="True" />
     </StackPanel>
   </Grid>
 
