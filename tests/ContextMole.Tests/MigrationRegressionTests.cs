@@ -50,6 +50,21 @@ public sealed partial class MigrationRegressionTests
         }
         Assert.DoesNotContain(repeatedLog.Entries, entry => entry.Message.StartsWith("Applying database migration", StringComparison.Ordinal));
         Assert.Contains(repeatedLog.Entries, entry => entry.Message.Contains("already current", StringComparison.Ordinal));
+
+        // An existing index is snapshotted once, at its old schema, before it is upgraded.
+        var backups = Path.Combine(Path.GetDirectoryName(paths.DatabasePath)!, "backups");
+        if (version == 0)
+        {
+            Assert.False(Directory.Exists(backups));
+            return;
+        }
+        var backup = Assert.Single(Directory.GetFiles(backups, "*.db"));
+        Assert.Contains($"-v{version}-before-v9-", Path.GetFileName(backup), StringComparison.Ordinal);
+        await using var snapshot = new SqliteConnection($"Data Source={backup};Mode=ReadOnly;Pooling=False");
+        await snapshot.OpenAsync(Token);
+        await using var command = snapshot.CreateCommand();
+        command.CommandText = "SELECT MAX(version) FROM schema_migrations;";
+        Assert.Equal((long)version, Convert.ToInt64(await command.ExecuteScalarAsync(Token)));
     }
 
     [Fact]
