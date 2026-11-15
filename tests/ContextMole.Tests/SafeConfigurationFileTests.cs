@@ -26,6 +26,30 @@ public sealed class SafeConfigurationFileTests
     }
 
     [Fact]
+    public async Task SuccessfulUpdatesKeepOnlyTheNewestRoutineBackups()
+    {
+        using var folder = new TemporaryFolder();
+        var target = Path.Combine(folder.Path, "mcp.json");
+        await File.WriteAllTextAsync(target, "version-0", TestContext.Current.CancellationToken);
+        // A preserved competing save from an earlier failure is never pruned.
+        var preserved = Path.Combine(folder.Path, "mcp.json.contextmole-20200101-000000000-preserved.bak");
+        await File.WriteAllTextAsync(preserved, "competing", TestContext.Current.CancellationToken);
+
+        for (var version = 1; version <= 5; version++)
+            await SafeConfigurationFile.WriteAsync(target, $"version-{version - 1}", $"version-{version}",
+                "test configuration", TestContext.Current.CancellationToken);
+
+        Assert.Equal("version-5", await File.ReadAllTextAsync(target, TestContext.Current.CancellationToken));
+        var routine = Directory.GetFiles(folder.Path, "mcp.json.contextmole-previous-*.bak");
+        Assert.Equal(SafeConfigurationFile.RetainedRoutineBackups, routine.Length);
+        var contents = new List<string>();
+        foreach (var backup in routine)
+            contents.Add(await File.ReadAllTextAsync(backup, TestContext.Current.CancellationToken));
+        Assert.Equal(["version-2", "version-3", "version-4"], contents.Order());
+        Assert.True(File.Exists(preserved));
+    }
+
+    [Fact]
     public async Task FinalReadRaceRetainsActualCompetingSaveAndReportsAppliedUpdate()
     {
         using var folder = new TemporaryFolder();
