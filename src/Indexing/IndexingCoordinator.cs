@@ -21,8 +21,16 @@ public sealed class IndexingCoordinator(
     EmbeddingPolicyRefreshTracker policyRefreshes,
     IGlobalCpuBudget cpuBudget,
     ILogger<IndexingCoordinator> logger,
-    SourceMemoryAdmission? sourceMemory = null) : BackgroundService, IProjectIndexingControl
+    SourceMemoryAdmission? sourceMemory) : BackgroundService, IProjectIndexingControl
 {
+    /// <summary>Kept so dependency injection and existing callers use the process-wide memory admission default.</summary>
+    public IndexingCoordinator(IIndexWriter writer, ISearchStore searchStore, IAppPaths paths, IDocumentExtractor extractor,
+        IEmbeddingGenerator embeddings, IndexingActivityTracker activities, EmbeddingPolicyRefreshTracker policyRefreshes,
+        IGlobalCpuBudget cpuBudget, ILogger<IndexingCoordinator> logger)
+        : this(writer, searchStore, paths, extractor, embeddings, activities, policyRefreshes, cpuBudget, logger, sourceMemory: null)
+    {
+    }
+
     private static readonly TimeSpan ReconciliationInterval = TimeSpan.FromMinutes(15);
     private static readonly TimeSpan DebounceInterval = TimeSpan.FromSeconds(1);
     private const int ChunkTargetTokens = 384;
