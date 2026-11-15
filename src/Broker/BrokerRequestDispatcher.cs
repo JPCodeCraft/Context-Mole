@@ -23,8 +23,11 @@ public sealed class BrokerRequestDispatcher(
     private readonly BrokerSearchRuntimeManager _searchRuntime = searchRuntime;
     private readonly BrokerActivityTracker _activity = activity;
     private readonly IHostApplicationLifetime _applicationLifetime = applicationLifetime;
+    // Separate gates keep indexer embedding traffic from occupying the slots that AI clients' tool calls need.
+    // Embedding inference is serialized inside the generator, so these slots only bound how many indexer calls wait.
     private readonly SemaphoreSlim _ordinaryReads = new(8, 8);
     private readonly SemaphoreSlim _materializations = new(2, 2);
+    private readonly SemaphoreSlim _embeddingRequests = new(8, 8);
     private readonly SearchSessionCache _searchSessions = new(timeProvider ?? TimeProvider.System);
 
     public async Task<JsonElement> DispatchAsync(BrokerRpcRequest request, CancellationToken cancellationToken)
@@ -41,9 +44,13 @@ public sealed class BrokerRequestDispatcher(
             return Serialize(new { accepted = true });
         }
 
-        var gate = request.Method == BrokerToolMethods.MaterializeContent
-            ? _materializations
-            : _ordinaryReads;
+        var gate = request.Method switch
+        {
+            BrokerToolMethods.MaterializeContent => _materializations,
+            BrokerProtocol.EmbeddingPassagesMethod or BrokerProtocol.EmbeddingQueryMethod or
+                BrokerProtocol.EmbeddingCountTokensMethod or BrokerProtocol.EmbeddingReloadMethod => _embeddingRequests,
+            _ => _ordinaryReads
+        };
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
