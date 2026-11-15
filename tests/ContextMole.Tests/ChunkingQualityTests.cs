@@ -32,6 +32,8 @@ public sealed class ChunkingQualityTests
         // A row with a different cell count cannot be paired by position and keeps plain values.
         Assert.Equal("State: Kerala; n: 2400; Illiterate: 7.2.\nTotal; 9999.",
             TableSemantics.Linearize(table, header, cellReferences: false));
+        // A spreadsheet row or chunk holding only the header still embeds the column names.
+        Assert.Equal("State; n; Illiterate.", TableSemantics.Linearize("State\tn\tIlliterate", header, cellReferences: false));
     }
 
     [Theory]

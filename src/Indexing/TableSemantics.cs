@@ -42,12 +42,13 @@ public static partial class TableSemantics
 
     /// <summary>
     /// Rewrites TSV rows as "Column: value" pairs. Rows whose cells cannot be matched to the
-    /// header by position or by spreadsheet column keep their plain values; the header row
-    /// itself is left out.
+    /// header by position or by spreadsheet column keep their plain values. The header row
+    /// itself is left out unless it is the only row.
     /// </summary>
     public static string Linearize(string body, Header header, bool cellReferences)
     {
         var output = new List<string>();
+        string? headerRowText = null;
         foreach (var row in body.Split('\n'))
         {
             if (row.Trim().Length == 0) continue;
@@ -66,9 +67,14 @@ public static partial class TableSemantics
                 headerRow &= isName;
                 values.Add(string.IsNullOrEmpty(name) || isName ? value : $"{name}: {value}");
             }
+            if (values.Count == 0) continue;
+            var text = string.Join("; ", values) + ".";
             // The header row itself is already the "Table headers" context line.
-            if (values.Count > 0 && !headerRow) output.Add(string.Join("; ", values) + ".");
+            if (headerRow) headerRowText ??= text;
+            else output.Add(text);
         }
+        // A chunk or spreadsheet row that holds only the header still embeds the column names.
+        if (output.Count == 0 && headerRowText is not null) output.Add(headerRowText);
         return string.Join('\n', output);
     }
 
