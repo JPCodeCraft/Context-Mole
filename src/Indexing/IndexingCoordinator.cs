@@ -1278,7 +1278,9 @@ public sealed partial class IndexingCoordinator(
                 var previous = result[^1];
                 var previousWords = CountWords(previous.Text);
                 var words = CountWords(item.Text);
-                if (CanMerge(section) && previousWords + words <= MergedSectionMaximumWords && previous.Boundary == boundary &&
+                if (CanMerge(section) && previousWords + words <= MergedSectionMaximumWords &&
+                    (IsWordParagraph(section.Location) || Math.Min(previousWords, words) <= MergedFragmentMaximumWords) &&
+                    previous.Boundary == boundary &&
                     previous.Section.SectionKey == section.SectionKey && previous.Section.IsBoilerplate == section.IsBoilerplate &&
                     previous.Section.Method == section.Method &&
                     string.Equals(previous.Section.Heading, section.Heading, StringComparison.Ordinal))
@@ -1305,12 +1307,19 @@ public sealed partial class IndexingCoordinator(
             value.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).Length;
     }
 
-    // Matches the Word paragraph policy: neighbouring flow blocks under one heading share a
-    // passage, so a label stays with its value and a list marker with its item.
+    // Neighbouring flow blocks under one heading share a passage, so a label stays with its value
+    // and a list marker with its item. Word paragraphs merge up to the cap. Layout and markup blocks
+    // (PDF, OCR, HTML) merge only while one side is a fragment: two full paragraphs keep separate
+    // passages, because their combined embedding matched specific questions less well
+    // (full ViDoRe v3 HR, semantic Recall@5 0.364 with whole-paragraph merging vs 0.383).
     private const int MergedSectionMaximumWords = 256;
+    private const int MergedFragmentMaximumWords = 32;
 
     private static string CanonicalSectionText(ExtractedSection section) =>
         TextNormalization.ForDisplay(section.Text, preserveTableWhitespace: TableBoundary(section.Location) is not null);
+
+    private static bool IsWordParagraph(SourceLocation location) => location.Kind == LocationKind.Structure &&
+        location.StructurePath?.StartsWith("document/paragraph[", StringComparison.Ordinal) == true;
 
     private static bool CanMerge(ExtractedSection section) => TableBoundary(section.Location) is null && section.Location.Kind switch
     {

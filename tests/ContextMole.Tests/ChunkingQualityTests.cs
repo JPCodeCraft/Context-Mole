@@ -189,6 +189,28 @@ public sealed class ChunkingQualityTests
     }
 
     [Fact]
+    public async Task LayoutBlocksAbsorbFragmentsButFullParagraphsKeepTheirOwnPassage()
+    {
+        string Paragraph(string topic) => string.Join(' ', Enumerable.Range(1, 6)
+            .Select(index => $"The {topic} report gives figure {index} for each member state and year."));
+        var first = Paragraph("employment");
+        var second = Paragraph("migration");
+        ExtractedSection Block(string text, int block) => new(text, new SourceLocation(LocationKind.Page, Page: 1,
+            StructurePath: $"page[1]/block[{block}]", Region: new SourceRegion(0.1, 0.1 * block, 0.8, 0.08)),
+            ExtractionMethod.NativeText, Heading: "Labour market");
+        var root = new ExtractedNode("report.pdf", "application/pdf", "root",
+            [Block("Key figures", 1), Block(first, 2), Block(second, 3), Block("Source: Eurostat", 4)], []);
+
+        var passages = await Chunk(root, "report.pdf");
+
+        // The short label joins the paragraph after it and the source line joins the one before it,
+        // while the two full paragraphs stay apart so each keeps a specific embedding.
+        Assert.Equal(["Key figures\n" + first, second + "\nSource: Eurostat"], passages.Select(passage => passage.DisplayText));
+        Assert.Equal("page[1]/block[1]..page[1]/block[2]", passages[0].Location.StructurePath);
+        Assert.Equal("page[1]/block[3]..page[1]/block[4]", passages[1].Location.StructurePath);
+    }
+
+    [Fact]
     public async Task TableChunksEndOnWholeRowsAndRepeatOnlyWholeRows()
     {
         var rows = Enumerable.Range(1, 160).Select(row => $"Item {row}\t{row * 10}\tWarehouse {row % 7}").ToArray();
