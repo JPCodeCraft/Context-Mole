@@ -1,3 +1,4 @@
+using System.Globalization;
 using ContextMole.App.UI.ViewModels;
 using ContextMole.Core;
 using ContextMole.Indexing;
@@ -17,7 +18,8 @@ public sealed class ProjectIssuePresentationTests
         Assert.Equal(50, project.IssueGroups[0].Details.Count);
         Assert.Equal(50, project.IssueGroups[0].Details.Select(item => item.ComponentKey).Distinct().Count());
         Assert.True(project.IssueGroups[0].CanNextDetails);
-        Assert.Contains("1000", project.IssueGroups[0].DetailsPageDisplay.Replace(",", ""));
+        // The UI formats counts with the current culture ("1,000", "1.000", "1 000").
+        Assert.Contains(1000.ToString("N0", CultureInfo.CurrentCulture), project.IssueGroups[0].DetailsPageDisplay);
         Assert.Contains("issues in", project.GroupedIssuesSummary);
         Assert.Equal(group.SourcePath, project.IssueGroups[0].SourcePath);
         Assert.Equal("Some content missing", project.IssueGroups[0].ImpactLabel);
