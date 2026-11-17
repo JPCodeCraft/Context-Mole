@@ -23,8 +23,11 @@ public sealed class BrokerRequestDispatcher(
     private readonly BrokerSearchRuntimeManager _searchRuntime = searchRuntime;
     private readonly BrokerActivityTracker _activity = activity;
     private readonly IHostApplicationLifetime _applicationLifetime = applicationLifetime;
+    // Separate gates keep indexer embedding traffic from occupying the slots that AI clients' tool calls need.
+    // Embedding inference is serialized inside the generator, so these slots only bound how many indexer calls wait.
     private readonly SemaphoreSlim _ordinaryReads = new(8, 8);
     private readonly SemaphoreSlim _materializations = new(2, 2);
+    private readonly SemaphoreSlim _embeddingRequests = new(8, 8);
     private readonly SearchSessionCache _searchSessions = new(timeProvider ?? TimeProvider.System);
 
     public async Task<JsonElement> DispatchAsync(BrokerRpcRequest request, CancellationToken cancellationToken)
@@ -41,9 +44,13 @@ public sealed class BrokerRequestDispatcher(
             return Serialize(new { accepted = true });
         }
 
-        var gate = request.Method == BrokerToolMethods.MaterializeContent
-            ? _materializations
-            : _ordinaryReads;
+        var gate = request.Method switch
+        {
+            BrokerToolMethods.MaterializeContent => _materializations,
+            BrokerProtocol.EmbeddingPassagesMethod or BrokerProtocol.EmbeddingQueryMethod or
+                BrokerProtocol.EmbeddingCountTokensMethod or BrokerProtocol.EmbeddingReloadMethod => _embeddingRequests,
+            _ => _ordinaryReads
+        };
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -106,28 +113,50 @@ public sealed class BrokerRequestDispatcher(
                 search.Scope != SearchScope.Passage || search.Detail != SearchDetail.Compact)
                 throw new ContextMoleException("invalid_request", "A continuation accepts only project_id and cursor; its search and result settings are fixed.");
             var continuation = _searchSessions.Get(search.ProjectId, search.Cursor);
-            await ValidateSearchSnapshotAsync(search.ProjectId, continuation.Generation, continuation.PolicyKey, cancellationToken)
-                .ConfigureAwait(false);
-            return SearchWireResponse.FromDomain(continuation.Response, continuation.Detail);
+            await ValidateSemanticPolicyAsync(continuation.PolicyKey, cancellationToken).ConfigureAwait(false);
+            var page = await RemoveStaleGroupsAsync(search.ProjectId, continuation.Generation, continuation.Response,
+                cancellationToken).ConfigureAwait(false);
+            return SearchWireResponse.FromDomain(page, continuation.Detail);
         }
         var response = await _searchRuntime.SearchAsync(search, cancellationToken).ConfigureAwait(false);
-        await ValidateSearchSnapshotAsync(search.ProjectId, response.SearchGeneration, response.SemanticPolicyKey, cancellationToken)
-            .ConfigureAwait(false);
+        await ValidateSemanticPolicyAsync(response.SemanticPolicyKey, cancellationToken).ConfigureAwait(false);
         return SearchWireResponse.FromDomain(_searchSessions.Start(search, response), search.Detail);
     }
 
-    private async Task ValidateSearchSnapshotAsync(Guid projectId, long generation, string? policyKey,
-        CancellationToken cancellationToken)
+    private async Task ValidateSemanticPolicyAsync(string? policyKey, CancellationToken cancellationToken)
+    {
+        if (policyKey is null) return;
+        var status = await _searchRuntime.GetEmbeddingStatusAsync(cancellationToken).ConfigureAwait(false);
+        if (status.Policy?.Key != policyKey)
+            throw new ContextMoleException("semantic_model_changed", "The semantic model changed. Run the search again.", true);
+    }
+
+    /// <summary>
+    /// A continuation replays a ranking computed earlier. When documents were re-indexed since then, groups whose
+    /// evidence no longer belongs to an active revision are removed so a page never shows superseded text, and a
+    /// warning says that newly indexed content is not part of this ranking.
+    /// </summary>
+    private async Task<SearchResponse> RemoveStaleGroupsAsync(Guid projectId, long sessionGeneration,
+        SearchResponse page, CancellationToken cancellationToken)
     {
         var current = await _store.GetSearchGenerationAsync(projectId, cancellationToken).ConfigureAwait(false);
-        if (current != generation)
-            throw new ContextMoleException("index_changed", "The project index changed. Run the search again.", true);
-        if (policyKey is not null)
+        if (current == sessionGeneration) return page;
+        var referenced = page.Results.SelectMany(GroupPassageIds).ToArray();
+        var active = await _store.GetActivePassageIdsAsync(projectId, referenced, cancellationToken).ConfigureAwait(false);
+        var kept = page.Results.Where(group => GroupPassageIds(group).All(active.Contains)).ToArray();
+        var removed = page.Results.Count - kept.Length;
+        var message = removed == 0
+            ? "The index changed after this search started. Every result on this page is still current, but newly indexed content is not part of this ranking; run the search again to include it."
+            : $"The index changed after this search started. {removed} result group(s) on this page were removed because their documents changed; newly indexed content is not part of this ranking; run the search again to include it.";
+        return page with
         {
-            var status = await _searchRuntime.GetEmbeddingStatusAsync(cancellationToken).ConfigureAwait(false);
-            if (status.Policy?.Key != policyKey)
-                throw new ContextMoleException("semantic_model_changed", "The semantic model changed. Run the search again.", true);
-        }
+            Results = kept,
+            ReturnedGroupCount = kept.Length,
+            Warnings = [.. page.Warnings, new SearchWarning("index_updated", message)]
+        };
+
+        static IEnumerable<Guid> GroupPassageIds(SearchResultGroup group) =>
+            group.Previews.Select(preview => preview.PassageId).Concat(group.EvidencePassageIds).Distinct();
     }
 
     private async Task<ReadPassagesResponse> ReadPassagesAsync(BrokerReadPassagesRequest request,
@@ -143,9 +172,7 @@ public sealed class BrokerRequestDispatcher(
         var passages = await _store.ReadPassagesAsync(request.ProjectId, request.PassageIds, request.ContextBefore,
             request.ContextAfter, expectedGeneration, cancellationToken).ConfigureAwait(false);
         var generation = await _store.GetSearchGenerationAsync(request.ProjectId, cancellationToken).ConfigureAwait(false);
-        if (generation != expectedGeneration)
-            throw new ContextMoleException("index_changed", "The project index changed while passages were read. Run the search again.", true);
-        return new ReadPassagesResponse(generation, passages);
+        return new ReadPassagesResponse(generation, passages) { IndexChangedSinceSearch = generation != expectedGeneration };
     }
 
     private async Task<SectionReadResponse> ReadSectionAsync(BrokerReadSectionRequest request,

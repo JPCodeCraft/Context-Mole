@@ -56,4 +56,11 @@ public sealed record SearchWireResponse(SearchMode RequestedMode, string ActualM
         }).ToArray());
 }
 
-public sealed record ReadPassagesResponse(long SearchGeneration, IReadOnlyList<PassageInfo> Passages);
+public sealed record ReadPassagesResponse(long SearchGeneration, IReadOnlyList<PassageInfo> Passages)
+{
+    /// <summary>
+    /// True when other documents were indexed after the search. Returned passages are still exact; passages whose
+    /// own document changed are reported individually with the stale_passage error code.
+    /// </summary>
+    public bool IndexChangedSinceSearch { get; init; }
+}

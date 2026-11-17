@@ -1,6 +1,13 @@
+using System.Text.Json;
+
+using ContextMole.Broker;
+using ContextMole.Broker.Protocol;
 using ContextMole.Core;
 using ContextMole.Search;
 using ContextMole.Storage;
+
+using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Hosting;
 
 namespace ContextMole.Tests;
 
@@ -99,9 +106,120 @@ public sealed class EvidenceStorageRegressionTests
         Assert.NotNull(reindex);
         await database.CommitAsync(reindex!, pending.Sha256, pending.File.Length,
             new DateTimeOffset(pending.File.LastWriteTimeUtc, TimeSpan.Zero), "new evidence", false, cancellationToken: Token);
-        var stale = await Assert.ThrowsAsync<ContextMoleException>(() => database.Store.ReadPassagesAsync(project,
+        // Evidence is validated per passage: the superseded passage is reported individually instead of
+        // failing the whole read, and its old section is no longer readable.
+        var stale = Assert.Single(await database.Store.ReadPassagesAsync(project,
             [committed.PassageId], 0, 0, scopeSection.SearchGeneration, Token));
-        Assert.Equal("index_changed", stale.Code);
+        Assert.Equal("stale_passage", stale.ErrorCode);
+        Assert.True(string.IsNullOrEmpty(stale.Text));
+        var staleSection = await Assert.ThrowsAsync<ContextMoleException>(() => database.Store.ReadSectionAsync(project,
+            section, scopeSection.SearchGeneration, 1, cancellationToken: Token));
+        Assert.Equal("section_not_found", staleSection.Code);
+    }
+
+    [Fact]
+    public async Task EvidenceStaysReadableWhileOtherDocumentsAreIndexed()
+    {
+        await using var database = await StorageTestDatabase.CreateAsync(Token);
+        var (project, folder) = await database.CreateProjectAsync("Live indexing", Token);
+        var firstPath = Path.Combine(database.Paths.SourceDirectory, "first.txt");
+        await File.WriteAllTextAsync(firstPath, "falcon evidence", Token);
+        var first = await database.ObserveAndLeaseAsync(project, folder, firstPath, false, Token);
+        var committed = await database.CommitAsync(first.Job, first.Sha256, first.File.Length,
+            new DateTimeOffset(first.File.LastWriteTimeUtc, TimeSpan.Zero), "falcon evidence", false,
+            cancellationToken: Token);
+        var query = StructuredSearchQuery.BuildFtsQuery([new SearchClause("term", "falcon")], 1);
+        var search = await database.Store.LoadKeywordBranchesAsync(project, query, "", 10, null,
+            new SearchFieldWeights(), SearchScope.Passage, Token);
+        Assert.Equal(committed.PassageId, Assert.Single(search.MainCandidates).PassageId);
+
+        // Another document commits after the search and advances the project-wide generation.
+        var secondPath = Path.Combine(database.Paths.SourceDirectory, "second.txt");
+        await File.WriteAllTextAsync(secondPath, "unrelated heron text", Token);
+        var second = await database.ObserveAndLeaseAsync(project, folder, secondPath, false, Token);
+        await database.CommitAsync(second.Job, second.Sha256, second.File.Length,
+            new DateTimeOffset(second.File.LastWriteTimeUtc, TimeSpan.Zero), "unrelated heron text", false,
+            cancellationToken: Token);
+        Assert.NotEqual(search.SearchGeneration, await database.Store.GetSearchGenerationAsync(project, Token));
+
+        var read = Assert.Single(await database.Store.ReadPassagesAsync(project, [committed.PassageId], 0, 0,
+            search.SearchGeneration, Token));
+        Assert.Null(read.ErrorCode);
+        Assert.Equal("falcon evidence", read.Text);
+        var hydrated = Assert.Single(await database.Store.LoadCandidatesAsync(project, [committed.PassageId],
+            search.SearchGeneration, SearchScope.Passage, Token));
+        Assert.Equal(committed.PassageId, hydrated.PassageId);
+        Assert.Equal(committed.PassageId, Assert.Single(await database.Store.GetActivePassageIdsAsync(project,
+            [committed.PassageId, Guid.NewGuid()], Token)));
+        var missing = await Assert.ThrowsAsync<ContextMoleException>(() => database.Store.ReadPassagesAsync(
+            Guid.NewGuid(), [committed.PassageId], 0, 0, search.SearchGeneration, Token));
+        Assert.Equal("project_not_found", missing.Code);
+
+        // The broker returns the exact evidence and reports that the project moved on since the search.
+        var dispatcher = new BrokerRequestDispatcher(database.Store, null!, database.Paths, null!,
+            new BrokerActivityTracker(TimeProvider.System), new NoopLifetime());
+        var payload = JsonSerializer.SerializeToElement(new BrokerReadPassagesRequest(project, [committed.PassageId],
+            0, 0, search.SearchGeneration), BrokerJson.Options);
+        var response = await dispatcher.DispatchAsync(new BrokerRpcRequest(Guid.NewGuid(),
+            BrokerToolMethods.ReadPassages, payload, DateTimeOffset.UtcNow.AddSeconds(10)), Token);
+        Assert.True(response.GetProperty("index_changed_since_search").GetBoolean());
+        Assert.Equal("falcon evidence", response.GetProperty("passages")[0].GetProperty("text").GetString());
+    }
+
+    [Fact]
+    public async Task JobHistoryPruningKeepsEachDocumentsNewestJobAndRun()
+    {
+        await using var database = await StorageTestDatabase.CreateAsync(Token);
+        var (project, folder) = await database.CreateProjectAsync("History", Token);
+        var path = Path.Combine(database.Paths.SourceDirectory, "history.txt");
+        await File.WriteAllTextAsync(path, "history evidence", Token);
+        var pending = await database.ObserveAndLeaseAsync(project, folder, path, false, Token);
+        await database.CommitAsync(pending.Job, pending.Sha256, pending.File.Length,
+            new DateTimeOffset(pending.File.LastWriteTimeUtc, TimeSpan.Zero), "history evidence", false,
+            cancellationToken: Token);
+        for (var round = 0; round < 3; round++)
+        {
+            await database.Writer.RequestReindexAsync(project, Token);
+            var job = await database.Writer.LeaseNextJobAsync(TimeSpan.FromMinutes(1), Token);
+            Assert.NotNull(job);
+            await database.CommitAsync(job!, pending.Sha256, pending.File.Length,
+                new DateTimeOffset(pending.File.LastWriteTimeUtc, TimeSpan.Zero), $"history evidence {round}", false,
+                cancellationToken: Token);
+        }
+        var lastCompleted = Assert.Single(await database.Store.ListProjectsAsync(Token)).LastCompletedUtc;
+
+        await using var connection = new SqliteConnection($"Data Source={database.Paths.DatabasePath}");
+        await connection.OpenAsync(Token);
+        Assert.Equal(4L, await CountAsync(connection, "SELECT COUNT(*) FROM index_jobs;"));
+        var newest = await ScalarTextAsync(connection, "SELECT id FROM index_jobs ORDER BY updated_utc DESC,id DESC LIMIT 1;");
+
+        var deleted = await DatabaseWriterService.PruneJobHistoryAsync(connection, project, Token);
+
+        Assert.Equal(3, deleted);
+        Assert.Equal(1L, await CountAsync(connection, "SELECT COUNT(*) FROM index_jobs;"));
+        Assert.Equal(newest, await ScalarTextAsync(connection, "SELECT id FROM index_jobs;"));
+        Assert.Equal(4L, await CountAsync(connection, "SELECT COUNT(*) FROM index_runs;"));
+        Assert.Equal(lastCompleted, Assert.Single(await database.Store.ListProjectsAsync(Token)).LastCompletedUtc);
+        Assert.Equal(0, await DatabaseWriterService.PruneJobHistoryAsync(connection, project, Token));
+
+        static async Task<long> CountAsync(SqliteConnection connection, string sql) =>
+            Convert.ToInt64(await ScalarAsync(connection, sql));
+        static async Task<string?> ScalarTextAsync(SqliteConnection connection, string sql) =>
+            (string?)await ScalarAsync(connection, sql);
+        static async Task<object?> ScalarAsync(SqliteConnection connection, string sql)
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = sql;
+            return await command.ExecuteScalarAsync(Token);
+        }
+    }
+
+    private sealed class NoopLifetime : IHostApplicationLifetime
+    {
+        public CancellationToken ApplicationStarted => CancellationToken.None;
+        public CancellationToken ApplicationStopping => CancellationToken.None;
+        public CancellationToken ApplicationStopped => CancellationToken.None;
+        public void StopApplication() { }
     }
 
     [Fact]

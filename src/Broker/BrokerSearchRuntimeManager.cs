@@ -210,7 +210,7 @@ public sealed class BrokerSearchRuntimeManager : IAsyncDisposable
         var cacheBudget = totalPhysicalBytes > 0
             ? VectorIndexCache.CalculateAdaptiveBudget(totalPhysicalBytes)
             : VectorIndexCache.DefaultByteBudget;
-        services.AddContextMoleSearch(cacheBudget);
+        services.AddContextMoleSearch(cacheBudget, VectorIndexCache.DefaultRecentSnapshotReuse);
         var provider = services.BuildServiceProvider();
         return new Runtime(provider, provider.GetRequiredService<HybridSearchService>(),
             provider.GetRequiredService<IEmbeddingGenerator>(), provider.GetRequiredService<VectorIndexCache>());

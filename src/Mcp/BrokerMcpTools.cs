@@ -46,14 +46,14 @@ public sealed class BrokerMcpTools(BrokerRpcClient broker, ILogger<BrokerMcpTool
     [McpServerTool(Name = "read_passages", OutputSchemaType = typeof(ReadPassagesResponse), ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false, UseStructuredContent = true)]
     [Description("Use after search_project to read the full stored text of selected passage IDs with up to three neighboring passages before and after. Every returned passage retains its own provenance; it does not open or materialize the source file.")]
     public Task<CallToolResult> ReadPassages(Guid project_id, IReadOnlyList<Guid> passage_ids,
-        [Description("Required search_generation returned by search; prevents reading changed evidence.")] long expected_search_generation,
+        [Description("Required search_generation returned by search. Passages whose document changed since then are returned as stale_passage entries instead of changed text.")] long expected_search_generation,
         int context_before = 0, int context_after = 0,
         CancellationToken cancellationToken = default) => RunAsync(
         BrokerToolMethods.ReadPassages,
         new BrokerReadPassagesRequest(project_id, passage_ids, context_before, context_after, expected_search_generation), cancellationToken);
 
     [McpServerTool(Name = "read_section", OutputSchemaType = typeof(SectionReadResponse), ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false, UseStructuredContent = true)]
-    [Description("Read a logical section's stored passages in source order. Use section_id and search_generation returned by search; generation guards prevent reading changed evidence. Pages retain individual passage IDs and locations.")]
+    [Description("Read a logical section's stored passages in source order. Use section_id and search_generation returned by search. A section stays readable while its document is unchanged, even if other documents are indexed; section_not_found means its document changed, so search again. Pages retain individual passage IDs and locations.")]
     public Task<CallToolResult> ReadSection(Guid project_id, Guid section_id, long expected_search_generation,
         int limit = 20, string? cursor = null, CancellationToken cancellationToken = default) =>
         RunAsync(BrokerToolMethods.ReadSection, new BrokerReadSectionRequest(project_id, section_id,

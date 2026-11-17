@@ -599,6 +599,57 @@ public sealed partial class HybridSearchTests
         }
     }
 
+    [Fact]
+    public async Task HybridSearchToleratesBranchesReadAtDifferentGenerations()
+    {
+        // Indexing another document between the keyword and semantic reads advances the project generation.
+        var keyword = Candidate(Guid.NewGuid(), "evidence") with { BodySearchText = "evidence" };
+        var snapshot = new VectorSnapshot(41, Policy, [VectorEntry(keyword, 1)]);
+        var store = new SearchStoreFake([keyword], snapshot, [keyword],
+            vectorMetadata: new VectorSnapshotMetadata(42, Policy, 1));
+
+        var result = await CreateSearch(store, new EmbeddingGeneratorFake(Policy, Policy, Vector(1))).SearchAsync(
+            new SearchRequest(Guid.NewGuid(), SearchMode.Hybrid, "concept", [new SearchClause("evidence", "evidence")]),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal("hybrid", result.ActualMode);
+        Assert.Equal(42, result.SearchGeneration);
+        Assert.Equal(keyword.PassageId, Assert.Single(Assert.Single(result.Results).Previews).PassageId);
+    }
+
+    [Fact]
+    public async Task RecentVectorSnapshotIsReusedOnlyWithinItsWindow()
+    {
+        var keyword = Candidate(Guid.NewGuid(), "evidence") with { BodySearchText = "evidence" };
+        var time = new ManualTimeProvider(DateTimeOffset.UnixEpoch);
+        var cache = new VectorIndexCache(recentSnapshotReuse: TimeSpan.FromSeconds(30), timeProvider: time);
+        var request = new SearchRequest(Guid.NewGuid(), SearchMode.Semantic, "concept");
+        var embeddings = new EmbeddingGeneratorFake(Policy, Policy, Vector(1));
+        var first = new SearchStoreFake([], new VectorSnapshot(5, Policy, [VectorEntry(keyword, 1)]), [keyword]);
+        var search = new HybridSearchService(first, embeddings, new FlatVectorIndexFactory(), cache, new ImmediateCpuBudget());
+        Assert.DoesNotContain((await search.SearchAsync(request, TestContext.Current.CancellationToken)).Warnings,
+            warning => warning.Code == "semantic_snapshot_recent");
+
+        var later = new SearchStoreFake([], new VectorSnapshot(6, Policy, [VectorEntry(keyword, 1)]), [keyword]);
+        search = new HybridSearchService(later, embeddings, new FlatVectorIndexFactory(), cache, new ImmediateCpuBudget());
+        time.Advance(TimeSpan.FromSeconds(10));
+        var reused = await search.SearchAsync(request, TestContext.Current.CancellationToken);
+        Assert.Contains(reused.Warnings, warning => warning.Code == "semantic_snapshot_recent");
+        Assert.Equal(keyword.PassageId, Assert.Single(Assert.Single(reused.Results).Previews).PassageId);
+
+        time.Advance(TimeSpan.FromSeconds(30));
+        var reloaded = await search.SearchAsync(request, TestContext.Current.CancellationToken);
+        Assert.DoesNotContain(reloaded.Warnings, warning => warning.Code == "semantic_snapshot_recent");
+        Assert.True(cache.TryGet(request.ProjectId, 6, Policy.Key, out _));
+    }
+
+    private sealed class ManualTimeProvider(DateTimeOffset start) : TimeProvider
+    {
+        private DateTimeOffset _now = start;
+        public override DateTimeOffset GetUtcNow() => _now;
+        public void Advance(TimeSpan by) => _now += by;
+    }
+
     [Theory]
     [InlineData(SearchMode.Semantic)]
     [InlineData(SearchMode.Hybrid)]

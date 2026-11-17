@@ -92,10 +92,9 @@ public sealed partial class SqliteSearchStore
     {
         if (passageIds.Count == 0) return [];
         await using var connection = await OpenRequiredAsync(cancellationToken).ConfigureAwait(false);
+        // Hydration only returns passages whose revision is still active; changed documents simply drop out.
         using var transaction = connection.BeginTransaction(deferred: true);
-        var generation = await ReadGenerationAsync(connection, transaction, projectId, cancellationToken).ConfigureAwait(false);
-        if (generation != expectedGeneration)
-            throw new ContextMoleException("index_changed", "The project index changed before candidates were loaded.", true);
+        await EnsureProjectExistsAsync(connection, transaction, projectId, cancellationToken).ConfigureAwait(false);
         var result = new List<SearchCandidate>();
         foreach (var batch in passageIds.Chunk(500))
         {
@@ -113,6 +112,31 @@ public sealed partial class SqliteSearchStore
             result = await HydrateSectionsAsync(connection, transaction, projectId, result, cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         return result;
+    }
+
+    public async Task<IReadOnlySet<Guid>> GetActivePassageIdsAsync(Guid projectId,
+        IReadOnlyCollection<Guid> passageIds, CancellationToken cancellationToken = default)
+    {
+        var active = new HashSet<Guid>();
+        if (passageIds.Count == 0) return active;
+        await using var connection = await OpenRequiredAsync(cancellationToken).ConfigureAwait(false);
+        using var transaction = connection.BeginTransaction(deferred: true);
+        await EnsureProjectExistsAsync(connection, transaction, projectId, cancellationToken).ConfigureAwait(false);
+        foreach (var batch in passageIds.Distinct().Chunk(500))
+        {
+            await using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            var sql = new StringBuilder("SELECT p.id FROM passages p ").Append(ActiveCandidateJoins)
+                .Append(" WHERE d.project_id=$project AND p.id IN (");
+            command.Parameters.AddWithValue("$project", projectId.ToString());
+            AppendGuidParameters(sql, command, batch, "passage");
+            command.CommandText = sql.Append(");").ToString();
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                active.Add(Guid.Parse(reader.GetString(0)));
+        }
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return active;
     }
 
     private static async Task<List<SearchCandidate>> HydrateSectionsAsync(SqliteConnection connection,
@@ -164,9 +188,9 @@ public sealed partial class SqliteSearchStore
         var offset = DecodeSectionCursor(cursor, projectId, sectionId, expectedGeneration);
         await using var connection = await OpenRequiredAsync(cancellationToken).ConfigureAwait(false);
         using var transaction = connection.BeginTransaction(deferred: true);
+        // A section belongs to exactly one immutable revision. It stays readable while that revision is active,
+        // even when other documents in the project are re-indexed after the search.
         var generation = await ReadGenerationAsync(connection, transaction, projectId, cancellationToken).ConfigureAwait(false);
-        if (generation != expectedGeneration)
-            throw new ContextMoleException("index_changed", "The index changed after search. Repeat the search.", true);
         Guid contentId;
         string heading;
         IReadOnlyList<string> headingPath;
@@ -184,7 +208,8 @@ public sealed partial class SqliteSearchStore
             command.Parameters.AddWithValue("$project", projectId.ToString());
             await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
             if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-                throw new ContextMoleException("section_not_found", "The section does not exist in this project revision.");
+                throw new ContextMoleException("section_not_found",
+                    "The section is not in the current index. Its document may have changed, been excluded, or been removed since the search; run the search again.");
             contentId = Guid.Parse(reader.GetString(0));
             heading = reader.GetString(1);
             headingPath = JsonSerializer.Deserialize<string[]>(reader.GetString(2), StorageJsonOptions) ?? [];
@@ -208,7 +233,10 @@ public sealed partial class SqliteSearchStore
         var next = ids.Count > limit ? Convert.ToBase64String(JsonSerializer.SerializeToUtf8Bytes(
             new SectionCursor(projectId, sectionId, expectedGeneration, checked(offset + limit)), StorageJsonOptions)) : null;
         return new SectionReadResponse(sectionId, contentId, heading, passages, generation, next)
-        { HeadingPath = headingPath, Kind = kind, Location = location };
+        {
+            HeadingPath = headingPath, Kind = kind, Location = location,
+            IndexChangedSinceSearch = generation != expectedGeneration
+        };
     }
 
     private static int DecodeSectionCursor(string? cursor, Guid projectId, Guid sectionId, long generation)

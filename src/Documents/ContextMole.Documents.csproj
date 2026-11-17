@@ -17,6 +17,7 @@
     <PackageReference Include="PDFtoImage" />
     <PackageReference Include="SharpCompress" />
     <PackageReference Include="SkiaSharp" />
+    <PackageReference Include="System.Security.Cryptography.Pkcs" />
     <PackageReference Include="System.Text.Encoding.CodePages" />
   </ItemGroup>
 

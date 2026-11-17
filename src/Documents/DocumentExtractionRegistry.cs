@@ -114,7 +114,7 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
         if (!context.Hashes.Add(digest))
             return Rejected(name, mimeType, relationship, context, "attachment_cycle", "Duplicate attachment content was skipped to prevent a cycle.");
 
-        var format = ContentFormatFor(bytes, name, mimeType);
+        var format = ContentFormatDetection.Resolve(bytes, name, mimeType);
         try
         {
             return format?.Kind switch
@@ -429,27 +429,6 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
             await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
         }
         return output.ToArray();
-    }
-
-    private static ContentFormatDescriptor? ContentFormatFor(byte[] bytes, string name, string? mimeType)
-    {
-        if (LooksLikeHtml(bytes))
-            return SupportedContent.FindByExtension(".html");
-        if (bytes.AsSpan().StartsWith("%PDF-"u8))
-            return SupportedContent.FindByExtension(".pdf");
-        return SupportedContent.Resolve(name, mimeType);
-    }
-
-    private static bool LooksLikeHtml(byte[] bytes)
-    {
-        var length = Math.Min(bytes.Length, 512);
-        if (length == 0) return false;
-        var prefix = Encoding.UTF8.GetString(bytes, 0, length)
-            .TrimStart('\uFEFF', '\0', ' ', '\t', '\r', '\n');
-        return prefix.StartsWith("<!doctype html", StringComparison.OrdinalIgnoreCase) ||
-               prefix.StartsWith("<html", StringComparison.OrdinalIgnoreCase) ||
-               prefix.StartsWith("<head", StringComparison.OrdinalIgnoreCase) ||
-               prefix.StartsWith("<body", StringComparison.OrdinalIgnoreCase);
     }
 
     private static void ValidateRasterImage(byte[] bytes)

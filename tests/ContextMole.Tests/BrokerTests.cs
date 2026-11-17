@@ -122,6 +122,42 @@ public sealed class BrokerProtocolTests
     }
 
     [Fact]
+    public async Task ServerClosesConnectionsThatNeverSendAHandshake()
+    {
+        using var paths = new StorageTestPaths();
+        var endpoint = new BrokerEndpoint(paths.DataDirectory);
+        var token = endpoint.GetOrCreateAuthenticationToken();
+        using var stop = new CancellationTokenSource();
+        await using var server = new BrokerPipeServer(endpoint, token, "1.0", "tests", DateTimeOffset.UtcNow,
+            (_, _) => throw new InvalidOperationException("Must not dispatch"),
+            frameReadTimeout: TimeSpan.FromMilliseconds(200));
+        var serverTask = server.RunAsync(stop.Token);
+
+        try
+        {
+            await using var idle = new NamedPipeClientStream(".", endpoint.PipeName, PipeDirection.InOut,
+                PipeOptions.Asynchronous);
+            await idle.ConnectAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
+            var buffer = new byte[1];
+            var read = await idle.ReadAsync(buffer, TestContext.Current.CancellationToken).AsTask()
+                .WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+            Assert.Equal(0, read);
+
+            // The stalled connection released its slot; a real client is still served.
+            var client = new BrokerRpcClient(paths.DataDirectory,
+                new BrokerLaunchCommand("unused-in-running-server-test", []), deploymentId: "tests");
+            var dispatched = await Assert.ThrowsAsync<BrokerRpcException>(() => client.InvokeAsync("echo",
+                new { value = 1 }, TestContext.Current.CancellationToken));
+            Assert.Equal("internal_error", dispatched.Code);
+        }
+        finally
+        {
+            await stop.CancelAsync();
+            await serverTask;
+        }
+    }
+
+    [Fact]
     public async Task ServerRejectsMismatchedApplicationRequestButAllowsAuthenticatedShutdown()
     {
         using var paths = new StorageTestPaths();

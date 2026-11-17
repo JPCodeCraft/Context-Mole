@@ -851,6 +851,38 @@ public sealed class StorageTests
         Assert.Equal("source_changed", exception.Code);
     }
 
+    [Fact]
+    public void MaterializedCopiesExpireAndEmptyFoldersAreRemoved()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"context-mole-materialized-{Guid.NewGuid():N}");
+        try
+        {
+            var now = DateTimeOffset.UtcNow;
+            var expiredFolder = Directory.CreateDirectory(Path.Combine(root, Guid.NewGuid().ToString("N"))).FullName;
+            var expired = Path.Combine(expiredFolder, "old.pdf");
+            File.WriteAllText(expired, "old");
+            File.SetLastWriteTimeUtc(expired, now.UtcDateTime.AddDays(-2));
+            var currentFolder = Directory.CreateDirectory(Path.Combine(root, Guid.NewGuid().ToString("N"))).FullName;
+            var current = Path.Combine(currentFolder, "new.pdf");
+            File.WriteAllText(current, "new");
+            var emptyFolder = Directory.CreateDirectory(Path.Combine(root, Guid.NewGuid().ToString("N"))).FullName;
+            Directory.SetLastWriteTimeUtc(emptyFolder, now.UtcDateTime.AddDays(-2));
+
+            var deleted = ContentMaterializationService.PruneMaterializedRoot(root,
+                now - ContentMaterializationService.MaterializedRetention);
+
+            Assert.Equal(1, deleted);
+            Assert.False(File.Exists(expired));
+            Assert.True(File.Exists(current));
+            Assert.False(Directory.Exists(emptyFolder));
+            Assert.Equal(0, ContentMaterializationService.PruneMaterializedRoot(Path.Combine(root, "missing"), now));
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
     private static async Task<string> WriteAsync(string name, string text, string directory,
         CancellationToken cancellationToken)
     {

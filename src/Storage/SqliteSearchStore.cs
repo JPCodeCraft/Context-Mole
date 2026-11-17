@@ -763,10 +763,10 @@ public sealed partial class SqliteSearchStore : ISearchStore
         SearchFilters? filters, [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenRequiredAsync(cancellationToken).ConfigureAwait(false);
+        // Every streamed entry is filtered to active revisions inside this read snapshot, so a newer project
+        // generation than the caller's metadata is safe; candidates are hydrated against active revisions again.
         using var transaction = connection.BeginTransaction(deferred: true);
-        var generation = await ReadGenerationAsync(connection, transaction, projectId, cancellationToken).ConfigureAwait(false);
-        if (generation != expectedGeneration)
-            throw new ContextMoleException("index_changed", "The project index changed before semantic streaming began.", true);
+        await EnsureProjectExistsAsync(connection, transaction, projectId, cancellationToken).ConfigureAwait(false);
         await using var command = connection.CreateCommand();
         command.Transaction = transaction;
         var sql = new StringBuilder("""
@@ -801,10 +801,10 @@ public sealed partial class SqliteSearchStore : ISearchStore
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenRequiredAsync(cancellationToken).ConfigureAwait(false);
+        // Every streamed entry is filtered to active revisions inside this read snapshot, so a newer project
+        // generation than the caller's metadata is safe; candidates are hydrated against active revisions again.
         using var transaction = connection.BeginTransaction(deferred: true);
-        var generation = await ReadGenerationAsync(connection, transaction, projectId, cancellationToken).ConfigureAwait(false);
-        if (generation != expectedGeneration)
-            throw new ContextMoleException("index_changed", "The project index changed before semantic streaming began.", true);
+        await EnsureProjectExistsAsync(connection, transaction, projectId, cancellationToken).ConfigureAwait(false);
         await using var command = connection.CreateCommand();
         command.Transaction = transaction;
         var sql = new StringBuilder("""
@@ -847,10 +847,9 @@ public sealed partial class SqliteSearchStore : ISearchStore
         }
 
         await using var connection = await OpenRequiredAsync(cancellationToken).ConfigureAwait(false);
+        // Hydration only returns passages whose revision is still active; changed documents simply drop out.
         using var transaction = connection.BeginTransaction(deferred: true);
-        var generation = await ReadGenerationAsync(connection, transaction, projectId, cancellationToken).ConfigureAwait(false);
-        if (generation != expectedGeneration)
-            throw new ContextMoleException("index_changed", "The project index changed before semantic candidates were loaded.", true);
+        await EnsureProjectExistsAsync(connection, transaction, projectId, cancellationToken).ConfigureAwait(false);
         await using var command = connection.CreateCommand();
         command.Transaction = transaction;
         var sql = new StringBuilder("""
@@ -896,10 +895,11 @@ public sealed partial class SqliteSearchStore : ISearchStore
         contextBefore = Math.Clamp(contextBefore, 0, 3);
         contextAfter = Math.Clamp(contextAfter, 0, 3);
         await using var connection = await OpenRequiredAsync(cancellationToken).ConfigureAwait(false);
+        // Evidence is validated per passage rather than per project: passage text is immutable within a revision,
+        // so a passage whose revision is still active is exactly what search returned. Passages whose document
+        // changed, moved into an exclusion, or was removed come back as stale_passage entries.
         using var transaction = connection.BeginTransaction(deferred: true);
-        var generation = await ReadGenerationAsync(connection, transaction, projectId, cancellationToken).ConfigureAwait(false);
-        if (expectedGeneration is not null && generation != expectedGeneration)
-            throw new ContextMoleException("index_changed", "The index changed after search. Repeat the search.", true);
+        await EnsureProjectExistsAsync(connection, transaction, projectId, cancellationToken).ConfigureAwait(false);
         var requested = passageIds.ToHashSet();
         var found = new Dictionary<Guid, PassageInfo>();
         var attachmentChains = new Dictionary<Guid, IReadOnlyList<string>>();
@@ -1435,6 +1435,10 @@ public sealed partial class SqliteSearchStore : ISearchStore
             throw;
         }
     }
+
+    private static Task EnsureProjectExistsAsync(SqliteConnection connection, SqliteTransaction transaction,
+        Guid projectId, CancellationToken cancellationToken) =>
+        ReadGenerationAsync(connection, transaction, projectId, cancellationToken);
 
     private static async Task<long> ReadGenerationAsync(SqliteConnection connection, SqliteTransaction transaction,
         Guid projectId, CancellationToken cancellationToken)

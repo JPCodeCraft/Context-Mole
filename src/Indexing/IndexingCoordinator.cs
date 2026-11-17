@@ -20,8 +20,17 @@ public sealed class IndexingCoordinator(
     IndexingActivityTracker activities,
     EmbeddingPolicyRefreshTracker policyRefreshes,
     IGlobalCpuBudget cpuBudget,
-    ILogger<IndexingCoordinator> logger) : BackgroundService, IProjectIndexingControl
+    ILogger<IndexingCoordinator> logger,
+    SourceMemoryAdmission? sourceMemory) : BackgroundService, IProjectIndexingControl
 {
+    /// <summary>Kept so dependency injection and existing callers use the process-wide memory admission default.</summary>
+    public IndexingCoordinator(IIndexWriter writer, ISearchStore searchStore, IAppPaths paths, IDocumentExtractor extractor,
+        IEmbeddingGenerator embeddings, IndexingActivityTracker activities, EmbeddingPolicyRefreshTracker policyRefreshes,
+        IGlobalCpuBudget cpuBudget, ILogger<IndexingCoordinator> logger)
+        : this(writer, searchStore, paths, extractor, embeddings, activities, policyRefreshes, cpuBudget, logger, sourceMemory: null)
+    {
+    }
+
     private static readonly TimeSpan ReconciliationInterval = TimeSpan.FromMinutes(15);
     private static readonly TimeSpan DebounceInterval = TimeSpan.FromSeconds(1);
     private const int ChunkTargetTokens = 384;
@@ -37,6 +46,7 @@ public sealed class IndexingCoordinator(
     private readonly EmbeddingPolicyRefreshTracker _policyRefreshes = policyRefreshes;
     private readonly IGlobalCpuBudget _cpuBudget = cpuBudget;
     private readonly ILogger<IndexingCoordinator> _logger = logger;
+    private readonly SourceMemoryAdmission _sourceMemory = sourceMemory ?? SourceMemoryAdmission.CreateForCurrentProcess();
     private const int MaximumBufferedChanges = 4096;
     private readonly Channel<WatchChange> _watchChanges = Channel.CreateBounded<WatchChange>(
         new BoundedChannelOptions(MaximumBufferedChanges)
@@ -749,6 +759,7 @@ public sealed class IndexingCoordinator(
                 {
                     var jobCancellationToken = operation.CancellationToken;
                     ICpuWorkerLease? capacity = null;
+                    var memory = SourceMemoryAdmission.Lease.None;
                     try
                     {
                         PreparedIndexSource? source = null;
@@ -764,12 +775,17 @@ public sealed class IndexingCoordinator(
                         }
 
                         activity.SetStage(IndexingPipelineStage.WaitingForCpu);
+                        // Reserve memory for a large source before taking a CPU slot, so a worker waiting for
+                        // memory never idles processor capacity that smaller files could use.
+                        if (source is not null)
+                            memory = await _sourceMemory.AcquireAsync(source.Length, jobCancellationToken)
+                                .ConfigureAwait(false);
                         capacity = await _cpuBudget.AcquireWorkerAsync(jobCancellationToken).ConfigureAwait(false);
                         using (capacity.Activate())
                         {
                             activity.StartProcessing(job.Kind == IndexJobKind.EmbeddingRefresh
                                 ? IndexingPipelineStage.PreparingRevision : IndexingPipelineStage.Hashing);
-                            var indexed = await ProcessJobAsync(job, source, activity, jobCancellationToken)
+                            var indexed = await ProcessJobAsync(job, source, activity, memory, jobCancellationToken)
                                 .ConfigureAwait(false);
                             activity.Complete(indexed);
                         }
@@ -786,6 +802,7 @@ public sealed class IndexingCoordinator(
 
                         capacity?.Dispose();
                         capacity = null;
+                        memory.Dispose();
                         activity.Complete(false);
                         try
                         {
@@ -830,6 +847,7 @@ public sealed class IndexingCoordinator(
                     finally
                     {
                         capacity?.Dispose();
+                        memory.Dispose();
                     }
                 }
 
@@ -893,7 +911,7 @@ public sealed class IndexingCoordinator(
     }
 
     private async Task<bool> ProcessJobAsync(IndexJobLease job, PreparedIndexSource? source,
-        IndexingActivityHandle activity, CancellationToken cancellationToken)
+        IndexingActivityHandle activity, IDisposable sourceMemory, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         if (await _searchStore.IsFileExcludedAsync(job.ProjectId, job.SourcePath, cancellationToken)
@@ -923,6 +941,8 @@ public sealed class IndexingCoordinator(
         cancellationToken.ThrowIfCancellationRequested();
         activity.SetStage(IndexingPipelineStage.ChunkingText);
         var (contentNodes, passageSeeds, sections) = FlattenAndChunk(extraction.Root, job.SourcePath, job.DocumentId);
+        // The raw source and parser state are gone once text is chunked; embedding can run without the reservation.
+        sourceMemory.Dispose();
         var indexingErrors = BindExtractionErrors(extraction.Root, job.DocumentId, extraction.Errors).ToList();
         if (passageSeeds.Count == 0 && indexingErrors.Count > 0)
         {
