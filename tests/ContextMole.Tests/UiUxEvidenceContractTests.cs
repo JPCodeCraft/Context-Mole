@@ -161,9 +161,11 @@ public sealed class UiUxEvidenceContractTests
             Token)).Candidates);
         Assert.Equal(nested, remaining.SourcePath);
         Assert.Single((await database.Store.KeywordSearchAsync(otherProject, query, 10, null, Token)).Candidates);
-        var stale = await Assert.ThrowsAsync<ContextMoleException>(() => database.Store.ReadPassagesAsync(project,
+        var stale = Assert.Single(await database.Store.ReadPassagesAsync(project,
             [committed.PassageId], 0, 0, generation, Token));
-        Assert.Equal("index_changed", stale.Code);
+        Assert.Equal("stale_passage", stale.ErrorCode);
+        Assert.True(string.IsNullOrEmpty(stale.Text));
+        Assert.Empty(await database.Store.GetActivePassageIdsAsync(project, [committed.PassageId], Token));
         var unavailable = Assert.Single(await database.Store.ReadPassagesAsync(project,
             [committed.PassageId], 0, 0, Token));
         Assert.Equal("stale_passage", unavailable.ErrorCode);

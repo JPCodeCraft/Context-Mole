@@ -231,12 +231,22 @@ public interface ISearchStore
         return result;
     }
     Task<IReadOnlyList<PassageInfo>> ReadPassagesAsync(Guid projectId, IReadOnlyCollection<Guid> passageIds, int contextBefore, int contextAfter, CancellationToken cancellationToken = default);
-    async Task<IReadOnlyList<PassageInfo>> ReadPassagesAsync(Guid projectId, IReadOnlyCollection<Guid> passageIds,
-        int contextBefore, int contextAfter, long expectedGeneration, CancellationToken cancellationToken = default)
+    /// <summary>
+    /// Reads passages that a search at <paramref name="expectedGeneration"/> returned. Evidence is validated per
+    /// passage: a passage whose revision is still active is returned unchanged, and a passage whose document changed
+    /// or was removed is returned as a <c>stale_passage</c> entry. Re-indexing other documents never fails the read.
+    /// </summary>
+    Task<IReadOnlyList<PassageInfo>> ReadPassagesAsync(Guid projectId, IReadOnlyCollection<Guid> passageIds,
+        int contextBefore, int contextAfter, long expectedGeneration, CancellationToken cancellationToken = default) =>
+        ReadPassagesAsync(projectId, passageIds, contextBefore, contextAfter, cancellationToken);
+    /// <summary>Returns the subset of <paramref name="passageIds"/> that still belong to active document revisions.</summary>
+    async Task<IReadOnlySet<Guid>> GetActivePassageIdsAsync(Guid projectId, IReadOnlyCollection<Guid> passageIds,
+        CancellationToken cancellationToken = default)
     {
-        if (await GetSearchGenerationAsync(projectId, cancellationToken).ConfigureAwait(false) != expectedGeneration)
-            throw new ContextMoleException("index_changed", "The index changed after search. Repeat the search.", true);
-        return await ReadPassagesAsync(projectId, passageIds, contextBefore, contextAfter, cancellationToken).ConfigureAwait(false);
+        if (passageIds.Count == 0) return new HashSet<Guid>();
+        var generation = await GetSearchGenerationAsync(projectId, cancellationToken).ConfigureAwait(false);
+        return (await LoadCandidatesAsync(projectId, passageIds, generation, cancellationToken).ConfigureAwait(false))
+            .Select(candidate => candidate.PassageId).ToHashSet();
     }
     Task<SectionReadResponse> ReadSectionAsync(Guid projectId, Guid sectionId, long expectedGeneration,
         int limit = 20, string? cursor = null, CancellationToken cancellationToken = default) =>

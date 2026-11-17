@@ -97,8 +97,15 @@ public sealed class HybridSearchService(
                     else
                     {
                         if (!vectorMetadata.RequiresStreaming)
-                            vectorIndex = await GetVectorIndexAsync(request.ProjectId, vectorMetadata,
-                                cancellationToken).ConfigureAwait(false);
+                        {
+                            (vectorIndex, var reusedRecentSnapshot) = await GetVectorIndexAsync(request.ProjectId,
+                                vectorMetadata, request.Filters is null, cancellationToken).ConfigureAwait(false);
+                            if (reusedRecentSnapshot)
+                                warnings.Add(new SearchWarning("semantic_snapshot_recent",
+                                    "The index is being updated. Semantic matching used vectors cached moments ago, so the newest " +
+                                    "passages may be missing from the semantic branch; keyword matching covers the current index " +
+                                    "and every returned passage is still current."));
+                        }
                         else
                             _cache.Invalidate(request.ProjectId);
                         semanticCompleted = true;
@@ -185,14 +192,12 @@ public sealed class HybridSearchService(
                     warnings.Add(new SearchWarning("fallback_keyword", "The requested hybrid search returned keyword results only."));
             }
         }
-        if (keywordSnapshot.SearchGeneration != 0 && vectorMetadata.SearchGeneration != 0 &&
-            keywordSnapshot.SearchGeneration != vectorMetadata.SearchGeneration)
-            throw new ContextMoleException("index_changed", "The project index changed during search. Retry the request.", true);
-        var generation = keywordSnapshot.SearchGeneration != 0 ? keywordSnapshot.SearchGeneration : vectorMetadata.SearchGeneration;
-        var currentGeneration = await _store.GetSearchGenerationAsync(request.ProjectId, cancellationToken).ConfigureAwait(false);
-        if (generation == 0) generation = currentGeneration;
-        else if (currentGeneration != generation)
-            throw new ContextMoleException("index_changed", "The project index changed before search completed. Retry the request.", true);
+        // Branches may observe different project generations while indexing commits other documents. That is safe:
+        // every candidate was read from an active revision, and semantic matches were re-hydrated against active
+        // revisions above, so results never contain superseded text. The reported generation is the newest one seen.
+        var generation = Math.Max(keywordSnapshot.SearchGeneration, vectorMetadata.SearchGeneration);
+        if (generation == 0)
+            generation = await _store.GetSearchGenerationAsync(request.ProjectId, cancellationToken).ConfigureAwait(false);
         var selection = BuildSelection(keyword, semanticCandidates, keywordCompleted, semanticCompleted,
             branchWeights, clauses, minimumShouldMatch, options, request.Scope, preparedQuery, _diversifyPreviews,
             _anchorSemanticPreviews && semanticCompleted ? new SemanticPreviewAnchors(request.SemanticQuery!) : null);
@@ -282,7 +287,7 @@ public sealed class HybridSearchService(
             .ThenBy(item => item.Candidate.PassageId).ToArray();
         var groups = ranked.GroupBy(item => scope == SearchScope.Section ? CandidateKey(item.Candidate) : item.Candidate.ContentId)
             .Select(group => BuildGroup(group.ToArray(), clauses, minimumShouldMatch, options, preparedQuery,
-                diversifyPreviews, semanticAnchors))
+                diversifyPreviews, semanticAnchors, previewsFollowFusedScore: semanticCompleted))
             .OrderByDescending(group => group.Score).ThenBy(group => group.DocumentId).ThenBy(group => group.ContentId)
             .ThenBy(group => group.SectionId)
             .ToArray();
@@ -467,7 +472,7 @@ public sealed class HybridSearchService(
 
     private static SearchResultGroup BuildGroup(IReadOnlyList<Fused> matches, IReadOnlyList<SearchClause> clauses,
         int minimumShouldMatch, SearchResultOptions options, StructuredSearchQuery.PreparedQuery preparedQuery,
-        bool diversifyPreviews, SemanticPreviewAnchors? semanticAnchors)
+        bool diversifyPreviews, SemanticPreviewAnchors? semanticAnchors, bool previewsFollowFusedScore)
     {
         var best = matches.OrderByDescending(match => match.Score).ThenBy(match => match.Candidate.PassageId).First();
         var scopeCandidate = best.Candidate;
@@ -495,7 +500,13 @@ public sealed class HybridSearchService(
             preparedQuery.FindFieldMatches(item.Candidate))).ToArray();
         var matchingEvidence = evaluated.Where(item => item.Spans.Length > 0 || item.Fields.Count > 0 ||
             item.Item.Candidate.SemanticRank is not null).ToArray();
-        var rankedEvidence = matchingEvidence.OrderByDescending(item => item.Spans.Select(span => span.ClauseId)
+        // Keyword-only previews lead with the passages that satisfy the most clauses. When vectors ran,
+        // the fused score already credits clause matches through the keyword rank, and counting matched
+        // clauses first would let long passages full of common query words push out the best semantic
+        // evidence, including the passage that gave this group its rank.
+        var rankedEvidence = matchingEvidence
+            .OrderByDescending(item => previewsFollowFusedScore ? item.Item.Score : 0)
+            .ThenByDescending(item => item.Spans.Select(span => span.ClauseId)
                 .Concat(item.Fields.Select(field => field.ClauseId)).Distinct().Count())
             .ThenByDescending(item => item.Item.Score).ThenByDescending(item => item.Item.Candidate.SemanticScore)
             .ThenBy(item => item.Item.Candidate.Ordinal)
@@ -715,33 +726,52 @@ public sealed class HybridSearchService(
         }
     }
 
-    private async Task<IVectorIndex> GetVectorIndexAsync(
+    private async Task<(IVectorIndex Index, bool ReusedRecentSnapshot)> GetVectorIndexAsync(
         Guid projectId,
         VectorSnapshotMetadata metadata,
+        bool allowRecentSnapshot,
         CancellationToken cancellationToken)
     {
         var policyKey = metadata.Policy!.Key;
-        if (_cache.TryGet(projectId, metadata.SearchGeneration, policyKey, out var cached))
-            return cached;
+        if (TryGetCached(out var cached)) return cached;
 
         await _vectorLoadGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (_cache.TryGet(projectId, metadata.SearchGeneration, policyKey, out cached))
-                return cached;
+            if (TryGetCached(out cached)) return cached;
 
             var snapshot = await _store.LoadVectorSnapshotAsync(projectId, metadata.Policy!, cancellationToken)
                 .ConfigureAwait(false);
-            if (snapshot.SearchGeneration != metadata.SearchGeneration ||
-                !string.Equals(snapshot.Policy?.Key, policyKey, StringComparison.Ordinal))
-                throw new ContextMoleException("index_changed", "The project index changed while loading semantic vectors.", true);
+            if (!string.Equals(snapshot.Policy?.Key, policyKey, StringComparison.Ordinal))
+                throw new ContextMoleException("semantic_model_changed",
+                    "The embedding policy changed while loading semantic vectors.", true);
             if (snapshot.Warning is not null)
                 throw new ContextMoleException("semantic_index_invalid", snapshot.Warning);
-            return _cache.GetOrCreate(projectId, snapshot, _vectorFactory);
+            return (_cache.GetOrCreate(projectId, snapshot, _vectorFactory), false);
         }
         finally
         {
             _vectorLoadGate.Release();
+        }
+
+        bool TryGetCached(out (IVectorIndex Index, bool ReusedRecentSnapshot) result)
+        {
+            if (_cache.TryGet(projectId, metadata.SearchGeneration, policyKey, out var exact))
+            {
+                result = (exact, false);
+                return true;
+            }
+            // While a project is indexing, every commit advances the generation. Reusing a snapshot built moments
+            // ago avoids reloading every vector on each search; superseded passages are dropped when candidates are
+            // hydrated. Filtered searches always load fresh vectors because cached entries keep pre-rename paths.
+            if (allowRecentSnapshot && _cache.TryGetRecent(projectId, policyKey, out var recent) &&
+                recent.SearchGeneration < metadata.SearchGeneration)
+            {
+                result = (recent, true);
+                return true;
+            }
+            result = default;
+            return false;
         }
     }
 
@@ -764,17 +794,54 @@ public sealed class VectorIndexCache
 {
     public const long DefaultByteBudget = 512L * 1024 * 1024;
     private readonly object _gate = new();
+    /// <summary>How long the broker reuses a project's newest vector snapshot after later commits.</summary>
+    public static readonly TimeSpan DefaultRecentSnapshotReuse = TimeSpan.FromSeconds(30);
     private readonly Dictionary<(Guid ProjectId, long Generation, string Policy), Entry> _entries = [];
     private readonly long _byteBudget;
+    private readonly TimeSpan _recentSnapshotReuse;
+    private readonly TimeProvider _timeProvider;
     private long _bytes;
 
-    public VectorIndexCache(long byteBudget = DefaultByteBudget)
+    public VectorIndexCache(long byteBudget = DefaultByteBudget, TimeSpan? recentSnapshotReuse = null,
+        TimeProvider? timeProvider = null)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(byteBudget);
+        _recentSnapshotReuse = recentSnapshotReuse ?? TimeSpan.Zero;
+        ArgumentOutOfRangeException.ThrowIfLessThan(_recentSnapshotReuse, TimeSpan.Zero, nameof(recentSnapshotReuse));
         _byteBudget = byteBudget;
+        _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
     public long ByteBudget => _byteBudget;
+
+    public TimeSpan RecentSnapshotReuse => _recentSnapshotReuse;
+
+    /// <summary>
+    /// Returns the project's cached index for <paramref name="policy"/> regardless of generation when it was built
+    /// within <see cref="RecentSnapshotReuse"/>. Disabled when the window is zero.
+    /// </summary>
+    public bool TryGetRecent(Guid projectId, string policy, out IVectorIndex index)
+    {
+        if (_recentSnapshotReuse > TimeSpan.Zero)
+        {
+            var now = _timeProvider.GetUtcNow();
+            lock (_gate)
+            {
+                foreach (var (key, entry) in _entries)
+                {
+                    if (key.ProjectId != projectId || !string.Equals(key.Policy, policy, StringComparison.Ordinal) ||
+                        now - entry.CreatedUtc > _recentSnapshotReuse)
+                        continue;
+                    entry.LastAccessUtc = now.UtcDateTime;
+                    index = entry.Index;
+                    return true;
+                }
+            }
+        }
+
+        index = null!;
+        return false;
+    }
 
     public long CurrentBytes
     {
@@ -863,7 +930,7 @@ public sealed class VectorIndexCache
                 _bytes -= oldest.Value.Bytes;
             }
             var index = factory.Create(snapshot);
-            _entries[key] = new Entry(index, bytes, DateTime.UtcNow);
+            _entries[key] = new Entry(index, bytes, DateTime.UtcNow, _timeProvider.GetUtcNow());
             _bytes += bytes;
             return index;
         }
@@ -883,10 +950,11 @@ public sealed class VectorIndexCache
         return bytes;
     }
 
-    private sealed class Entry(IVectorIndex index, long bytes, DateTime lastAccessUtc)
+    private sealed class Entry(IVectorIndex index, long bytes, DateTime lastAccessUtc, DateTimeOffset createdUtc)
     {
         public IVectorIndex Index { get; } = index;
         public long Bytes { get; } = bytes;
         public DateTime LastAccessUtc { get; set; } = lastAccessUtc;
+        public DateTimeOffset CreatedUtc { get; } = createdUtc;
     }
 }

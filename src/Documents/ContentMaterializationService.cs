@@ -26,6 +26,10 @@ public sealed partial class ContentMaterializationService(
     private readonly IAppPaths _paths = paths;
     private readonly IGlobalCpuBudget _cpuBudget = cpuBudget;
     private readonly long _maxBytes = ReadConfiguredMaxBytes();
+    /// <summary>How long a materialized copy stays on disk after it was last written or handed out.</summary>
+    internal static readonly TimeSpan MaterializedRetention = TimeSpan.FromHours(24);
+    private static readonly TimeSpan PruneInterval = TimeSpan.FromHours(1);
+    private long _lastPruneTicks;
 
     public async Task<MaterializedContent> MaterializeAsync(Guid projectId, Guid contentId,
         CancellationToken cancellationToken = default)
@@ -161,7 +165,7 @@ public sealed partial class ContentMaterializationService(
     {
         if (ordinal < 0)
             return null;
-        var format = SupportedContent.Resolve(containerName, containerMimeType);
+        var format = ContentFormatDetection.Resolve(containerBytes, containerName, containerMimeType);
         return format?.Kind switch
         {
             ContentFormatKind.Pdf => ExtractPdfChild(containerBytes, ordinal),
@@ -345,6 +349,7 @@ public sealed partial class ContentMaterializationService(
                 throw new IOException("The materialization root escaped controlled temporary storage.");
             Directory.CreateDirectory(materializedRoot);
             RejectLinkedDirectory(materializedRoot);
+            PruneExpiredCopies(materializedRoot);
             var contentDirectory = Path.GetFullPath(Path.Combine(materializedRoot, contentId.ToString("N")));
             if (!IsPathWithin(materializedRoot, contentDirectory))
                 throw new IOException("The materialization directory escaped controlled temporary storage.");
@@ -363,7 +368,11 @@ public sealed partial class ContentMaterializationService(
 
             if (File.Exists(preferredPath) && await ExistingFileMatchesAsync(preferredPath, sha256, bytes.LongLength,
                     cancellationToken).ConfigureAwait(false))
+            {
+                // Handing the copy out again restarts its retention period.
+                TryTouch(preferredPath);
                 return preferredPath;
+            }
 
             for (var attempt = 0; attempt < 4; attempt++)
             {
@@ -539,6 +548,72 @@ public sealed partial class ContentMaterializationService(
     {
         if (IsFileSystemLink(new DirectoryInfo(path)))
             throw new IOException("Controlled temporary storage is a file-system link.");
+    }
+
+    private void PruneExpiredCopies(string materializedRoot)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var last = Interlocked.Read(ref _lastPruneTicks);
+        if (now.UtcTicks - last < PruneInterval.Ticks ||
+            Interlocked.CompareExchange(ref _lastPruneTicks, now.UtcTicks, last) != last)
+            return;
+        PruneMaterializedRoot(materializedRoot, now - MaterializedRetention);
+    }
+
+    /// <summary>
+    /// Deletes materialized copies last written before <paramref name="cutoffUtc"/> and the per-content folders
+    /// they leave empty. Links are never followed, and files another process still holds open are skipped.
+    /// </summary>
+    internal static int PruneMaterializedRoot(string materializedRoot, DateTimeOffset cutoffUtc)
+    {
+        var deleted = 0;
+        try
+        {
+            var root = new DirectoryInfo(materializedRoot);
+            if (!root.Exists || IsFileSystemLink(root)) return 0;
+            foreach (var directory in root.EnumerateDirectories())
+            {
+                if (IsFileSystemLink(directory)) continue;
+                foreach (var file in directory.EnumerateFiles())
+                {
+                    if (IsFileSystemLink(file) || file.LastWriteTimeUtc >= cutoffUtc.UtcDateTime) continue;
+                    try
+                    {
+                        file.Delete();
+                        deleted++;
+                    }
+                    catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                    {
+                    }
+                }
+                try
+                {
+                    // Deleting files refreshes the folder's timestamp, so a folder emptied in this pass is removed
+                    // by a later one; an old timestamp also keeps a concurrent writer's new folder in place.
+                    directory.Refresh();
+                    if (directory.LastWriteTimeUtc < cutoffUtc.UtcDateTime && !directory.EnumerateFileSystemInfos().Any())
+                        directory.Delete();
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                {
+                }
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+        }
+        return deleted;
+    }
+
+    private static void TryTouch(string path)
+    {
+        try
+        {
+            File.SetLastWriteTimeUtc(path, DateTime.UtcNow);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+        }
     }
 
     private static void TryDeleteOwnedOutput(string path)

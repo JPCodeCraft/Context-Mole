@@ -2,6 +2,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vm="using:ContextMole.App.UI.ViewModels"
         xmlns:views="using:ContextMole.App.UI.Views"
+        xmlns:controls="using:ContextMole.App.UI.Controls"
         x:Class="ContextMole.App.UI.Views.MainWindow"
         x:DataType="vm:MainViewModel"
         Width="1280" Height="800" MinWidth="980" MinHeight="640"
@@ -11,7 +12,7 @@
     <Border Background="{DynamicResource SidebarBrush}"
             BorderBrush="{DynamicResource BorderBrush}"
             BorderThickness="0,0,1,0">
-      <Grid RowDefinitions="Auto,Auto,Auto,*,Auto,Auto" Margin="16,18,16,14">
+      <Grid RowDefinitions="Auto,Auto,Auto,*,Auto" Margin="16,18,16,14">
         <StackPanel Orientation="Horizontal" Spacing="11" Margin="6,0,6,20">
           <Image Width="36" Height="36" Source="/Assets/context-mole-app-icon.png"
                  Stretch="Uniform" />
@@ -32,8 +33,12 @@
                   AutomationProperties.Name="{Binding SettingsNavigationAutomationName}" />
         </StackPanel>
 
-        <TextBlock Grid.Row="2" Text="YOUR PROJECTS" Classes="eyebrow"
-                   Margin="7,25,5,11" VerticalAlignment="Center" />
+        <Grid Grid.Row="2" ColumnDefinitions="*,Auto" Margin="7,22,0,8">
+          <TextBlock Text="Your projects" Classes="eyebrow" VerticalAlignment="Center" />
+          <Button Grid.Column="1" Classes="ghost sidebarAdd" Content="+" Click="AddProject"
+                  IsEnabled="{Binding CanRunProjectAction}"
+                  ToolTip.Tip="Add project" AutomationProperties.Name="Add project" />
+        </Grid>
 
         <ListBox x:Name="ProjectList" Grid.Row="3" Classes="projectList" ItemsSource="{Binding Projects}"
                  SelectedItem="{Binding SelectedProject}" SelectionChanged="ProjectSelectionChanged"
@@ -41,41 +46,36 @@
           <ListBox.ItemTemplate>
             <DataTemplate x:DataType="vm:ProjectItemViewModel">
               <Border Classes="projectCard" Classes.paused="{Binding IsPaused}"
-                      Margin="0,0,0,7" Padding="12" CornerRadius="9" BorderThickness="1"
+                      Margin="0,0,0,4" Padding="10,9" CornerRadius="9" BorderThickness="1"
                       PointerPressed="ProjectCardPressed">
+                <Border.ContextMenu>
+                  <ContextMenu>
+                    <MenuItem Header="Move up" InputGesture="Ctrl+Shift+Up" Click="MoveProjectUp" />
+                    <MenuItem Header="Move down" InputGesture="Ctrl+Shift+Down" Click="MoveProjectDown" />
+                  </ContextMenu>
+                </Border.ContextMenu>
                 <Grid ColumnDefinitions="Auto,*" ColumnSpacing="8">
                   <TextBlock Text="⠿" Classes="projectDragHandle" Cursor="SizeAll"
-                             VerticalAlignment="Center" ToolTip.Tip="Drag to reorder, or use the Move up and Move down buttons. Keyboard: Ctrl+Shift+Up/Down."
+                             VerticalAlignment="Center" ToolTip.Tip="Drag to reorder. You can also right-click a project or press Ctrl+Shift+Up/Down."
                              PointerPressed="ProjectDragHandlePressed"
                              PointerMoved="ProjectDragHandleMoved"
                              PointerReleased="ProjectDragHandleReleased"
                              PointerCaptureLost="ProjectDragHandleCaptureLost" />
-                  <StackPanel Grid.Column="1" Spacing="7">
-                    <StackPanel Spacing="4">
-                      <TextBlock Text="{Binding Name}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"
-                                 TextWrapping="Wrap" MaxLines="2"
-                                 ToolTip.Tip="{Binding Name}" AutomationProperties.Name="{Binding Name}" />
-                      <Border HorizontalAlignment="Left" Classes="phaseBadge" Classes.paused="{Binding IsPaused}"
-                              Classes.ready="{Binding IsReady}" Classes.retrying="{Binding IsRetryStatus}"
-                              Classes.attention="{Binding NeedsAttention}"
-                              Padding="7,2" CornerRadius="8" ToolTip.Tip="{Binding PhaseDetails}">
-                        <TextBlock Text="{Binding Phase}" Classes="phaseText"
-                                   Classes.paused="{Binding IsPaused}" Classes.ready="{Binding IsReady}"
-                                   Classes.retrying="{Binding IsRetryStatus}" Classes.attention="{Binding NeedsAttention}"
-                                   FontSize="12" FontWeight="SemiBold" />
-                      </Border>
-                    </StackPanel>
-                    <StackPanel Orientation="Horizontal" Spacing="5">
-                      <TextBlock Text="{Binding DocumentCountDisplay}" Classes="muted" FontSize="12" />
-                      <StackPanel IsVisible="{Binding HasErrors}" Orientation="Horizontal" Spacing="5">
-                        <TextBlock Text="·" Classes="quiet" FontSize="12" />
-                        <TextBlock Text="{Binding SidebarErrorCountDisplay}" Foreground="{DynamicResource DangerBrush}"
-                                   FontSize="12" />
+                  <StackPanel Grid.Column="1" Spacing="5">
+                    <TextBlock Text="{Binding Name}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"
+                               ToolTip.Tip="{Binding Name}" AutomationProperties.Name="{Binding Name}" />
+                    <Grid ColumnDefinitions="Auto,*" ColumnSpacing="7" ToolTip.Tip="{Binding PhaseDetails}">
+                      <controls:StatusDot Tone="{Binding StatusTone}" />
+                      <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="5">
+                        <TextBlock Text="{Binding SidebarStatus}" Classes="muted" FontSize="12"
+                                   TextTrimming="CharacterEllipsis" />
+                        <TextBlock IsVisible="{Binding ShowSidebarIssueCount}" Text="{Binding SidebarErrorCountDisplay, StringFormat='· {0}'}"
+                                   Foreground="{DynamicResource DangerBrush}" FontSize="12" />
                       </StackPanel>
-                    </StackPanel>
-                    <ProgressBar Minimum="0" Maximum="{Binding ProgressMaximum}" Value="{Binding ReadyCount}"
+                    </Grid>
+                    <ProgressBar IsVisible="{Binding ShowProgress}" Minimum="0" Maximum="{Binding ProgressMaximum}" Value="{Binding ReadyCount}"
                                  IsIndeterminate="{Binding IsDiscovering}" ToolTip.Tip="{Binding ProgressDescription}"
-                                 Classes.paused="{Binding IsPaused}" Height="4"
+                                 Height="3" Margin="0,2,0,0"
                                  AutomationProperties.Name="{Binding ProgressDescription}" />
                   </StackPanel>
                 </Grid>
@@ -84,21 +84,10 @@
           </ListBox.ItemTemplate>
         </ListBox>
 
-        <WrapPanel Grid.Row="4" Margin="0,5,0,0">
-          <Button Content="Move up" Classes="compact" Click="MoveProjectUp" Margin="0,0,6,0"
-                  IsEnabled="{Binding CanMoveSelectedProjectUp}"
-                  AutomationProperties.Name="Move selected project up, Control Shift Up" />
-          <Button Content="Move down" Classes="compact" Click="MoveProjectDown"
-                  IsEnabled="{Binding CanMoveSelectedProjectDown}"
-                  AutomationProperties.Name="Move selected project down, Control Shift Down" />
-        </WrapPanel>
-        <StackPanel Grid.Row="5" Spacing="10" Margin="3,12,3,0">
+        <StackPanel Grid.Row="4" Spacing="10" Margin="3,12,3,0">
           <Border Background="{DynamicResource SurfaceBrush}" CornerRadius="8" Padding="10,9">
             <Grid ColumnDefinitions="Auto,*" ColumnSpacing="8">
-              <Border Classes="statusDot" Classes.busy="{Binding IsStatusBusy}" Classes.ready="{Binding IsStatusReady}"
-                      Classes.warning="{Binding IsStatusWarning}" Classes.error="{Binding IsStatusError}"
-                      Width="7" Height="7" CornerRadius="4"
-                      VerticalAlignment="Top" Margin="0,4,0,0" />
+              <controls:StatusDot Tone="{Binding StatusTone}" VerticalAlignment="Top" Margin="0,4,0,0" />
               <TextBlock Grid.Column="1" Text="{Binding StatusMessage}" Classes="quiet" FontSize="12"
                          TextWrapping="Wrap" ToolTip.Tip="{Binding StatusDetails}"
                          AutomationProperties.HelpText="{Binding StatusDetails}" AutomationProperties.LiveSetting="Polite" />
@@ -108,7 +97,7 @@
                   Click="QuitApplication" />
         </StackPanel>
 
-        <Canvas x:Name="ProjectDragOverlay" Grid.RowSpan="6" ZIndex="100"
+        <Canvas x:Name="ProjectDragOverlay" Grid.RowSpan="5" ZIndex="100"
                 IsHitTestVisible="False" ClipToBounds="False">
           <Border x:Name="ProjectDropSlot" Classes="projectDropSlot" IsVisible="False"
                   CornerRadius="9" BorderThickness="1" />
@@ -120,29 +109,8 @@
       </Grid>
     </Border>
 
-    <Grid Grid.Column="1" RowDefinitions="Auto,Auto,Auto,Auto,*">
-      <Border Grid.Row="0" Background="{DynamicResource AppBackgroundBrush}"
-              BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,0,0,1" Padding="30,21">
-        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="20">
-          <StackPanel IsVisible="{Binding IsProjectsSection}" Spacing="3">
-            <TextBlock Text="Projects" Classes="pageTitle" />
-            <TextBlock Text="Build a local index, then search it from your AI assistant." Classes="muted" TextWrapping="Wrap" />
-            <WrapPanel Margin="0,8,0,0">
-              <Button Content="Connect an assistant" Click="ShowAiConnections" Classes="compact" Margin="0,0,8,0" />
-              <Button Content="Copy starter question" Click="CopyStarterPrompt" IsVisible="{Binding HasSelection}" Classes="compact" />
-            </WrapPanel>
-          </StackPanel>
-          <StackPanel IsVisible="{Binding IsSettingsSection}" Spacing="3">
-            <TextBlock Text="Settings" Classes="pageTitle" />
-            <TextBlock Text="Preferences apply globally across every project." Classes="muted" />
-          </StackPanel>
-          <Button Grid.Column="1" IsVisible="{Binding IsProjectsSection}" Classes="primary"
-                  IsEnabled="{Binding CanRunProjectAction}"
-                  Content="Add project" Click="AddProject" VerticalAlignment="Center" />
-        </Grid>
-      </Border>
-
-      <Border Grid.Row="1" IsVisible="{Binding IsApplicationUpdateReady}"
+    <Grid Grid.Column="1" RowDefinitions="Auto,Auto,Auto,*">
+      <Border Grid.Row="0" IsVisible="{Binding IsApplicationUpdateReady}"
               Background="{DynamicResource AccentSubtleBrush}" BorderBrush="#31568C"
               BorderThickness="0,0,0,1" Padding="30,10">
         <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
@@ -152,7 +120,7 @@
         </Grid>
       </Border>
 
-      <Border Grid.Row="2" IsVisible="{Binding HasStaleProjectData}"
+      <Border Grid.Row="1" IsVisible="{Binding HasStaleProjectData}"
               Background="{DynamicResource DangerSubtleBrush}" BorderBrush="{DynamicResource DangerBrush}"
               BorderThickness="0,0,0,1" Padding="30,14">
         <StackPanel Spacing="7">
@@ -164,34 +132,33 @@
         </StackPanel>
       </Border>
 
-      <Border Grid.Row="3" Classes="notificationBanner" Classes.error="{Binding IsNotificationError}" IsVisible="{Binding HasNotification}"
-              BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,0,0,1" Padding="30,10">
+      <Border Grid.Row="2" Classes="notificationBanner" Classes.error="{Binding IsNotificationError}" IsVisible="{Binding HasNotification}"
+              BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,0,0,1" Padding="30,8">
         <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
-          <StackPanel Spacing="3" VerticalAlignment="Center">
-            <TextBlock Text="{Binding NotificationLabel}" FontWeight="SemiBold" FontSize="12" />
-            <TextBlock Text="{Binding NotificationMessage}" TextWrapping="Wrap"
-                       AutomationProperties.LiveSetting="Polite" />
-          </StackPanel>
-          <WrapPanel Grid.Column="1" VerticalAlignment="Center">
-            <Button IsVisible="{Binding NotificationCanOpenSettings}" Content="Open settings" Click="ShowSettings" Margin="0,0,8,0" />
+          <TextBlock Text="{Binding NotificationMessage}" TextWrapping="Wrap" VerticalAlignment="Center"
+                     AutomationProperties.LiveSetting="Polite" />
+          <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+            <Button IsVisible="{Binding NotificationCanOpenSettings}" Classes="compact" Content="Open settings" Click="ShowSettings" />
             <Button Classes="ghost compact" Content="Dismiss" Click="DismissNotification"
-                    AutomationProperties.Name="Dismiss operation message" />
-          </WrapPanel>
+                    AutomationProperties.Name="Dismiss message" />
+          </StackPanel>
         </Grid>
       </Border>
-      <views:ProjectsView Grid.Row="4" IsVisible="{Binding IsProjectsSection}" />
-      <views:SettingsView Grid.Row="4" IsVisible="{Binding IsSettingsSection}" />
+      <views:ProjectsView Grid.Row="3" IsVisible="{Binding IsProjectsSection}" />
+      <views:SettingsView Grid.Row="3" IsVisible="{Binding IsSettingsSection}" />
     </Grid>
   </Grid>
 
   <Window.Styles>
     <Style Selector="Border.notificationBanner"><Setter Property="Background" Value="{DynamicResource SurfaceRaisedBrush}" /></Style>
     <Style Selector="Border.notificationBanner.error"><Setter Property="Background" Value="{DynamicResource DangerSubtleBrush}" /></Style>
-    <Style Selector="Border.statusDot"><Setter Property="Background" Value="{DynamicResource BorderStrongBrush}" /></Style>
-    <Style Selector="Border.statusDot.busy"><Setter Property="Background" Value="{DynamicResource AccentBrush}" /></Style>
-    <Style Selector="Border.statusDot.ready"><Setter Property="Background" Value="{DynamicResource SuccessBrush}" /></Style>
-    <Style Selector="Border.statusDot.warning"><Setter Property="Background" Value="{DynamicResource WarningBrush}" /></Style>
-    <Style Selector="Border.statusDot.error"><Setter Property="Background" Value="{DynamicResource DangerBrush}" /></Style>
+    <Style Selector="Button.sidebarAdd">
+      <Setter Property="MinHeight" Value="26" />
+      <Setter Property="Width" Value="26" />
+      <Setter Property="Padding" Value="0" />
+      <Setter Property="FontSize" Value="17" />
+      <Setter Property="Foreground" Value="{DynamicResource AccentBrush}" />
+    </Style>
     <Style Selector="Button.navButton">
       <Setter Property="MinHeight" Value="41" />
       <Setter Property="Padding" Value="12,9" />

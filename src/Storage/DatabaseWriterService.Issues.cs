@@ -77,9 +77,7 @@ public sealed partial class DatabaseWriterService
             .ConfigureAwait(false) > 0;
         await RemoveExcludedEvidenceAsync(connection, transaction, projectId, key, token).ConfigureAwait(false);
         if (changed)
-            await ExecuteAsync(connection, transaction,
-                "UPDATE projects SET search_generation=search_generation+1,updated_utc=$now WHERE id=$project;",
-                [new("$project", projectId.ToString()), new("$now", now)], token).ConfigureAwait(false);
+            await AdvanceSearchGenerationAsync(connection, transaction, projectId, now, token).ConfigureAwait(false);
         await transaction.CommitAsync(token).ConfigureAwait(false);
         return new FileExclusionResult(changed, false);
     }, cancellationToken);

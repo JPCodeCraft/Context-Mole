@@ -25,9 +25,18 @@ public sealed class BrokerPipeServer : IAsyncDisposable
     private readonly DateTimeOffset _startedUtc;
     private readonly Func<BrokerRpcRequest, CancellationToken, Task<JsonElement>> _handler;
     private readonly Action<Exception>? _unhandledException;
+    /// <summary>
+    /// Concurrent connections, including callers that wait inside the dispatcher for a request gate. The indexer
+    /// can hold one connection per worker for embeddings, so this leaves room for AI clients' tool calls; a full
+    /// server makes clients time out and needlessly launch a spare broker.
+    /// </summary>
+    internal const int MaximumConnections = 64;
+    /// <summary>How long a connected client has to send each handshake or request frame.</summary>
+    internal static readonly TimeSpan DefaultFrameReadTimeout = TimeSpan.FromSeconds(10);
     private readonly ConcurrentDictionary<long, Task> _connections = new();
-    private readonly SemaphoreSlim _connectionSlots = new(16, 16);
+    private readonly SemaphoreSlim _connectionSlots = new(MaximumConnections, MaximumConnections);
     private readonly CancellationTokenSource _disposeCancellation = new();
+    private readonly TimeSpan _frameReadTimeout;
     private long _nextConnectionId;
 
     public BrokerPipeServer(
@@ -37,8 +46,11 @@ public sealed class BrokerPipeServer : IAsyncDisposable
         string deploymentId,
         DateTimeOffset startedUtc,
         Func<BrokerRpcRequest, CancellationToken, Task<JsonElement>> handler,
-        Action<Exception>? unhandledException = null)
+        Action<Exception>? unhandledException = null,
+        TimeSpan? frameReadTimeout = null)
     {
+        _frameReadTimeout = frameReadTimeout ?? DefaultFrameReadTimeout;
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(_frameReadTimeout, TimeSpan.Zero, nameof(frameReadTimeout));
         _endpoint = endpoint;
         _authenticationToken = authenticationToken;
         _brokerVersion = brokerVersion;
@@ -135,31 +147,23 @@ public sealed class BrokerPipeServer : IAsyncDisposable
     {
         await using (pipe.ConfigureAwait(false))
         {
-            BrokerHandshakeRequest handshake;
-            try
-            {
-                handshake = await BrokerFrameCodec.ReadAsync<BrokerHandshakeRequest>(pipe, serverCancellation)
-                    .ConfigureAwait(false);
-            }
-            catch (Exception exception) when (exception is IOException or EndOfStreamException or BrokerRpcException)
-            {
-                return;
-            }
+            // A client that connects and then stalls must not hold a connection slot indefinitely.
+            var handshake = await ReadFrameAsync<BrokerHandshakeRequest>(pipe, serverCancellation).ConfigureAwait(false);
+            if (handshake is null) return;
 
             var handshakeResponse = ValidateHandshake(handshake);
-            await BrokerFrameCodec.WriteAsync(pipe, handshakeResponse, serverCancellation).ConfigureAwait(false);
-            if (!handshakeResponse.Accepted) return;
-
-            BrokerRpcRequest request;
             try
             {
-                request = await BrokerFrameCodec.ReadAsync<BrokerRpcRequest>(pipe, serverCancellation)
-                    .ConfigureAwait(false);
+                await BrokerFrameCodec.WriteAsync(pipe, handshakeResponse, serverCancellation).ConfigureAwait(false);
             }
-            catch (Exception exception) when (exception is IOException or EndOfStreamException or BrokerRpcException)
+            catch (Exception exception) when (exception is IOException or ObjectDisposedException)
             {
                 return;
             }
+            if (!handshakeResponse.Accepted) return;
+
+            var request = await ReadFrameAsync<BrokerRpcRequest>(pipe, serverCancellation).ConfigureAwait(false);
+            if (request is null) return;
 
             if (request.RequestId == Guid.Empty || string.IsNullOrWhiteSpace(request.Method))
             {
@@ -249,6 +253,25 @@ public sealed class BrokerPipeServer : IAsyncDisposable
         }
     }
 
+    private async Task<T?> ReadFrameAsync<T>(Stream pipe, CancellationToken serverCancellation) where T : class
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(serverCancellation);
+        timeout.CancelAfter(_frameReadTimeout);
+        try
+        {
+            return await BrokerFrameCodec.ReadAsync<T>(pipe, timeout.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!serverCancellation.IsCancellationRequested)
+        {
+            return null;
+        }
+        catch (Exception exception) when (exception is IOException or EndOfStreamException or BrokerRpcException
+                                              or ObjectDisposedException)
+        {
+            return null;
+        }
+    }
+
     internal BrokerHandshakeResponse ValidateHandshake(BrokerHandshakeRequest request)
     {
         if (request.ProtocolMajor != BrokerProtocol.MajorVersion)
@@ -265,8 +288,10 @@ public sealed class BrokerPipeServer : IAsyncDisposable
         BrokerProtocol.MajorVersion, BrokerProtocol.MinorVersion, _brokerVersion, _deploymentId, Capabilities,
         new BrokerRpcError(code, message, false));
 
-    private static bool TokensEqual(string left, string right)
+    private static bool TokensEqual(string? left, string right)
     {
+        // The handshake is untrusted input: a missing token is a rejection, not a server fault.
+        if (string.IsNullOrEmpty(left)) return false;
         var leftBytes = Encoding.ASCII.GetBytes(left);
         var rightBytes = Encoding.ASCII.GetBytes(right);
         return leftBytes.Length == rightBytes.Length &&
@@ -276,12 +301,13 @@ public sealed class BrokerPipeServer : IAsyncDisposable
     private static async Task MonitorDisconnectAsync(NamedPipeServerStream pipe,
         CancellationTokenSource requestCancellation, CancellationToken cancellationToken)
     {
+        // A connection carries exactly one request, so the client never writes after it. Any read that completes,
+        // whether end-of-stream from a disconnect or unexpected bytes, means the caller abandoned the request.
         var buffer = new byte[1];
         try
         {
-            var read = await pipe.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
-            if (read == 0) await requestCancellation.CancelAsync().ConfigureAwait(false);
-            else await requestCancellation.CancelAsync().ConfigureAwait(false);
+            _ = await pipe.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
+            await requestCancellation.CancelAsync().ConfigureAwait(false);
         }
         catch (Exception exception) when (exception is IOException or ObjectDisposedException)
         {

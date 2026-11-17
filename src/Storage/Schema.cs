@@ -40,6 +40,11 @@ internal static class Schema
             "CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY, applied_utc TEXT NOT NULL);",
             cancellationToken).ConfigureAwait(false);
 
+        if (initialVersion > 0 && initialVersion < CurrentVersion)
+            await BackUpBeforeMigrationAsync(connection, initialVersion, logger, cancellationToken).ConfigureAwait(false);
+        else
+            PruneMigrationBackups(connection.DataSource, DateTimeOffset.UtcNow);
+
         foreach (var migration in migrations.Where(item => item.Version > initialVersion))
         {
             var started = Stopwatch.GetTimestamp();
@@ -91,6 +96,97 @@ internal static class Schema
         await RecoverInterruptedJobsAsync(connection, cancellationToken).ConfigureAwait(false);
         logger.LogInformation("Interrupted database jobs and staging revisions recovered");
         await ValidateAsync(connection, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// A snapshot is kept in the database folder's backups subfolder before an existing index is upgraded. Only the
+    /// newest one is kept, for at most 30 days, because it can be as large as the index itself.
+    /// </summary>
+    internal const int RetainedMigrationBackups = 1;
+    internal static readonly TimeSpan MigrationBackupRetention = TimeSpan.FromDays(30);
+    internal const string MigrationBackupDirectoryName = "backups";
+
+    /// <summary>
+    /// Copies the database with VACUUM INTO before pending migrations run, so an upgrade that turns out to be wrong
+    /// can be rolled back with the previous release. Each migration is already transactional; this protects
+    /// against a migration that commits but changes data incorrectly. A backup that cannot be made, including when
+    /// free space is short, is logged and skipped so the upgrade itself is never blocked.
+    /// </summary>
+    internal static async Task<string?> BackUpBeforeMigrationAsync(SqliteConnection connection, int fromVersion,
+        ILogger logger, CancellationToken cancellationToken)
+    {
+        var databasePath = connection.DataSource;
+        if (string.IsNullOrEmpty(databasePath) || !File.Exists(databasePath)) return null;
+        try
+        {
+            var fullPath = Path.GetFullPath(databasePath);
+            var directory = Path.Combine(Path.GetDirectoryName(fullPath)!, MigrationBackupDirectoryName);
+            Directory.CreateDirectory(directory);
+            var walPath = fullPath + "-wal";
+            var required = new FileInfo(fullPath).Length + (File.Exists(walPath) ? new FileInfo(walPath).Length : 0);
+            var available = new DriveInfo(directory).AvailableFreeSpace;
+            if (available < required * 2)
+            {
+                logger.LogWarning(
+                    "Skipped the pre-migration database backup: {RequiredBytes} bytes needed, {AvailableBytes} bytes free",
+                    required * 2, available);
+                return null;
+            }
+
+            var target = Path.Combine(directory,
+                $"{Path.GetFileNameWithoutExtension(fullPath)}-v{fromVersion}-before-v{CurrentVersion}-{DateTimeOffset.UtcNow:yyyyMMdd-HHmmssfff}.db");
+            await using (var command = connection.CreateCommand())
+            {
+                command.CommandText = "VACUUM INTO $target;";
+                command.Parameters.AddWithValue("$target", target);
+                await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
+            logger.LogInformation("Backed up schema {FromVersion} database to {BackupPath} before migrating", fromVersion,
+                target);
+
+            PruneMigrationBackups(fullPath, DateTimeOffset.UtcNow);
+            return target;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception) when (exception is SqliteException or IOException or UnauthorizedAccessException
+                                              or ArgumentException)
+        {
+            logger.LogWarning(exception, "Skipped the pre-migration database backup");
+            return null;
+        }
+    }
+
+    internal static void PruneMigrationBackups(string? databasePath, DateTimeOffset now)
+    {
+        if (string.IsNullOrEmpty(databasePath)) return;
+        try
+        {
+            var directory = new DirectoryInfo(Path.Combine(Path.GetDirectoryName(Path.GetFullPath(databasePath))!,
+                MigrationBackupDirectoryName));
+            if (!directory.Exists || directory.LinkTarget is not null) return;
+            var backups = directory.EnumerateFiles("*-before-v*.db")
+                .Where(file => file.LinkTarget is null)
+                .OrderByDescending(file => file.LastWriteTimeUtc).ThenByDescending(file => file.Name, StringComparer.Ordinal)
+                .ToArray();
+            foreach (var (backup, index) in backups.Select((backup, index) => (backup, index)))
+            {
+                if (index < RetainedMigrationBackups && now - backup.LastWriteTimeUtc <= MigrationBackupRetention)
+                    continue;
+                try
+                {
+                    backup.Delete();
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                {
+                }
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+        }
     }
 
     internal static async Task ValidateAsync(SqliteConnection connection, CancellationToken cancellationToken)

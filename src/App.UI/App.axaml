@@ -1,5 +1,6 @@
 <Application xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:controls="using:ContextMole.App.UI.Controls"
              x:Class="ContextMole.App.UI.App"
              RequestedThemeVariant="Dark">
 
@@ -245,64 +246,80 @@
             <Setter Property="CornerRadius" Value="9" />
             <Setter Property="Padding" Value="14" />
         </Style>
-        <Style Selector="Border.phaseBadge">
-            <Setter Property="Background" Value="{DynamicResource AccentSubtleBrush}" />
+        <!-- One status palette for pills, dots and bars. Tone classes come from AppStatusTone. -->
+        <Style Selector="controls|StatusBadge">
+            <Setter Property="CornerRadius" Value="10" />
+            <Setter Property="Padding" Value="9,3" />
+            <Setter Property="Background" Value="{DynamicResource SurfaceHoverBrush}" />
         </Style>
-        <Style Selector="Border.phaseBadge.paused">
-            <Setter Property="Background" Value="{DynamicResource WarningSubtleBrush}" />
+        <Style Selector="controls|StatusBadge > TextBlock">
+            <Setter Property="Foreground" Value="{DynamicResource TextSecondaryBrush}" />
         </Style>
-        <Style Selector="Border.phaseBadge.ready">
-            <Setter Property="Background" Value="{DynamicResource SuccessSubtleBrush}" />
-        </Style>
-        <Style Selector="Border.phaseBadge.retrying">
-            <Setter Property="Background" Value="{DynamicResource WarningSubtleBrush}" />
-        </Style>
-        <Style Selector="Border.phaseBadge.attention">
-            <Setter Property="Background" Value="{DynamicResource DangerSubtleBrush}" />
-        </Style>
-        <Style Selector="TextBlock.phaseText">
-            <Setter Property="Foreground" Value="{DynamicResource AccentBrush}" />
-        </Style>
-        <Style Selector="TextBlock.phaseText.paused">
-            <Setter Property="Foreground" Value="{DynamicResource WarningBrush}" />
-        </Style>
-        <Style Selector="TextBlock.phaseText.ready">
-            <Setter Property="Foreground" Value="{DynamicResource SuccessBrush}" />
-        </Style>
-        <Style Selector="TextBlock.phaseText.retrying">
-            <Setter Property="Foreground" Value="{DynamicResource WarningBrush}" />
-        </Style>
-        <Style Selector="TextBlock.phaseText.attention">
-            <Setter Property="Foreground" Value="{DynamicResource DangerBrush}" />
+        <Style Selector="controls|StatusBadge.busy"><Setter Property="Background" Value="{DynamicResource AccentSubtleBrush}" /></Style>
+        <Style Selector="controls|StatusBadge.busy > TextBlock"><Setter Property="Foreground" Value="{DynamicResource AccentBrush}" /></Style>
+        <Style Selector="controls|StatusBadge.ready"><Setter Property="Background" Value="{DynamicResource SuccessSubtleBrush}" /></Style>
+        <Style Selector="controls|StatusBadge.ready > TextBlock"><Setter Property="Foreground" Value="{DynamicResource SuccessBrush}" /></Style>
+        <Style Selector="controls|StatusBadge.warning"><Setter Property="Background" Value="{DynamicResource WarningSubtleBrush}" /></Style>
+        <Style Selector="controls|StatusBadge.warning > TextBlock"><Setter Property="Foreground" Value="{DynamicResource WarningBrush}" /></Style>
+        <Style Selector="controls|StatusBadge.error"><Setter Property="Background" Value="{DynamicResource DangerSubtleBrush}" /></Style>
+        <Style Selector="controls|StatusBadge.error > TextBlock"><Setter Property="Foreground" Value="{DynamicResource DangerBrush}" /></Style>
+
+        <Style Selector="controls|StatusDot"><Setter Property="Background" Value="{DynamicResource BorderStrongBrush}" /></Style>
+        <Style Selector="controls|StatusDot.busy"><Setter Property="Background" Value="{DynamicResource AccentBrush}" /></Style>
+        <Style Selector="controls|StatusDot.ready"><Setter Property="Background" Value="{DynamicResource SuccessBrush}" /></Style>
+        <Style Selector="controls|StatusDot.warning"><Setter Property="Background" Value="{DynamicResource WarningBrush}" /></Style>
+        <Style Selector="controls|StatusDot.error"><Setter Property="Background" Value="{DynamicResource DangerBrush}" /></Style>
+
+        <Style Selector="controls|SegmentBar">
+            <Setter Property="Height" Value="10" />
+            <Setter Property="TrackBrush" Value="#202B3C" />
+            <Setter Property="ReadyBrush" Value="{DynamicResource SuccessBrush}" />
+            <Setter Property="ProcessingBrush" Value="{DynamicResource AccentBrush}" />
+            <Setter Property="QueuedBrush" Value="#4A5D7C" />
+            <Setter Property="AttentionBrush" Value="{DynamicResource DangerBrush}" />
         </Style>
 
-        <Style Selector="Border.statusBadge">
-            <Setter Property="Background" Value="{DynamicResource SurfaceHoverBrush}" />
-            <Setter Property="CornerRadius" Value="8" />
-            <Setter Property="Padding" Value="8,2" />
+        <Style Selector="Border.legendSwatch">
+            <Setter Property="Width" Value="10" />
+            <Setter Property="Height" Value="10" />
+            <Setter Property="CornerRadius" Value="3" />
+            <Setter Property="VerticalAlignment" Value="Center" />
         </Style>
-        <Style Selector="Border.statusBadge.ready">
-            <Setter Property="Background" Value="{DynamicResource SuccessSubtleBrush}" />
-        </Style>
-        <Style Selector="Border.statusBadge.warning">
-            <Setter Property="Background" Value="{DynamicResource WarningSubtleBrush}" />
-        </Style>
-        <Style Selector="Border.statusBadge.danger">
-            <Setter Property="Background" Value="{DynamicResource DangerSubtleBrush}" />
-        </Style>
-        <Style Selector="TextBlock.statusText">
-            <Setter Property="Foreground" Value="{DynamicResource TextSecondaryBrush}" />
-            <Setter Property="FontSize" Value="12" />
+        <Style Selector="Border.legendSwatch.ready"><Setter Property="Background" Value="{DynamicResource SuccessBrush}" /></Style>
+        <Style Selector="Border.legendSwatch.processing"><Setter Property="Background" Value="{DynamicResource AccentBrush}" /></Style>
+        <Style Selector="Border.legendSwatch.queued"><Setter Property="Background" Value="#4A5D7C" /></Style>
+        <Style Selector="Border.legendSwatch.attention"><Setter Property="Background" Value="{DynamicResource DangerBrush}" /></Style>
+
+        <Style Selector="TextBlock.fieldLabel">
+            <Setter Property="FontSize" Value="13" />
             <Setter Property="FontWeight" Value="SemiBold" />
         </Style>
-        <Style Selector="TextBlock.statusText.ready">
-            <Setter Property="Foreground" Value="{DynamicResource SuccessBrush}" />
+        <Style Selector="TextBlock.statusHeadline">
+            <Setter Property="FontSize" Value="21" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="LetterSpacing" Value="-0.2" />
         </Style>
-        <Style Selector="TextBlock.statusText.warning">
-            <Setter Property="Foreground" Value="{DynamicResource WarningBrush}" />
+        <Style Selector="Border.row">
+            <Setter Property="Background" Value="{DynamicResource SurfaceRaisedBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="9" />
+            <Setter Property="Padding" Value="14,12" />
         </Style>
-        <Style Selector="TextBlock.statusText.danger">
-            <Setter Property="Foreground" Value="{DynamicResource DangerBrush}" />
+        <Style Selector="Border.divider">
+            <Setter Property="Height" Value="1" />
+            <Setter Property="Background" Value="{DynamicResource BorderBrush}" />
+        </Style>
+        <Style Selector="Expander">
+            <Setter Property="Background" Value="Transparent" />
+        </Style>
+        <Style Selector="Expander /template/ ToggleButton#ExpanderHeader">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderBrush" Value="Transparent" />
+        </Style>
+        <Style Selector="Expander /template/ Border#ExpanderContent">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderBrush" Value="Transparent" />
         </Style>
     </Application.Styles>
 </Application>

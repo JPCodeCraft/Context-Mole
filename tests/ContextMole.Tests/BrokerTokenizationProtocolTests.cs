@@ -89,6 +89,10 @@ public sealed class BrokerTokenizationProtocolTests
         Assert.Equal("authentication_failed", rejected.Error?.Code);
         var error = Assert.Throws<BrokerRpcException>(() => BrokerRpcClient.ValidateHandshakeResponse(rejected));
         Assert.Equal("authentication_failed", error.Code);
+        // A handshake frame without a token is untrusted input and must be rejected, not crash the connection.
+        var missing = server.ValidateHandshake(request with { AuthenticationToken = null! });
+        Assert.False(missing.Accepted);
+        Assert.Equal("authentication_failed", missing.Error?.Code);
     }
 
     private static BrokerEndpoint CreateEndpoint() =>

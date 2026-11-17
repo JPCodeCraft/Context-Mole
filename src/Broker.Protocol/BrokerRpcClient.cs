@@ -337,8 +337,10 @@ public sealed class BrokerRpcClient
         var token = requestTimeoutCancellation.Token;
         try
         {
+            // CurrentUserOnly makes the client verify that the pipe's server runs as the current user, so another
+            // account cannot squat on the predictable pipe name and receive the authentication token or queries.
             await using var pipe = new NamedPipeClientStream(".", _endpoint.PipeName, PipeDirection.InOut,
-                PipeOptions.Asynchronous);
+                PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
             await pipe.ConnectAsync((int)Math.Clamp(connectTimeout.TotalMilliseconds, 1, int.MaxValue), token)
                 .ConfigureAwait(false);
 

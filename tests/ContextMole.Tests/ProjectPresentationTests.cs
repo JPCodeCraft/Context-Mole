@@ -10,20 +10,24 @@ public sealed class ProjectPresentationTests
     public void SemanticCoverageDistinguishesLoadingCompleteEmptyUnavailableAndFailure()
     {
         var project = new ProjectItemViewModel(Summary(2, ready: 2));
-        Assert.Equal("CHECKING", project.SemanticIndexStatusLabel);
+        Assert.Equal("Checking", project.SemanticIndexStatusLabel);
+        Assert.Equal(AppStatusTone.Busy, project.SemanticIndexStatusTone);
         project.UpdateSemanticIndex(new(1, null, 2, TotalDocumentCount: 2, CompatibleDocumentCount: 2), true);
-        Assert.Equal("COMPLETE", project.SemanticIndexStatusLabel);
+        Assert.Equal("Complete", project.SemanticIndexStatusLabel);
+        Assert.Equal(AppStatusTone.Ready, project.SemanticIndexStatusTone);
         Assert.Contains("2 of 2", project.SemanticIndexStatusMessage);
         project.BeginSemanticIndexRefresh();
-        Assert.Equal("COMPLETE", project.SemanticIndexStatusLabel);
+        Assert.Equal("Complete", project.SemanticIndexStatusLabel);
         project.FailSemanticIndexRefresh("Storage is busy.");
-        Assert.Equal("UNABLE TO CHECK", project.SemanticIndexStatusLabel);
-        Assert.Contains("Last verified: 2 of 2", project.SemanticIndexStatusMessage);
+        Assert.Equal("Couldn't check", project.SemanticIndexStatusLabel);
+        Assert.Contains("Last result: 2 of 2", project.SemanticIndexStatusMessage);
         project.UpdateSemanticIndex(new(1, null, 0), true);
-        Assert.Equal("NO INDEXED FILES", project.SemanticIndexStatusLabel);
+        Assert.Equal("No files yet", project.SemanticIndexStatusLabel);
+        Assert.False(project.IsSemanticSetupNeeded);
         project.UpdateSemanticIndex(null, false);
-        Assert.Equal("KEYWORD ONLY", project.SemanticIndexStatusLabel);
-        Assert.Contains("Keyword search remains", project.SemanticIndexStatusMessage);
+        Assert.Equal("Off", project.SemanticIndexStatusLabel);
+        Assert.True(project.IsSemanticSetupNeeded);
+        Assert.Contains("keyword search works without it", project.SemanticIndexStatusMessage);
     }
 
     [Fact]
@@ -32,15 +36,12 @@ public sealed class ProjectPresentationTests
         var summary = Summary(2, ready: 1, attention: 1);
         var project = new ProjectItemViewModel(summary);
         project.UpdateSemanticIndex(new(1, null, 2, TotalDocumentCount: 2, CompatibleDocumentCount: 2), true);
-        project.UpdateErrors(Errors(summary.Id, firstId: 1, count: 1));
         Assert.True(project.IsSemanticCoverageComplete);
-        Assert.True(project.HasRecentErrors);
         project.UpdateFrom(summary with { SearchGeneration = 2 });
-        Assert.Equal("REFRESHING COVERAGE", project.SemanticIndexStatusLabel);
-        Assert.Contains("Last verified", project.SemanticIndexStatusMessage);
-        Assert.Contains("refreshing", project.SemanticIndexStatusMessage);
+        Assert.Equal("Updating", project.SemanticIndexStatusLabel);
+        Assert.Contains("2 of 2", project.SemanticIndexStatusMessage);
+        Assert.Contains("Updating", project.SemanticIndexStatusMessage);
         Assert.False(project.IsSemanticCoverageComplete);
-        Assert.False(project.HasRecentErrors);
     }
 
     [Fact]
@@ -94,7 +95,9 @@ public sealed class ProjectPresentationTests
         Assert.Equal(project.DocumentCount,
             project.ReadyCount + project.ProcessingCount + project.QueuedCount + project.AttentionCount);
         Assert.Equal(105, project.IndexedCount);
-        Assert.Contains("affecting 9 files", project.RecentErrorsSummary);
+        Assert.StartsWith("12 issues in 9 files.", project.GroupedIssuesSummary);
+        Assert.Equal("Indexing · 10 files left", project.StatusHeadline);
+        Assert.Contains("1 waiting for CPU", project.QueuedBreakdownDisplay);
     }
 
     [Fact]
@@ -118,7 +121,10 @@ public sealed class ProjectPresentationTests
         Assert.Equal(1, project.IndexedCount);
         Assert.Equal(0, project.SearchableCount);
         Assert.True(project.IsReady);
-        Assert.StartsWith("0 files are searchable now.", project.SearchableSummary);
+        Assert.Equal("Everything is indexed", project.StatusHeadline);
+        Assert.StartsWith("0 files are searchable", project.StatusSummary);
+        Assert.Contains("1 file had no text to index.", project.StatusSummary);
+        Assert.Equal("Not yet", project.KeywordSearchLabel);
         Assert.Equal(0, project.ToSummary().SearchableCount);
     }
 
@@ -157,48 +163,64 @@ public sealed class ProjectPresentationTests
     }
 
     [Fact]
-    public void ResolvedIssuesClearImmediatelyAndClampAnObsoletePage()
+    public void StatusLinesAnswerHowTheProjectIsDoingInPlainWords()
     {
-        var summary = Summary(total: 100, attention: 100);
+        var summary = Summary(total: 24, ready: 24) with { IndexedCount = 24, SearchableCount = 24, LastCompletedUtc = DateTimeOffset.UtcNow };
         var project = new ProjectItemViewModel(summary);
-        project.MoveErrorPage(3);
-        project.UpdateErrors(Errors(summary.Id, firstId: 76, count: 25));
-        Assert.Equal(75, project.ErrorPageOffset);
-        Assert.Equal(25, project.RecentErrors.Count);
+        Assert.Equal("Ready", project.Phase);
+        Assert.Equal(AppStatusTone.Ready, project.StatusTone);
+        Assert.Equal("Ready · 24 files", project.SidebarStatus);
+        Assert.Equal("Everything is indexed", project.StatusHeadline);
+        Assert.StartsWith("24 files are searchable by your AI assistant.", project.StatusSummary);
+        Assert.StartsWith("Last indexed just now", project.IdleActivityDisplay);
+        Assert.False(project.ShowProgress);
 
-        project.UpdateFrom(summary with { ErrorCount = 2, ErrorFileCount = 2, AttentionCount = 2, ReadyCount = 98 });
-        Assert.Equal(0, project.ErrorPageOffset);
-        Assert.Empty(project.RecentErrors);
-        Assert.True(project.HasErrors);
-        project.UpdateErrors(Errors(summary.Id, firstId: 99, count: 2));
-        Assert.Equal(2, project.RecentErrors.Count);
+        project.UpdateFrom(summary with { State = ProjectState.Paused, PendingCount = 4, ReadyCount = 20,
+            Work = new ProjectWorkSummary(4, 0, 0, 0, null) });
+        Assert.Equal("Paused · 4 waiting", project.SidebarStatus);
+        Assert.Equal("Paused · 4 files waiting", project.StatusHeadline);
+        Assert.Equal(AppStatusTone.Warning, project.StatusTone);
+        Assert.False(project.ShowProgress);
 
-        project.UpdateFrom(summary with { ErrorCount = 0, ErrorFileCount = 0, AttentionCount = 0, ReadyCount = 100 });
-        Assert.False(project.HasErrors);
-        Assert.False(project.HasRecentErrors);
-        Assert.Empty(project.RecentErrors);
+        project.UpdateFrom(summary with { ReadyCount = 21, AttentionCount = 3, ErrorCount = 4, ErrorFileCount = 3 });
+        Assert.Equal("Needs attention · 3 files", project.SidebarStatus);
+        Assert.Equal("3 files need attention", project.StatusHeadline);
+        Assert.Equal(AppStatusTone.Error, project.StatusTone);
+        Assert.False(project.ShowSidebarIssueCount);
     }
 
     [Fact]
-    public void IssuePagesStayBoundedAndRetainCollapsePreferenceDuringRefresh()
+    public void RepeatedPollingWithUnchangedStateRaisesNoPropertyChanges()
     {
-        var summary = Summary(total: 5000, attention: 5000);
-        var project = new ProjectItemViewModel(summary) { IsErrorsExpanded = false };
-        project.UpdateErrors(Errors(summary.Id, firstId: 1, count: ProjectItemViewModel.ErrorPageSize));
-        project.UpdateFrom(summary);
-        Assert.True(project.IsErrorsCollapsed);
-        Assert.False(project.CanGoToPreviousErrorPage);
-        Assert.True(project.CanGoToNextErrorPage);
+        var summary = Summary(total: 10, pending: 2, ready: 8);
+        var project = new ProjectItemViewModel(summary);
+        var runtime = new IndexingTimingSnapshot([], null, 0);
+        project.UpdateRuntime(runtime);
+        var changed = new List<string?>();
+        project.PropertyChanged += (_, args) => changed.Add(args.PropertyName);
+        project.UpdateRuntime(runtime);
+        Assert.Empty(changed);
 
-        project.MoveErrorPage(int.MaxValue);
-        Assert.Equal(199, project.ErrorPageIndex);
-        Assert.Empty(project.RecentErrors);
-        project.UpdateErrors(Errors(summary.Id, firstId: 4976, count: ProjectItemViewModel.ErrorPageSize));
-        Assert.Equal(25, project.RecentErrors.Count);
-        Assert.True(project.CanGoToPreviousErrorPage);
-        Assert.False(project.CanGoToNextErrorPage);
-        project.IsErrorsLoading = true;
-        Assert.False(project.CanGoToPreviousErrorPage);
+        project.UpdateFrom(summary with { PendingCount = 1, ReadyCount = 9, Work = new ProjectWorkSummary(1, 0, 0, 0, null) });
+        Assert.Contains(nameof(ProjectItemViewModel.StatusHeadline), changed);
+        Assert.Contains(nameof(ProjectItemViewModel.SidebarStatus), changed);
+        Assert.DoesNotContain(nameof(ProjectItemViewModel.Phase), changed);
+    }
+
+    [Fact]
+    public void FolderRowsShowTheirOwnAccessProblem()
+    {
+        var first = new ProjectFolderInfo(Guid.NewGuid(), Path.Combine(Path.GetTempPath(), "Contracts"));
+        var second = new ProjectFolderInfo(Guid.NewGuid(), Path.Combine(Path.GetTempPath(), "Notes"));
+        var project = new ProjectItemViewModel(Summary(total: 2, ready: 2) with { Folders = [first, second] });
+        Assert.Equal(["Contracts", "Notes"], project.FolderRows.Select(row => row.Name));
+        Assert.All(project.FolderRows, row => Assert.False(row.HasIssue));
+
+        project.UpdateFolderIssues([new ProjectFolderIssue(second.Id, second.Path, "Access denied.")]);
+        Assert.Equal("Access denied.", project.FolderRows[1].Issue);
+        Assert.Equal(AppStatusTone.Error, project.FolderRows[1].Tone);
+        Assert.Equal("Needs attention", project.Phase);
+        Assert.Equal("A folder can't be read", project.StatusHeadline);
     }
 
     private static ProjectSummary Summary(int total, int pending = 0, int ready = 0, int attention = 0) =>
@@ -214,8 +236,4 @@ public sealed class ProjectPresentationTests
     private static IndexingActivitySnapshot Activity(Guid projectId, IndexingPipelineStage stage) =>
         new(Guid.NewGuid(), projectId, Guid.NewGuid(), "example.pdf", stage,
             TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(1), DateTimeOffset.UtcNow);
-
-    private static IReadOnlyList<ProjectErrorInfo> Errors(Guid projectId, int firstId, int count) =>
-        Enumerable.Range(firstId, count).Select(id => new ProjectErrorInfo(id, projectId, Guid.NewGuid(),
-            "extraction_failed", "File could not be read.", true, 1, DateTimeOffset.UtcNow, $"file-{id}.pdf")).ToArray();
 }

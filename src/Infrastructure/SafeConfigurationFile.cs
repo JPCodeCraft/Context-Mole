@@ -105,7 +105,11 @@ internal static class SafeConfigurationFile
             throw RecoveryRequired(description, backupPath, exception);
         }
 
-        if (ContentsEqual(expected, displaced)) return;
+        if (ContentsEqual(expected, displaced))
+        {
+            RetainRoutineBackup(targetPath, backupPath);
+            return;
+        }
 
         // There is no cross-process content CAS. Restoring blindly could overwrite yet another save.
         // Keep the actual displaced file, and also retain the caller's original text when possible.
@@ -141,6 +145,58 @@ internal static class SafeConfigurationFile
 
     private static string CreateBackupPath(string targetPath, string kind = "")
         => $"{targetPath}.contextmole-{kind}{DateTimeOffset.UtcNow:yyyyMMdd-HHmmssfff}-{Guid.NewGuid():N}.bak";
+
+    /// <summary>How many copies of a configuration's previous text a successful update keeps.</summary>
+    internal const int RetainedRoutineBackups = 3;
+    private const string RoutineBackupKind = "previous-";
+
+    // A successful update displaced exactly the text the caller read, so its backup is routine. Routine backups
+    // get their own name and only the newest few are kept; backups that preserve a competing save or a failed
+    // replacement keep the original naming and are never deleted.
+    private static void RetainRoutineBackup(string targetPath, string backupPath)
+    {
+        try
+        {
+            // Seven fractional digits keep names in chronological order for pruning, even for rapid updates.
+            File.Move(backupPath,
+                $"{targetPath}.contextmole-{RoutineBackupKind}{DateTimeOffset.UtcNow:yyyyMMdd-HHmmssfffffff}-{Guid.NewGuid():N}.bak",
+                overwrite: false);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return;
+        }
+        PruneRoutineBackups(targetPath);
+    }
+
+    internal static void PruneRoutineBackups(string targetPath)
+    {
+        try
+        {
+            var directory = Path.GetDirectoryName(targetPath);
+            if (directory is null) return;
+            var prefix = $"{Path.GetFileName(targetPath)}.contextmole-{RoutineBackupKind}";
+            var expired = new DirectoryInfo(directory).EnumerateFiles()
+                .Where(file => file.Name.StartsWith(prefix, StringComparison.Ordinal) &&
+                               file.Name.EndsWith(".bak", StringComparison.Ordinal) && file.LinkTarget is null)
+                .OrderByDescending(file => file.Name, StringComparer.Ordinal)
+                .Skip(RetainedRoutineBackups)
+                .ToArray();
+            foreach (var file in expired)
+            {
+                try
+                {
+                    file.Delete();
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                {
+                }
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+        }
+    }
 
     private static string ResolveTargetPath(string configPath, string description)
     {

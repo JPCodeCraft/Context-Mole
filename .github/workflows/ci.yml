@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Build and test on Windows
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out the commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up the pinned .NET SDK
+        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          global-json-file: global.json
+          cache: true
+          cache-dependency-path: |
+            packages.lock.json
+            src/**/packages.lock.json
+            tests/**/packages.lock.json
+            tools/packages.lock.json
+
+      - name: Restore locked dependencies
+        run: dotnet restore ContextMole.slnx --locked-mode
+
+      - name: Build the complete solution
+        run: dotnet build ContextMole.slnx -c Release --no-restore -p:ContinuousIntegrationBuild=true
+
+      - name: Run automated tests
+        run: dotnet test --solution ContextMole.slnx -c Release --no-restore --no-build

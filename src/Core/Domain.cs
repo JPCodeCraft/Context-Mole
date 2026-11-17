@@ -722,6 +722,8 @@ public sealed record PassageInfo(
 public sealed record SectionReadResponse(Guid SectionId, Guid ContentId, string? Heading,
     IReadOnlyList<PassageInfo> Passages, long SearchGeneration, string? NextCursor)
 {
+    /// <summary>True when other documents were indexed after the search; the section itself is still current.</summary>
+    public bool IndexChangedSinceSearch { get; init; }
     public IReadOnlyList<string> HeadingPath { get; init; } = [];
     public string? Kind { get; init; }
     public SourceLocation? Location { get; init; }

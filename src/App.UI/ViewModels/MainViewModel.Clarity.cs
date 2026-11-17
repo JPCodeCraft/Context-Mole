@@ -11,11 +11,11 @@ internal partial class MainViewModel
         OnPropertyChanged(nameof(CanCancelOcrSetup));
     }
 
-    public void ShowAiConnections()
-    {
-        IsAiConnectionsExpanded = true;
-        ShowSettings();
-    }
+    /// <summary>AI assistants are the first Settings section, so opening Settings shows them.</summary>
+    public void ShowAiConnections() => ShowSettings();
+
+    public void NotifyStarterQuestionCopied(ProjectItemViewModel project) =>
+        Notify("starter_question", $"Starter question copied. Paste it into your assistant and replace [your topic].", project.Id);
 
     public bool CanMoveSelectedProjectUp => SelectedProject is { } selected && Projects.IndexOf(selected) > 0;
     public bool CanMoveSelectedProjectDown => SelectedProject is { } selected &&

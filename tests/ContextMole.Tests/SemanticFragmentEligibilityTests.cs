@@ -189,12 +189,9 @@ public sealed class SemanticFragmentEligibilityTests
     }
 
     [Theory]
-    [InlineData(ExtractionMethod.NativeText, false)]
-    [InlineData(ExtractionMethod.Ocr, false)]
-    [InlineData(ExtractionMethod.NativeText, true)]
-    [InlineData(ExtractionMethod.Ocr, true)]
-    public async Task IndexSearchAndReadKeepEveryLiteralPassageWhileOnlyMarkersLoseVectors(ExtractionMethod method,
-        bool titleMatchesLabel)
+    [InlineData(ExtractionMethod.NativeText)]
+    [InlineData(ExtractionMethod.Ocr)]
+    public async Task IndexMergesLayoutFragmentsWithTheirItemsAndKeepsEveryLiteral(ExtractionMethod method)
     {
         await using var database = await StorageTestDatabase.CreateAsync(Token);
         var path = Path.Combine(database.Paths.SourceDirectory, "authored-evidence.txt");
@@ -210,14 +207,23 @@ public sealed class SemanticFragmentEligibilityTests
                 { Location = new SourceLocation(LocationKind.Page, Page: 1, StructurePath: "page[1]/table[8]",
                     Region: new SourceRegion(0.1, 0.45, 0.015, 0.012)) },
             Block("2.", 9, y: 0.5, method: method) with { Heading = "2." },
-            Block("4.", 10, y: 0.55, method: method),
-            Block("a.", 11, y: 0.6, method: method), Block("Yes", 12, x: 0.13, y: 0.6, method: method)
+            Block("4.", 10, y: 0.55, method: method) with { Heading = "2." },
+            Block("a.", 11, y: 0.6, method: method) with { Heading = "2." },
+            Block("Yes", 12, x: 0.13, y: 0.6, method: method) with { Heading = "2." },
+            Block("§", 13, y: 0.7, method: method) with { Heading = "Notes" }
+        };
+        // Blocks on one page under one heading share a passage, so markers stay with their items.
+        // A table and each heading's blocks stay apart; a passage without letters gets no vector.
+        var expected = new[]
+        {
+            ("1.\nApproved\n•\nRate: 3.5%\n42\n=\nCopyright", true), ("3.", true),
+            ("2.\n4.\na.\nYes", true), ("§", false)
         };
         var (project, _) = await database.CreateProjectAsync("Semantic fragment evidence", Token);
         var embeddings = new RecordingEmbeddings();
         using var budget = new GlobalCpuBudget(new StorageFixedCpuSettings());
         using var coordinator = new IndexingCoordinator(database.Writer, database.Store, database.Paths,
-            new FixtureExtractor(sections, titleMatchesLabel ? "•" : "Highly relevant title context cannot create body evidence"),
+            new FixtureExtractor(sections, "Highly relevant title context cannot create body evidence"),
             embeddings, new IndexingActivityTracker(),
             new EmbeddingPolicyRefreshTracker(), budget, NullLogger<IndexingCoordinator>.Instance);
         await coordinator.StartAsync(Token);
@@ -229,38 +235,42 @@ public sealed class SemanticFragmentEligibilityTests
                    is not { IndexedCount: 1, PendingCount: 0 })
                 await Task.Delay(20, timeout.Token);
 
-            var stored = new List<(Guid Id, string Text, string Body, string Semantic, bool Eligible, int Offset)>();
+            var stored = new List<(Guid Id, string Text, string Body, string Semantic, bool Eligible, int Offset, string Location)>();
             await using (var connection = new SqliteConnection($"Data Source={database.Paths.DatabasePath}"))
             {
                 await connection.OpenAsync(Token);
                 await using var command = connection.CreateCommand();
-                command.CommandText = "SELECT id,display_text,body_text,search_text,semantic_eligible,section_offset FROM passages ORDER BY ordinal;";
+                command.CommandText = "SELECT id,display_text,body_text,search_text,semantic_eligible,section_offset,location_json FROM passages ORDER BY ordinal;";
                 await using var reader = await command.ExecuteReaderAsync(Token);
                 while (await reader.ReadAsync(Token))
-                    stored.Add((Guid.Parse(reader.GetString(0)), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetInt32(4) == 1, reader.GetInt32(5)));
+                    stored.Add((Guid.Parse(reader.GetString(0)), reader.GetString(1), reader.GetString(2), reader.GetString(3),
+                        reader.GetInt32(4) == 1, reader.GetInt32(5), reader.GetString(6)));
                 await reader.DisposeAsync();
                 command.CommandText = "SELECT display_text FROM sections;";
                 Assert.Equal(string.Join('\n', sections.Select(section => section.Text)),
                     Assert.IsType<string>(await command.ExecuteScalarAsync(Token)));
             }
-            Assert.Equal(sections.Select(section => section.Text), stored.Select(row => row.Text));
+            Assert.Equal(expected, stored.Select(row => (row.Text, row.Eligible)));
             var expectedOffset = 0;
             foreach (var row in stored)
             {
                 Assert.Equal(expectedOffset, row.Offset);
                 expectedOffset += row.Text.Length + 1;
             }
-            Assert.Equal(sections.Select(section => LexicalText.Canonicalize(section.Text)), stored.Select(row => row.Body));
-            Assert.Equal(titleMatchesLabel ? Array.Empty<string>() : new[] { "•" },
-                stored.Where(row => !row.Eligible).Select(row => row.Text));
+            Assert.Equal(stored.Select(row => LexicalText.Canonicalize(row.Text)), stored.Select(row => row.Body));
             Assert.All(stored.Where(row => !row.Eligible), row => Assert.Empty(row.Semantic));
-            var expectedVectors = sections.Length - (titleMatchesLabel ? 0 : 1);
-            Assert.Equal(expectedVectors, embeddings.Inputs.Count);
-            Assert.Contains(embeddings.Inputs, input => input.StartsWith("Approved", StringComparison.Ordinal));
-            Assert.Contains(embeddings.Inputs, input => input.StartsWith("42", StringComparison.Ordinal));
+            // The merged passage points at all of its blocks and the area they cover.
+            var merged = JsonSerializer.Deserialize<SourceLocation>(stored[0].Location)!;
+            Assert.Equal("page[1]/block[1]..page[1]/block[7]", merged.StructurePath);
+            Assert.Equal(new SourceRegion(0.1, 0.2, 0.045, 0.212), merged.Region! with
+            {
+                Width = Math.Round(merged.Region.Width, 3), Height = Math.Round(merged.Region.Height, 3)
+            });
+            Assert.Equal(3, embeddings.Inputs.Count);
+            Assert.Contains(embeddings.Inputs, input => input.StartsWith("1. Approved •", StringComparison.Ordinal));
             var metadata = await database.Store.LoadVectorSnapshotMetadataAsync(project, embeddings.Policy!, Token);
             Assert.True(metadata.IsComplete);
-            Assert.Equal(expectedVectors, metadata.EntryCount);
+            Assert.Equal(3, metadata.EntryCount);
 
             var reads = await database.Store.ReadPassagesAsync(project, stored.Select(row => row.Id).ToArray(), 0, 0, Token);
             Assert.Equal(stored.Select(row => row.Text), reads.Select(read => read.Text));
@@ -269,17 +279,14 @@ public sealed class SemanticFragmentEligibilityTests
                 var section = await database.Store.ReadSectionAsync(project, read.SectionId!.Value,
                     await database.Store.GetSearchGenerationAsync(project, Token), cancellationToken: Token);
                 Assert.Contains(section.Passages, passage => passage.PassageId == read.PassageId && passage.Text == read.Text);
-                Assert.Contains(section.Passages, passage => passage.Text == "Approved");
-                Assert.Contains(section.Passages, passage => passage.Text == "1.");
-                Assert.Contains(section.Passages, passage => passage.Text == "a.");
-                Assert.Contains(section.Passages, passage => passage.Text == "Yes");
+                Assert.Equal(expected.Select(item => item.Item1), section.Passages.Select(passage => passage.Text));
             }
             var search = new HybridSearchService(database.Store, embeddings, new FlatVectorIndexFactory(),
                 new VectorIndexCache(), budget);
             var response = await search.SearchAsync(new SearchRequest(project, SearchMode.Keyword,
                 Clauses: [new SearchClause("ordinal", "1", SearchClauseOccur.Must, Fields: [SearchField.Body])]), Token);
             var preview = Assert.Single(Assert.Single(response.Results).Previews);
-            Assert.Equal("1.", preview.Excerpt);
+            Assert.StartsWith("1.", preview.Excerpt, StringComparison.Ordinal);
             Assert.Equal(stored[0].Id, preview.PassageId);
             Assert.Equal(sourceHash, await StorageTestDatabase.HashAsync(path, Token));
         }
@@ -289,7 +296,7 @@ public sealed class SemanticFragmentEligibilityTests
     [Fact]
     public async Task V3EligibilityCannotBeRelabeledAsV4ByAnEmbeddingOnlyRefresh()
     {
-        Assert.Equal("layout-v5/spans-v3/body-context-v4", IndexPreparation.Version);
+        Assert.Equal("layout-v6/spans-v4/body-context-v5", IndexPreparation.Version);
         await using var database = await StorageTestDatabase.CreateAsync(Token);
         var path = Path.Combine(database.Paths.SourceDirectory, "v3-evidence.txt");
         await File.WriteAllTextAsync(path, "1.\nApproved", Token);
@@ -347,7 +354,9 @@ public sealed class SemanticFragmentEligibilityTests
         var (project, folder) = await database.CreateProjectAsync("Successful eligibility migration", Token);
         var first = await database.ObserveAndLeaseAsync(project, folder, path, false, Token);
         var sections = new[] { Block("•"), Block("Approved", 2, x: 0.13),
-            Block("1.", 3, y: 0.3), Block("kg", 4, x: 0.13, y: 0.3) };
+            Block("1.", 3, y: 0.3) with { Heading = "Units" }, Block("kg", 4, x: 0.13, y: 0.3) with { Heading = "Units" },
+            Block("=", 5, y: 0.4) with { Heading = "Formula" } };
+        var expectedTexts = new[] { "•\nApproved", "1.\nkg", "=" };
         var extractor = new FixtureExtractor(sections, "Preparation evidence");
         var embeddings = new RecordingEmbeddings();
         using var budget = new GlobalCpuBudget(new StorageFixedCpuSettings());
@@ -387,7 +396,7 @@ public sealed class SemanticFragmentEligibilityTests
             await command.ExecuteNonQueryAsync(Token);
         }
         var before = await CanonicalSnapshot(database);
-        Assert.Equal(sections.Length, (await database.Store.LoadVectorSnapshotAsync(project, oldPolicy, Token)).Entries.Count);
+        Assert.Equal(expectedTexts.Length, (await database.Store.LoadVectorSnapshotAsync(project, oldPolicy, Token)).Entries.Count);
         await coordinator.StartAsync(Token);
         try
         {
@@ -399,15 +408,14 @@ public sealed class SemanticFragmentEligibilityTests
                 metadata = await database.Store.LoadVectorSnapshotMetadataAsync(project, embeddings.Policy!, timeout.Token);
                 if (!metadata.IsComplete) await Task.Delay(20, timeout.Token);
             } while (!metadata.IsComplete);
-            Assert.Equal(sections.Length - 1, metadata.EntryCount);
+            Assert.Equal(expectedTexts.Length - 1, metadata.EntryCount);
             Assert.Equal(before, await CanonicalSnapshot(database));
             Assert.Equal(first.Sha256, await StorageTestDatabase.HashAsync(path, Token));
             var reads = await database.Store.ReadPassagesAsync(project, oldPassages.Select(passage => passage.Id).ToArray(), 0, 0, Token);
-            Assert.Equal(sections.Select(section => section.Text), reads.Select(read => read.Text));
+            Assert.Equal(expectedTexts, reads.Select(read => read.Text));
             var sectionRead = await database.Store.ReadSectionAsync(project, reads[0].SectionId!.Value,
                 metadata.SearchGeneration, cancellationToken: Token);
-            Assert.Contains(sectionRead.Passages, passage => passage.Text == "•");
-            Assert.Contains(sectionRead.Passages, passage => passage.Text == "Approved");
+            Assert.Equal(expectedTexts, sectionRead.Passages.Select(passage => passage.Text));
         }
         finally { await coordinator.StopAsync(CancellationToken.None); }
     }

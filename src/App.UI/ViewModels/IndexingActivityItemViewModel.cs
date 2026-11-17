@@ -39,8 +39,8 @@ public sealed class IndexingActivityItemViewModel : ViewModelBase
         SourcePath = activity.SourcePath;
         FileName = Path.GetFileName(activity.SourcePath);
         StageDisplay = StageName(activity);
-        ElapsedDisplay = $"Processing {FormatDuration(activity.Elapsed)}";
-        StageElapsedDisplay = $"This stage {FormatDuration(activity.StageElapsed)}";
+        ElapsedDisplay = $"{FormatDuration(activity.Elapsed)} total";
+        StageElapsedDisplay = $"{FormatDuration(activity.StageElapsed)} this step";
         // Stages have different and unknown durations; they are not completion percentages.
         PipelinePosition = 0;
         IsProgressIndeterminate = true;
@@ -51,21 +51,21 @@ public sealed class IndexingActivityItemViewModel : ViewModelBase
     {
         if (duration.TotalHours >= 1)
             return $"{(int)duration.TotalHours}:{duration.Minutes:00}:{duration.Seconds:00}";
-        return $"{(int)duration.TotalMinutes:00}:{duration.Seconds:00}.{duration.Milliseconds / 100}";
+        return $"{(int)duration.TotalMinutes}:{duration.Seconds:00}";
     }
 
     private static string StageName(IndexingActivitySnapshot activity) => activity.Stage switch
     {
-        IndexingPipelineStage.InspectingSource => "Checking file availability",
-        IndexingPipelineStage.WaitingForCpu => "Waiting for processor capacity",
-        IndexingPipelineStage.Hashing => "Calculating fingerprint",
-        IndexingPipelineStage.PreparingRevision => "Preparing index revision",
-        IndexingPipelineStage.ExtractingContent => "Extracting content, attachments, or OCR",
-        IndexingPipelineStage.ChunkingText => "Normalizing and chunking text",
-        IndexingPipelineStage.GeneratingEmbeddings => "Generating semantic embeddings",
-        IndexingPipelineStage.VerifyingSource => "Verifying the source is unchanged",
-        IndexingPipelineStage.WritingIndex => "Writing the searchable index",
-        IndexingPipelineStage.RecordingError => "Recording an indexing error",
+        IndexingPipelineStage.InspectingSource => "Opening the file",
+        IndexingPipelineStage.WaitingForCpu => "Waiting for CPU or memory",
+        IndexingPipelineStage.Hashing => "Checking for changes",
+        IndexingPipelineStage.PreparingRevision => "Preparing",
+        IndexingPipelineStage.ExtractingContent => "Reading text, attachments and scans",
+        IndexingPipelineStage.ChunkingText => "Splitting into passages",
+        IndexingPipelineStage.GeneratingEmbeddings => "Adding meaning-based search",
+        IndexingPipelineStage.VerifyingSource => "Confirming the file didn't change",
+        IndexingPipelineStage.WritingIndex => "Saving to the index",
+        IndexingPipelineStage.RecordingError => "Recording a problem",
         _ => activity.Stage.ToString()
     };
 

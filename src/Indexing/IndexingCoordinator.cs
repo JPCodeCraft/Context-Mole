@@ -11,7 +11,7 @@ using Microsoft.Extensions.Logging;
 
 namespace ContextMole.Indexing;
 
-public sealed class IndexingCoordinator(
+public sealed partial class IndexingCoordinator(
     IIndexWriter writer,
     ISearchStore searchStore,
     IAppPaths paths,
@@ -20,8 +20,17 @@ public sealed class IndexingCoordinator(
     IndexingActivityTracker activities,
     EmbeddingPolicyRefreshTracker policyRefreshes,
     IGlobalCpuBudget cpuBudget,
-    ILogger<IndexingCoordinator> logger) : BackgroundService, IProjectIndexingControl
+    ILogger<IndexingCoordinator> logger,
+    SourceMemoryAdmission? sourceMemory) : BackgroundService, IProjectIndexingControl
 {
+    /// <summary>Kept so dependency injection and existing callers use the process-wide memory admission default.</summary>
+    public IndexingCoordinator(IIndexWriter writer, ISearchStore searchStore, IAppPaths paths, IDocumentExtractor extractor,
+        IEmbeddingGenerator embeddings, IndexingActivityTracker activities, EmbeddingPolicyRefreshTracker policyRefreshes,
+        IGlobalCpuBudget cpuBudget, ILogger<IndexingCoordinator> logger)
+        : this(writer, searchStore, paths, extractor, embeddings, activities, policyRefreshes, cpuBudget, logger, sourceMemory: null)
+    {
+    }
+
     private static readonly TimeSpan ReconciliationInterval = TimeSpan.FromMinutes(15);
     private static readonly TimeSpan DebounceInterval = TimeSpan.FromSeconds(1);
     private const int ChunkTargetTokens = 384;
@@ -37,6 +46,7 @@ public sealed class IndexingCoordinator(
     private readonly EmbeddingPolicyRefreshTracker _policyRefreshes = policyRefreshes;
     private readonly IGlobalCpuBudget _cpuBudget = cpuBudget;
     private readonly ILogger<IndexingCoordinator> _logger = logger;
+    private readonly SourceMemoryAdmission _sourceMemory = sourceMemory ?? SourceMemoryAdmission.CreateForCurrentProcess();
     private const int MaximumBufferedChanges = 4096;
     private readonly Channel<WatchChange> _watchChanges = Channel.CreateBounded<WatchChange>(
         new BoundedChannelOptions(MaximumBufferedChanges)
@@ -749,6 +759,7 @@ public sealed class IndexingCoordinator(
                 {
                     var jobCancellationToken = operation.CancellationToken;
                     ICpuWorkerLease? capacity = null;
+                    var memory = SourceMemoryAdmission.Lease.None;
                     try
                     {
                         PreparedIndexSource? source = null;
@@ -764,12 +775,17 @@ public sealed class IndexingCoordinator(
                         }
 
                         activity.SetStage(IndexingPipelineStage.WaitingForCpu);
+                        // Reserve memory for a large source before taking a CPU slot, so a worker waiting for
+                        // memory never idles processor capacity that smaller files could use.
+                        if (source is not null)
+                            memory = await _sourceMemory.AcquireAsync(source.Length, jobCancellationToken)
+                                .ConfigureAwait(false);
                         capacity = await _cpuBudget.AcquireWorkerAsync(jobCancellationToken).ConfigureAwait(false);
                         using (capacity.Activate())
                         {
                             activity.StartProcessing(job.Kind == IndexJobKind.EmbeddingRefresh
                                 ? IndexingPipelineStage.PreparingRevision : IndexingPipelineStage.Hashing);
-                            var indexed = await ProcessJobAsync(job, source, activity, jobCancellationToken)
+                            var indexed = await ProcessJobAsync(job, source, activity, memory, jobCancellationToken)
                                 .ConfigureAwait(false);
                             activity.Complete(indexed);
                         }
@@ -786,6 +802,7 @@ public sealed class IndexingCoordinator(
 
                         capacity?.Dispose();
                         capacity = null;
+                        memory.Dispose();
                         activity.Complete(false);
                         try
                         {
@@ -830,6 +847,7 @@ public sealed class IndexingCoordinator(
                     finally
                     {
                         capacity?.Dispose();
+                        memory.Dispose();
                     }
                 }
 
@@ -893,7 +911,7 @@ public sealed class IndexingCoordinator(
     }
 
     private async Task<bool> ProcessJobAsync(IndexJobLease job, PreparedIndexSource? source,
-        IndexingActivityHandle activity, CancellationToken cancellationToken)
+        IndexingActivityHandle activity, IDisposable sourceMemory, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         if (await _searchStore.IsFileExcludedAsync(job.ProjectId, job.SourcePath, cancellationToken)
@@ -923,6 +941,8 @@ public sealed class IndexingCoordinator(
         cancellationToken.ThrowIfCancellationRequested();
         activity.SetStage(IndexingPipelineStage.ChunkingText);
         var (contentNodes, passageSeeds, sections) = FlattenAndChunk(extraction.Root, job.SourcePath, job.DocumentId);
+        // The raw source and parser state are gone once text is chunked; embedding can run without the reservation.
+        sourceMemory.Dispose();
         var indexingErrors = BindExtractionErrors(extraction.Root, job.DocumentId, extraction.Errors).ToList();
         if (passageSeeds.Count == 0 && indexingErrors.Count > 0)
         {
@@ -1161,21 +1181,28 @@ public sealed class IndexingCoordinator(
                 var emailBody = section.Location.Kind == LocationKind.EmailPart &&
                     section.Location.EmailPart == "body";
                 var signatureStart = SemanticTextPreparation.SignatureStart(prepared.Text, emailBody);
-                string Semantic(string body) => BuildSemanticText(SemanticTextPreparation.CleanBody(body,
-                    section.IsBoilerplate || section.Location.EmailPart == "headers", emailBody), title, fileName, sourcePath,
-                    node.Name, section.Heading, section.Location.Sheet, emailSubject, prepared.TableHeader);
-                foreach (var chunk in Chunk(prepared.Text, Semantic, TableBoundary(section.Location) is not null))
+                var isTable = TableBoundary(section.Location) is not null;
+                var cellReferences = section.Location.Kind == LocationKind.Sheet;
+                // Embeddings see table values paired with their column names; evidence text stays TSV.
+                string SemanticBody(string body) => SemanticTextPreparation.CleanBody(
+                    prepared.TableHeader is { } header ? TableSemantics.Linearize(body, header, cellReferences) : body,
+                    section.IsBoilerplate || section.Location.EmailPart == "headers", emailBody);
+                string Semantic(string body) => BuildSemanticText(SemanticBody(body), title, fileName, sourcePath,
+                    node.Name, section.Heading, section.Location.Sheet, emailSubject, prepared.TableHeader?.Display,
+                    prepared.TableCaption);
+                foreach (var chunk in Chunk(prepared.Text, Semantic, isTable))
                 {
                     var body = LexicalText.Canonicalize(chunk.Text);
                     var semanticBody = signatureStart is { } signature
                         ? chunk.Start >= signature ? string.Empty : chunk.Text[..Math.Min(chunk.Text.Length, signature - chunk.Start)]
                         : chunk.Text;
-                    var cleanBody = SemanticTextPreparation.CleanBody(semanticBody,
-                        section.IsBoilerplate || section.Location.EmailPart == "headers", emailBody);
+                    var cleanBody = SemanticBody(semanticBody);
                     // Only eligibility changes: keep the original chunk text, boundaries and IDs.
                     var separatedMarker = prepared.FirstSectionOrdinal == prepared.LastSectionOrdinal &&
                         separatedListMarkers.Contains(prepared.FirstSectionOrdinal);
-                    var semanticText = cleanBody.Length == 0 || separatedMarker ? string.Empty : Semantic(semanticBody);
+                    var semanticText = cleanBody.Length == 0 || separatedMarker ||
+                        !SemanticEvidenceEligibility.HasSemanticSubstance(cleanBody, isTable, section.Method, section.OcrConfidence)
+                        ? string.Empty : Semantic(semanticBody);
                     var passageId = DeterministicId(contentId, "passage",
                         $"{prepared.FirstSectionOrdinal}:{prepared.LastSectionOrdinal}:{LocationIdentity(section.Location)}:{chunkOrdinal++}");
                     passages.Add(new PassageDraft(passageId, contentId, passageOrdinal++, chunk.Text,
@@ -1245,27 +1272,35 @@ public sealed class IndexingCoordinator(
             })
             .Where(item => item.Text.Length > 0)
             .ToArray();
-        var tableHeaders = new Dictionary<string, string>(StringComparer.Ordinal);
+        // The first row of each table names its columns; a table caption describes the whole table.
+        var tableHeaders = new Dictionary<string, TableSemantics.Header?>(StringComparer.Ordinal);
+        var tableCaptions = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var item in normalized)
         {
+            if (CaptionedTable(item.Section.Location) is { } captioned)
+                tableCaptions.TryAdd(captioned, TextNormalization.ForSearch(item.Text));
             var table = TableBoundary(item.Section.Location);
             if (table is null || tableHeaders.ContainsKey(table)) continue;
-            var header = NormalizeTableHeader(item.Text);
-            if (header is not null) tableHeaders[table] = header;
+            tableHeaders[table] = TableSemantics.ParseHeader(item.Text,
+                cellReferences: item.Section.Location.Kind == LocationKind.Sheet);
         }
 
         var result = new List<PreparedSection>();
         foreach (var item in normalized)
         {
             var section = item.Section;
-            var boundary = StructuralBoundary(section);
+            var boundary = MergeBoundary(section);
             var table = TableBoundary(section.Location);
-            var tableHeader = table is not null && tableHeaders.TryGetValue(table, out var header) ? header : null;
+            var tableHeader = table is not null ? tableHeaders.GetValueOrDefault(table) : null;
+            var tableCaption = table is not null ? tableCaptions.GetValueOrDefault(table) : null;
             if (result.Count > 0)
             {
                 var previous = result[^1];
-                var combinedWordCount = CountWords(previous.Text) + CountWords(item.Text);
-                if (CanMerge(section) && combinedWordCount <= 256 && previous.Boundary == boundary &&
+                var previousWords = CountWords(previous.Text);
+                var words = CountWords(item.Text);
+                if (CanMerge(section) && previousWords + words <= MergedSectionMaximumWords &&
+                    (IsWordParagraph(section.Location) || Math.Min(previousWords, words) <= MergedFragmentMaximumWords) &&
+                    previous.Boundary == boundary &&
                     previous.Section.SectionKey == section.SectionKey && previous.Section.IsBoilerplate == section.IsBoilerplate &&
                     previous.Section.Method == section.Method &&
                     string.Equals(previous.Section.Heading, section.Heading, StringComparison.Ordinal))
@@ -1274,7 +1309,9 @@ public sealed class IndexingCoordinator(
                     {
                         Section = previous.Section with
                         {
-                            Location = MergeLocations(previous.Section.Location, section.Location)
+                            Location = MergeLocations(previous.Section.Location, section.Location),
+                            OcrConfidence = MergeConfidence(previous.Section.OcrConfidence, previous.Text.Length,
+                                section.OcrConfidence, item.Text.Length)
                         },
                         Text = $"{previous.Text}\n{item.Text}",
                         LastSectionOrdinal = item.Ordinal
@@ -1282,7 +1319,7 @@ public sealed class IndexingCoordinator(
                     continue;
                 }
             }
-            result.Add(new PreparedSection(section, item.Text, item.Ordinal, item.Ordinal, boundary, tableHeader));
+            result.Add(new PreparedSection(section, item.Text, item.Ordinal, item.Ordinal, boundary, tableHeader, tableCaption));
         }
         return result;
 
@@ -1290,18 +1327,72 @@ public sealed class IndexingCoordinator(
             value.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).Length;
     }
 
+    // Neighbouring flow blocks under one heading share a passage, so a label stays with its value
+    // and a list marker with its item. Word paragraphs merge up to the cap. Layout and markup blocks
+    // (PDF, OCR, HTML) merge only while one side is a fragment: two full paragraphs keep separate
+    // passages, because their combined embedding matched specific questions less well
+    // (full ViDoRe v3 HR, semantic Recall@5 0.364 with whole-paragraph merging vs 0.383).
+    private const int MergedSectionMaximumWords = 256;
+    private const int MergedFragmentMaximumWords = 32;
+
     private static string CanonicalSectionText(ExtractedSection section) =>
         TextNormalization.ForDisplay(section.Text, preserveTableWhitespace: TableBoundary(section.Location) is not null);
+
+    private static bool IsWordParagraph(SourceLocation location) => location.Kind == LocationKind.Structure &&
+        location.StructurePath?.StartsWith("document/paragraph[", StringComparison.Ordinal) == true;
 
     private static bool CanMerge(ExtractedSection section) => TableBoundary(section.Location) is null && section.Location.Kind switch
     {
         LocationKind.Sheet => false,
-        LocationKind.Structure when IsStandaloneStructure(section.Location.StructurePath) => false,
+        LocationKind.Structure when !IsFlowBlock(section.Location) => false,
         _ => true
     };
 
-    private static bool IsStandaloneStructure(string? path) =>
-        path is not null && !path.StartsWith("document/paragraph[", StringComparison.Ordinal);
+    /// <summary>
+    /// Body text emitted as a sequence of layout or markup blocks: Word paragraphs, PDF and
+    /// image layout blocks, and HTML/Markdown/EPUB/email-HTML blocks. Tables, captions, notes,
+    /// comments and other standalone parts are not flow blocks.
+    /// </summary>
+    private static bool IsFlowBlock(SourceLocation location)
+    {
+        if (location.StructurePath is not { } path) return false;
+        return location.Kind switch
+        {
+            LocationKind.Page => PdfBlockPath().IsMatch(path),
+            LocationKind.ImageFrame => ImageBlockPath().IsMatch(path),
+            LocationKind.Structure => path.StartsWith("document/paragraph[", StringComparison.Ordinal) ||
+                HtmlBlockPath().IsMatch(path),
+            LocationKind.EmailPart => HtmlBlockPath().IsMatch(path),
+            _ => false
+        };
+    }
+
+    /// <summary>Flow blocks share one boundary per page, image, body or chapter; everything else keeps its own part.</summary>
+    private static string MergeBoundary(ExtractedSection section)
+    {
+        var location = section.Location;
+        if (!IsFlowBlock(location)) return StructuralBoundary(section);
+        var path = location.StructurePath!;
+        var scope = location.Kind switch
+        {
+            LocationKind.Page => $"page:{location.Page}:blocks",
+            LocationKind.ImageFrame => $"image:{location.Page}:{location.ImageFrame}:blocks",
+            LocationKind.EmailPart => $"email:{location.EmailPart}:html-body",
+            _ when path.StartsWith("document/paragraph[", StringComparison.Ordinal) => "structure:document-body",
+            // EPUB prefixes block paths with their spine entry; chapters stay separate.
+            _ => $"structure:{path[..HtmlBlockPath().Match(path).Index]}html-body"
+        };
+        return $"{scope}\u001fheading:{section.Heading}";
+    }
+
+    [System.Text.RegularExpressions.GeneratedRegex(@"^page\[\d+\]/block\[\d+\]$")]
+    private static partial System.Text.RegularExpressions.Regex PdfBlockPath();
+
+    [System.Text.RegularExpressions.GeneratedRegex(@"^block\[\d+\]$")]
+    private static partial System.Text.RegularExpressions.Regex ImageBlockPath();
+
+    [System.Text.RegularExpressions.GeneratedRegex(@"(?:^|/)html/block\[\d+\]$")]
+    private static partial System.Text.RegularExpressions.Regex HtmlBlockPath();
 
     private static string StructuralBoundary(ExtractedSection section)
     {
@@ -1321,21 +1412,57 @@ public sealed class IndexingCoordinator(
         return $"{locationBoundary}\u001fheading:{section.Heading}";
     }
 
+    /// <summary>
+    /// A merged passage spans its first to last block: "first..last" path, the union of
+    /// their regions on the same page or image, and every distinct layout warning.
+    /// </summary>
     private static SourceLocation MergeLocations(SourceLocation first, SourceLocation last)
     {
-        if (first == last) return first;
-        if (first.Kind == LocationKind.Structure && last.Kind == LocationKind.Structure &&
-            first.StructurePath is { } firstPath && last.StructurePath is { } lastPath)
-            return first with { StructurePath = $"{firstPath}..{lastPath}" };
-        return first;
+        if (first == last || first.Kind != last.Kind) return first;
+        var path = first.StructurePath is { } firstPath && last.StructurePath is { } lastPath
+            ? $"{RangeStart(firstPath)}..{RangeEnd(lastPath)}" : first.StructurePath;
+        if (first.Kind == LocationKind.Structure) return first with { StructurePath = path };
+        if (first.Page != last.Page || first.ImageFrame != last.ImageFrame || first.EmailPart != last.EmailPart)
+            return first;
+        var region = first.Region is { } a && last.Region is { } b
+            ? new SourceRegion(Math.Min(a.X, b.X), Math.Min(a.Y, b.Y),
+                Math.Max(a.X + a.Width, b.X + b.Width) - Math.Min(a.X, b.X),
+                Math.Max(a.Y + a.Height, b.Y + b.Height) - Math.Min(a.Y, b.Y))
+            : null;
+        var warnings = new[] { first.LayoutWarning, last.LayoutWarning }
+            .Where(value => !string.IsNullOrWhiteSpace(value)).Distinct(StringComparer.Ordinal).ToArray();
+        return first with
+        {
+            StructurePath = path,
+            Region = region,
+            LayoutWarning = warnings.Length == 0 ? null : string.Join(' ', warnings)
+        };
+
+        static string RangeStart(string value) => value.Split("..", StringSplitOptions.None)[0];
+        static string RangeEnd(string value) => value.Split("..", StringSplitOptions.None)[^1];
+    }
+
+    private static double? MergeConfidence(double? first, int firstLength, double? second, int secondLength) =>
+        first is { } a && second is { } b
+            ? (a * firstLength + b * secondLength) / Math.Max(1, firstLength + secondLength)
+            : first ?? second;
+
+    /// <summary>The table a caption describes, keyed like <see cref="TableBoundary"/>.</summary>
+    private static string? CaptionedTable(SourceLocation location)
+    {
+        const string suffix = "/caption";
+        if (location.StructurePath is not { } path || !IsTableStructure(path) ||
+            !path.EndsWith(suffix, StringComparison.OrdinalIgnoreCase)) return null;
+        return TableBoundary(location with { StructurePath = path[..^suffix.Length] });
     }
 
     private string BuildSemanticText(string body, string title, string fileName, string sourcePath,
-        string contentName, string? heading, string? sheet, string? emailSubject, string? tableHeader)
+        string contentName, string? heading, string? sheet, string? emailSubject, string? tableHeader, string? tableCaption)
     {
         return SemanticTextPreparation.Compose(body,
-            [("Title", title), ("Heading", heading), ("Sheet", sheet), ("Email subject", emailSubject),
-             ("Table headers", tableHeader), ("Content", contentName), ("Filename", fileName)], _embeddings.CountTokens);
+            [("Title", title), ("Heading", heading), ("Table caption", tableCaption), ("Sheet", sheet),
+             ("Email subject", emailSubject), ("Table headers", tableHeader), ("Content", contentName),
+             ("Filename", fileName)], _embeddings.CountTokens);
     }
 
     private static string IndependentTitle(string? extractedTitle, string contentName, string? rootFileName)
@@ -1376,23 +1503,6 @@ public sealed class IndexingCoordinator(
         return null;
     }
 
-    private static string? NormalizeTableHeader(string text)
-    {
-        var firstRow = text.Split('\n', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
-        if (firstRow is null) return null;
-        var cells = firstRow.Split('\t', StringSplitOptions.RemoveEmptyEntries)
-            .Select(cell =>
-            {
-                var separator = cell.LastIndexOf(": ", StringComparison.Ordinal);
-                return (separator >= 0 ? cell[(separator + 2)..] : cell).Trim();
-            })
-            .Where(cell => cell.Length > 0)
-            .ToArray();
-        if (cells.Length == 0) return null;
-        var header = string.Join(" | ", cells);
-        return header.Length <= 500 ? header : header[..500];
-    }
-
     private static bool IsTableStructure(string? path) =>
         path?.Contains("/table[", StringComparison.OrdinalIgnoreCase) == true ||
         path?.StartsWith("table[", StringComparison.OrdinalIgnoreCase) == true;
@@ -1416,7 +1526,8 @@ public sealed class IndexingCoordinator(
         int FirstSectionOrdinal,
         int LastSectionOrdinal,
         string Boundary,
-        string? TableHeader);
+        TableSemantics.Header? TableHeader,
+        string? TableCaption);
 
     private static IReadOnlyList<ExtractedSection> AssignSectionKeys(IReadOnlyList<ExtractedSection> source)
     {
@@ -1455,8 +1566,14 @@ public sealed class IndexingCoordinator(
         var normalized = source; // PrepareSections already produced canonical, offset-bearing evidence.
         if (string.IsNullOrWhiteSpace(normalized)) yield break;
         var words = System.Text.RegularExpressions.Regex.Matches(normalized, @"\S+");
+        // Tables split only between rows, so every chunk keeps complete rows with their labels.
+        // Prose prefers sentence ends, so evidence and embeddings start and end on whole statements.
+        var boundaries = new bool[words.Count];
+        for (var index = 0; index < words.Count; index++)
+            boundaries[index] = preserveTableWhitespace ? EndsRow(index) : EndsSentence(words[index].Value);
         var overlapTokenBudget = ChunkOverlapTokens + _embeddings.CountTokens(string.Empty);
         var start = 0;
+        var previousEnd = 0;
         while (start < words.Count)
         {
             var end = start;
@@ -1481,6 +1598,11 @@ public sealed class IndexingCoordinator(
                 }
                 break;
             }
+            // The boundary must pass the previous chunk's end, or a row too large for the rest of
+            // the budget would leave the overlap alone as a chunk of its own.
+            if (bestEnd < words.Count && LastBoundary(Math.Max(start, previousEnd), bestEnd) is { } boundary &&
+                (preserveTableWhitespace || CountTokens(start, boundary) >= ChunkTargetTokens * 3 / 5))
+                bestEnd = boundary;
             var chunk = JoinWords(start, bestEnd);
             if (CountTokens(start, bestEnd) > ChunkMaximumTokens || chunk.Length > 16_000)
             {
@@ -1498,6 +1620,7 @@ public sealed class IndexingCoordinator(
             }
             else yield return new TextChunk(chunk, SourceStart(start));
             if (bestEnd >= words.Count) yield break;
+            previousEnd = bestEnd;
 
             var overlapStart = bestEnd;
             while (overlapStart > start)
@@ -1516,22 +1639,67 @@ public sealed class IndexingCoordinator(
                 }
                 break;
             }
-            start = overlapStart == start ? bestEnd : overlapStart;
+            // Begin the overlap at a row or sentence start inside the budget. Table rows are
+            // never cut; prose keeps the word-level overlap when no sentence starts in it.
+            if (overlapStart > start && overlapStart < bestEnd && !boundaries[overlapStart - 1])
+            {
+                var next = overlapStart;
+                while (next < bestEnd && !boundaries[next - 1]) next++;
+                if (next < bestEnd) overlapStart = next;
+                else if (preserveTableWhitespace) overlapStart = bestEnd;
+            }
+            start = overlapStart <= start ? bestEnd : overlapStart;
         }
 
+        int? LastBoundary(int first, int end)
+        {
+            for (var candidate = end; candidate > first; candidate--)
+                if (boundaries[candidate - 1]) return candidate;
+            return null;
+        }
+        bool EndsRow(int index) => index == words.Count - 1 ||
+            normalized.AsSpan(words[index].Index + words[index].Length,
+                words[index + 1].Index - words[index].Index - words[index].Length).Contains('\n');
+        bool StartsRow(int index) => index == 0 || boundaries[index - 1];
         int CountTokens(int first, int end) => _embeddings.CountTokens(prepareSemantic(JoinWords(first, end)));
         // Repeated metadata is part of the input limit, but must not consume the body overlap.
         // CountTokens includes model-specific special tokens; those must not consume body overlap.
         int CountBodyTokens(int first, int end) => _embeddings.CountTokens(JoinWords(first, end));
-        int SourceStart(int first) => preserveTableWhitespace && first == 0 ? 0 : words[first].Index;
+        // Table chunks include a row's leading and trailing tabs: they are its empty edge cells.
+        int SourceStart(int first) => preserveTableWhitespace && StartsRow(first)
+            ? normalized.LastIndexOf('\n', Math.Max(0, words[first].Index - 1)) + 1 : words[first].Index;
         string JoinWords(int first, int end)
         {
             var begin = SourceStart(first);
-            var finish = preserveTableWhitespace && end == words.Count
-                ? normalized.Length : words[end - 1].Index + words[end - 1].Length;
+            var finish = words[end - 1].Index + words[end - 1].Length;
+            if (preserveTableWhitespace && boundaries[end - 1])
+            {
+                var lineEnd = normalized.IndexOf('\n', finish);
+                finish = lineEnd < 0 ? normalized.Length : lineEnd;
+            }
             return normalized[begin..finish];
         }
     }
+
+    /// <summary>Sentence-final punctuation, ignoring common abbreviations and initials.</summary>
+    private static bool EndsSentence(string word)
+    {
+        var end = word.Length;
+        while (end > 0 && word[end - 1] is ')' or ']' or '"' or '\'' or '\u201D' or '\u2019' or '\u00BB') end--;
+        if (end == 0 || word[end - 1] is not ('.' or '!' or '?' or '\u2026' or '\u3002' or '\uFF01' or '\uFF1F')) return false;
+        if (word[end - 1] != '.') return true;
+        var stem = word[..(end - 1)].TrimStart('(', '[', '"', '\'', '\u201C', '\u2018', '\u00AB');
+        // "e.g.", "U.S.", "J.", "Fig." and list numbers such as "2." do not end a sentence.
+        return stem.Length > 0 && !stem.Contains('.') && !(stem.Length == 1 && char.IsLetter(stem[0])) &&
+               !(stem.Length <= 2 && stem.All(char.IsDigit)) && !SentenceAbbreviations.Contains(stem);
+    }
+
+    private static readonly HashSet<string> SentenceAbbreviations = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "al", "approx", "art", "ca", "cf", "co", "corp", "dept", "dr", "dra", "eq", "eqs", "est", "etc", "fig",
+        "figs", "inc", "jr", "ltd", "mr", "mrs", "ms", "no", "nos", "nr", "núm", "pág", "pp", "prof", "ref", "sec",
+        "sr", "sra", "st", "vol", "vs"
+    };
 
     private static async Task<string> HashAsync(string path, CancellationToken cancellationToken)
     {

@@ -26,8 +26,21 @@ public sealed class ProjectIssueGroupViewModel : ViewModelBase
     public bool IsHidden => _source.IssueCount > 0 && _source.HiddenIssueCount == _source.IssueCount;
     public bool HasHiddenIssues => _source.HiddenIssueCount > 0;
     public bool CanHide => IsRootFile && _source.HiddenIssueCount < _source.IssueCount;
-    public string IssueCountDisplay => $"{_source.IssueCount:N0} issue {(_source.IssueCount == 1 ? "component" : "components")}" +
+    public string IssueCountDisplay => $"{_source.IssueCount:N0} {(_source.IssueCount == 1 ? "issue" : "issues")}" +
         (HasHiddenIssues ? $" · {_source.HiddenIssueCount:N0} hidden" : string.Empty);
+    public AppStatusTone ImpactTone => !IsRootFile ? AppStatusTone.Warning : _source.Impact switch
+    {
+        ProjectIssueImpact.Unsearchable => AppStatusTone.Error,
+        ProjectIssueImpact.Partial => AppStatusTone.Warning,
+        _ => AppStatusTone.Neutral
+    };
+    public AppStatusTone RetryTone => _source.RetryState switch
+    {
+        ProjectIssueRetryState.Queued or ProjectIssueRetryState.Running or ProjectIssueRetryState.Scheduled => AppStatusTone.Busy,
+        ProjectIssueRetryState.Exhausted => AppStatusTone.Error,
+        ProjectIssueRetryState.Paused => AppStatusTone.Warning,
+        _ => AppStatusTone.Neutral
+    };
     public string ImpactLabel => !IsRootFile ? "Project operation needs attention" : _source.Impact switch
     {
         ProjectIssueImpact.Unsearchable => "No searchable content",
@@ -90,8 +103,9 @@ public sealed class ProjectIssueGroupViewModel : ViewModelBase
     public bool CanPreviousDetails => !IsDetailsLoading && _detailPageIndex > 0;
     public bool CanNextDetails => !IsDetailsLoading && _nextDetailsCursor is not null;
     public bool DetailsWereRefreshed => _detailsWereRefreshed;
-    public string DetailsPageDisplay => IsDetailsLoading ? "Loading component details…" :
-        $"Component detail page {_detailPageIndex + 1} · {Details.Count:N0} shown of {_source.IssueCount:N0} total";
+    public bool HasDetailPages => _detailPageIndex > 0 || _nextDetailsCursor is not null;
+    public string DetailsPageDisplay => IsDetailsLoading ? "Loading details…" :
+        $"Page {_detailPageIndex + 1} · {Details.Count:N0} of {_source.IssueCount:N0} issues";
 
     public void UpdateFrom(ProjectIssueGroup source)
     {
@@ -109,7 +123,7 @@ public sealed class ProjectIssueGroupViewModel : ViewModelBase
         _initialized = true;
         foreach (var name in new[] { nameof(SourcePath), nameof(FileName), nameof(DocumentId), nameof(IsRootFile),
                      nameof(CanRetry), nameof(IsHidden), nameof(HasHiddenIssues), nameof(CanHide), nameof(IssueCountDisplay),
-                     nameof(ImpactLabel), nameof(ImpactMessage), nameof(RecoveryGuidance), nameof(RetryLabel), nameof(RetryMessage) }) OnPropertyChanged(name);
+                     nameof(ImpactLabel), nameof(ImpactTone), nameof(RetryTone), nameof(ImpactMessage), nameof(RecoveryGuidance), nameof(RetryLabel), nameof(RetryMessage) }) OnPropertyChanged(name);
     }
     public void UpdateDetails(ProjectIssueDetailsResponse response)
     {
@@ -137,7 +151,7 @@ public sealed class ProjectIssueGroupViewModel : ViewModelBase
     private void NotifyDetails()
     {
         OnPropertyChanged(nameof(CanPreviousDetails)); OnPropertyChanged(nameof(CanNextDetails));
-        OnPropertyChanged(nameof(DetailsPageDisplay));
+        OnPropertyChanged(nameof(HasDetailPages)); OnPropertyChanged(nameof(DetailsPageDisplay));
     }
 }
 
@@ -157,6 +171,7 @@ public sealed class ProjectIssueDetailViewModel(ProjectIssueDetail source)
         $"Observed {Source.OccurrenceCount:N0} {(Source.OccurrenceCount == 1 ? "time" : "times")}";
     public string AttemptDisplay => Source.Attempt == 0 ? "Partial extraction · manual retry" : $"{Source.Attempt} failed {(Source.Attempt == 1 ? "attempt" : "attempts")}";
     public bool IsHidden => Source.IsHidden;
+    public string CodeAndAttempt => $"{Code} · {AttemptDisplay}" + (IsHidden ? " · hidden" : string.Empty);
 }
 
 public sealed class ExcludedFileItemViewModel(ExcludedFileInfo source, bool isWithinWatchedFolder = true)
@@ -164,7 +179,7 @@ public sealed class ExcludedFileItemViewModel(ExcludedFileInfo source, bool isWi
     public string SourcePath => source.SourcePath;
     public string FileName => Path.GetFileName(source.SourcePath);
     public string ScopeDisplay => isWithinWatchedFolder
-        ? "Within a watched folder. Include rebuilds from the currently available source."
-        : "Outside current watched folders. Include removes the rule, but add its folder to this project before it can be indexed.";
+        ? "Including it indexes the file again from its current source."
+        : "This file is outside the project's folders. Add its folder to the project before it can be indexed again.";
     public string ExcludedDisplay => $"Excluded {source.ExcludedUtc.ToLocalTime():g}";
 }

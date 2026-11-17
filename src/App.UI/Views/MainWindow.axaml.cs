@@ -65,10 +65,15 @@ public partial class MainWindow : Window
 
     private void ShowSettings(object? sender, RoutedEventArgs args) => ViewModel.ShowSettings();
 
-    private void ShowAiConnections(object? sender, RoutedEventArgs args) => ViewModel.ShowAiConnections();
+    private void MoveProjectUp(object? sender, RoutedEventArgs args) => MoveProjectFromMenu(sender, -1);
+    private void MoveProjectDown(object? sender, RoutedEventArgs args) => MoveProjectFromMenu(sender, 1);
 
-    private void MoveProjectUp(object? sender, RoutedEventArgs args) => MoveSelectedProject(-1);
-    private void MoveProjectDown(object? sender, RoutedEventArgs args) => MoveSelectedProject(1);
+    private void MoveProjectFromMenu(object? sender, int direction)
+    {
+        // A context menu can open on a project that is not selected yet; move the one it belongs to.
+        if ((sender as Control)?.DataContext is ProjectItemViewModel project) ViewModel.SelectedProject = project;
+        MoveSelectedProject(direction);
+    }
 
     private void MoveSelectedProject(int direction)
     {
@@ -100,19 +105,6 @@ public partial class MainWindow : Window
         try { await ViewModel.RefreshAsync(); }
         catch { /* The persistent stale-data card already carries the exact error and recovery action. */ }
         finally { if (sender is Button retry) retry.IsEnabled = true; }
-    }
-
-    private async void CopyStarterPrompt(object? sender, RoutedEventArgs args)
-    {
-        if (ViewModel.SelectedProject is not { } project || Clipboard is not { } clipboard) return;
-        try
-        {
-            await clipboard.SetTextAsync($"List my Context Mole projects, then search the project named {project.Name} for [your topic]. Return passages with their source filenames.");
-        }
-        catch (Exception exception)
-        {
-            await ConfirmWindow.ShowErrorAsync(this, $"Could not copy the starter question: {exception.Message}");
-        }
     }
 
     private void DismissNotification(object? sender, RoutedEventArgs args) => ViewModel.DismissNotification();

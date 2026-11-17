@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
@@ -67,6 +68,7 @@ public sealed partial class DatabaseWriterService : BackgroundService, IIndexWri
             await Schema.MigrateAsync(connection, _logger, stoppingToken).ConfigureAwait(false);
             _logger.LogInformation("Database ready at {DatabasePath}, schema version {SchemaVersion}", _paths.DatabasePath, Schema.CurrentVersion);
             _ready.TrySetResult();
+            await PruneJobHistoryForMaintenanceAsync(connection, null, stoppingToken).ConfigureAwait(false);
 
             await foreach (var command in _commands.Reader.ReadAllAsync(CancellationToken.None).ConfigureAwait(false))
             {
@@ -626,14 +628,10 @@ public sealed partial class DatabaseWriterService : BackgroundService, IIndexWri
                         """,
                         [new("$path", canonicalNew), new("$filename", newName),
                          new("$revision", revision.ToString())], token).ConfigureAwait(false);
-                    await ExecuteAsync(connection, transaction,
-                        "INSERT INTO passages_fts(rowid,body_text,title,heading,filename,path,content_name,sheet,email_subject) SELECT rowid,lexical(body_text),lexical(title),lexical(heading),lexical(filename),lexical(path),lexical(content_name),lexical(sheet),lexical(email_subject) FROM passages WHERE revision_id=$revision;",
-                        [new("$revision", revision.ToString())], token).ConfigureAwait(false);
+                    await InsertPassageFtsRevisionAsync(connection, transaction, revision, token).ConfigureAwait(false);
                     await InsertSectionFtsRevisionAsync(connection, transaction, revision, token).ConfigureAwait(false);
                 }
-                await ExecuteAsync(connection, transaction,
-                    "UPDATE projects SET search_generation=search_generation+1,updated_utc=$now WHERE id=$project;",
-                    [new("$now", now), new("$project", projectId.ToString())], token).ConfigureAwait(false);
+                await AdvanceSearchGenerationAsync(connection, transaction, projectId, now, token).ConfigureAwait(false);
                 if (documentId is { } renamedDocument)
                 {
                     await RefreshIssueRootIdentityAsync(connection, transaction, projectId, renamedDocument, canonicalNew, token).ConfigureAwait(false);
@@ -660,6 +658,8 @@ public sealed partial class DatabaseWriterService : BackgroundService, IIndexWri
     {
         var reconciliation = await EnqueueAsync(async (connection, token) =>
         {
+            if (ShouldPruneJobHistory(projectId))
+                await PruneJobHistoryForMaintenanceAsync(connection, projectId, token).ConfigureAwait(false);
             string? rootPath;
             await using (var folder = connection.CreateCommand())
             {
@@ -885,13 +885,9 @@ public sealed partial class DatabaseWriterService : BackgroundService, IIndexWri
                     if (renameCandidates[0].Tombstoned)
                         await ExecuteAsync(connection, transaction, "UPDATE document_revisions SET status='active' WHERE id=$revision;",
                             [new("$revision", preservedRevision.ToString())], token).ConfigureAwait(false);
-                    await ExecuteAsync(connection, transaction,
-                        "INSERT INTO passages_fts(rowid,body_text,title,heading,filename,path,content_name,sheet,email_subject) SELECT rowid,lexical(body_text),lexical(title),lexical(heading),lexical(filename),lexical(path),lexical(content_name),lexical(sheet),lexical(email_subject) FROM passages WHERE revision_id=$revision;",
-                        [new("$revision", preservedRevision.ToString())], token).ConfigureAwait(false);
+                    await InsertPassageFtsRevisionAsync(connection, transaction, preservedRevision, token).ConfigureAwait(false);
                     await InsertSectionFtsRevisionAsync(connection, transaction, preservedRevision, token).ConfigureAwait(false);
-                    await ExecuteAsync(connection, transaction,
-                        "UPDATE projects SET search_generation=search_generation+1,updated_utc=$now WHERE id=$project;",
-                        [new("$now", now), new("$project", job.ProjectId.ToString())], token).ConfigureAwait(false);
+                    await AdvanceSearchGenerationAsync(connection, transaction, job.ProjectId, now, token).ConfigureAwait(false);
                     long preservedEpoch;
                     await using (var preserved = connection.CreateCommand())
                     {
@@ -1073,9 +1069,7 @@ public sealed partial class DatabaseWriterService : BackgroundService, IIndexWri
                 "UPDATE documents SET active_revision_id=$revision,sha256=$sha,size=$size,modified_utc=$modified,available=1,updated_utc=$now WHERE id=$document;",
                 [new("$revision", request.RevisionId.ToString()), new("$sha", request.Sha256), new("$size", request.Size),
                  new("$modified", request.ModifiedUtc.ToString("O")), new("$now", now), new("$document", request.DocumentId.ToString())], token).ConfigureAwait(false);
-            await ExecuteAsync(connection, transaction,
-                "INSERT INTO passages_fts(rowid,body_text,title,heading,filename,path,content_name,sheet,email_subject) SELECT rowid,lexical(body_text),lexical(title),lexical(heading),lexical(filename),lexical(path),lexical(content_name),lexical(sheet),lexical(email_subject) FROM passages WHERE revision_id=$revision;",
-                [new("$revision", request.RevisionId.ToString())], token).ConfigureAwait(false);
+            await InsertPassageFtsRevisionAsync(connection, transaction, request.RevisionId, token).ConfigureAwait(false);
             foreach (var section in request.Sections.Count > 0 ? request.Sections :
                 request.Passages.Select(p => new SectionDraft(p.SectionId ?? p.Id, p.ContentId, p.Ordinal,
                     p.DisplayText, p.Heading, [], "block", p.Location)).DistinctBy(s => s.Id).ToArray())
@@ -1089,9 +1083,7 @@ public sealed partial class DatabaseWriterService : BackgroundService, IIndexWri
                      new("$kind", section.Kind), new("$location", JsonSerializer.Serialize(section.Location, StorageJsonOptions))], token).ConfigureAwait(false);
             }
             await InsertSectionFtsRevisionAsync(connection, transaction, request.RevisionId, token).ConfigureAwait(false);
-            await ExecuteAsync(connection, transaction,
-                "UPDATE projects SET search_generation=search_generation+1,updated_utc=$now WHERE id=$project;",
-                [new("$now", now), new("$project", request.ProjectId.ToString())], token).ConfigureAwait(false);
+            await AdvanceSearchGenerationAsync(connection, transaction, request.ProjectId, now, token).ConfigureAwait(false);
             await ExecuteAsync(connection, transaction,
                 "UPDATE index_jobs SET state='completed',lease_until_utc=NULL,last_error=NULL,updated_utc=$now WHERE id=$job;",
                 [new("$now", now), new("$job", request.JobId.ToString())], token).ConfigureAwait(false);
@@ -1266,9 +1258,7 @@ public sealed partial class DatabaseWriterService : BackgroundService, IIndexWri
             await ExecuteAsync(connection, transaction,
                 "UPDATE document_revisions SET embedding_policy_json=$policy WHERE id=$revision AND status='active';",
                 [new("$policy", policyJson), new("$revision", request.RevisionId.ToString())], token).ConfigureAwait(false);
-            await ExecuteAsync(connection, transaction,
-                "UPDATE projects SET search_generation=search_generation+1,updated_utc=$now WHERE id=$project;",
-                [new("$now", now), new("$project", request.ProjectId.ToString())], token).ConfigureAwait(false);
+            await AdvanceSearchGenerationAsync(connection, transaction, request.ProjectId, now, token).ConfigureAwait(false);
             await ExecuteAsync(connection, transaction,
                 "UPDATE index_jobs SET state='completed',lease_until_utc=NULL,last_error=NULL,updated_utc=$now WHERE id=$job;",
                 [new("$now", now), new("$job", request.JobId.ToString())], token).ConfigureAwait(false);
@@ -1429,9 +1419,7 @@ public sealed partial class DatabaseWriterService : BackgroundService, IIndexWri
         {
             await ExecuteAsync(connection, transaction, "UPDATE document_revisions SET status='superseded' WHERE id=$id;",
                 [new("$id", revisionId.Value.ToString())], cancellationToken).ConfigureAwait(false);
-            await ExecuteAsync(connection, transaction,
-                "UPDATE projects SET search_generation=search_generation+1,updated_utc=$now WHERE id=$project;",
-                [new("$now", now), new("$project", projectId.ToString())], cancellationToken).ConfigureAwait(false);
+            await AdvanceSearchGenerationAsync(connection, transaction, projectId, now, cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -1527,6 +1515,21 @@ public sealed partial class DatabaseWriterService : BackgroundService, IIndexWri
             "DELETE FROM passages_fts WHERE rowid IN (SELECT rowid FROM passages WHERE revision_id=$revision); DELETE FROM sections_fts WHERE rowid IN (SELECT rowid FROM sections WHERE revision_id=$revision);",
             [new("$revision", revisionId.ToString())], cancellationToken).ConfigureAwait(false);
     }
+
+    /// <summary>Marks the project's searchable content as changed so cached vector snapshots and continuations notice.</summary>
+    private static Task<int> AdvanceSearchGenerationAsync(SqliteConnection connection, SqliteTransaction transaction,
+        Guid projectId, string now, CancellationToken cancellationToken) => ExecuteAsync(connection, transaction,
+        "UPDATE projects SET search_generation=search_generation+1,updated_utc=$now WHERE id=$project;",
+        [new("$now", now), new("$project", projectId.ToString())], cancellationToken);
+
+    private static Task<int> InsertPassageFtsRevisionAsync(SqliteConnection connection, SqliteTransaction transaction,
+        Guid revisionId, CancellationToken cancellationToken) => ExecuteAsync(connection, transaction,
+        """
+        INSERT INTO passages_fts(rowid,body_text,title,heading,filename,path,content_name,sheet,email_subject)
+        SELECT rowid,lexical(body_text),lexical(title),lexical(heading),lexical(filename),
+               lexical(path),lexical(content_name),lexical(sheet),lexical(email_subject)
+        FROM passages WHERE revision_id=$revision;
+        """, [new("$revision", revisionId.ToString())], cancellationToken);
 
     private static Task<int> InsertSectionFtsRevisionAsync(SqliteConnection connection, SqliteTransaction transaction,
         Guid revisionId, CancellationToken cancellationToken) => ExecuteAsync(connection, transaction,
@@ -1660,6 +1663,67 @@ public sealed partial class DatabaseWriterService : BackgroundService, IIndexWri
                ($semantic=0 AND attempt>0 AND code<>'embedding_refresh_failed'));
         """,
         [new("$project", projectId.ToString()), new("$document", documentId.ToString()), new("$semantic", semanticOnly ? 1 : 0)], cancellationToken);
+
+    /// <summary>Completed index_runs rows kept per project; only the newest completion time is read.</summary>
+    internal const int RetainedRunsPerProject = 1000;
+    private static readonly TimeSpan JobHistoryPruneInterval = TimeSpan.FromHours(1);
+    private readonly ConcurrentDictionary<Guid, DateTimeOffset> _lastJobHistoryPrune = new();
+
+    private bool ShouldPruneJobHistory(Guid projectId)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var last = _lastJobHistoryPrune.GetOrAdd(projectId, DateTimeOffset.MinValue);
+        return now - last >= JobHistoryPruneInterval && _lastJobHistoryPrune.TryUpdate(projectId, now, last);
+    }
+
+    private async Task PruneJobHistoryForMaintenanceAsync(SqliteConnection connection, Guid? projectId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var deleted = await PruneJobHistoryAsync(connection, projectId, cancellationToken).ConfigureAwait(false);
+            if (deleted > 0)
+                _logger.LogInformation("Pruned {Count} finished index job and run records", deleted);
+        }
+        catch (Exception exception) when (exception is SqliteException or InvalidOperationException)
+        {
+            // Maintenance must never stop the writer; the rows are retried at the next opportunity.
+            _logger.LogWarning(exception, "Finished index job history could not be pruned");
+        }
+    }
+
+    /// <summary>
+    /// Deletes finished index_jobs rows that a newer job for the same document has replaced, and all but the newest
+    /// <see cref="RetainedRunsPerProject"/> index_runs rows per project. Queries only read each document's newest
+    /// job (open jobs first) and each project's newest completed run, so their results are unchanged.
+    /// </summary>
+    internal static async Task<int> PruneJobHistoryAsync(SqliteConnection connection, Guid? projectId,
+        CancellationToken cancellationToken)
+    {
+        using var transaction = connection.BeginTransaction();
+        var project = (object?)projectId?.ToString() ?? DBNull.Value;
+        var deleted = await ExecuteAsync(connection, transaction,
+            """
+            DELETE FROM index_jobs WHERE id IN (
+              SELECT id FROM (
+                SELECT id,state,
+                  ROW_NUMBER() OVER (PARTITION BY document_id ORDER BY updated_utc DESC,id DESC) AS job_rank
+                FROM index_jobs WHERE $project IS NULL OR project_id=$project)
+              WHERE job_rank>1 AND state NOT IN ('queued','retry_wait','running'));
+            """, [new("$project", project)], cancellationToken).ConfigureAwait(false);
+        deleted += await ExecuteAsync(connection, transaction,
+            """
+            DELETE FROM index_runs WHERE id IN (
+              SELECT id FROM (
+                SELECT id,
+                  ROW_NUMBER() OVER (PARTITION BY project_id ORDER BY completed_utc DESC,id DESC) AS run_rank
+                FROM index_runs WHERE $project IS NULL OR project_id=$project)
+              WHERE run_rank>$retained);
+            """, [new("$project", project), new("$retained", RetainedRunsPerProject)], cancellationToken)
+            .ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return deleted;
+    }
 
     private static async Task<int> ExecuteAsync(SqliteConnection connection, SqliteTransaction? transaction, string sql,
         IReadOnlyList<SqliteParameter> parameters, CancellationToken cancellationToken)

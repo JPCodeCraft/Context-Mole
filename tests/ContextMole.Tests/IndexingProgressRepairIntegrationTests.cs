@@ -56,7 +56,7 @@ public sealed class IndexingProgressRepairIntegrationTests
             project.UpdateRuntime(tracker.GetSnapshot(projectId));
             project.BeginSemanticIndexRefresh();
             Assert.Same(inventory, project.FileTypeCounts);
-            Assert.NotEqual("CHECKING", project.SemanticIndexStatusLabel);
+            Assert.NotEqual("Checking", project.SemanticIndexStatusLabel);
             var coverage = await database.Store.LoadVectorSnapshotMetadataAsync(projectId, policy, token);
             project.UpdateSemanticIndex(coverage, true);
             Assert.Equal(completed, coverage.CompatibleDocumentCount);
@@ -64,12 +64,12 @@ public sealed class IndexingProgressRepairIntegrationTests
             Assert.Equal(completed, tracker.GetSnapshot(projectId).CompletedSampleCount);
             Assert.NotNull(tracker.GetSnapshot(projectId).LastCompletedUtc);
             var progress = IndexingProgressPresentation.Create(project, tracker.GetSnapshot(projectId));
-            Assert.Contains($"{completed} completed jobs", progress.Summary);
+            Assert.Contains($"{completed} {(completed == 1 ? "job" : "jobs")} finished", progress.Summary);
         }
         Assert.Equal(total, project.ReadyCount);
         Assert.Equal(0, project.QueuedCount);
         Assert.True(project.IsSemanticCoverageComplete);
-        Assert.Equal("IDLE", IndexingProgressPresentation.Create(project, tracker.GetSnapshot(projectId)).StatusLabel);
+        Assert.Equal("Idle", IndexingProgressPresentation.Create(project, tracker.GetSnapshot(projectId)).StatusLabel);
         Assert.Equal(total, Assert.Single(project.FileTypeCounts).Count);
     }
 

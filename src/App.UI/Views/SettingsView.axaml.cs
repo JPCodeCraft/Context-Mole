@@ -67,11 +67,11 @@ public partial class SettingsView : UserControl
         }
     }
 
-    private async void CpuUsageProfileChanged(object? sender, SelectionChangedEventArgs args)
+    private async void CpuUsageOptionChanged(object? sender, SelectionChangedEventArgs args)
     {
-        if (sender is not ComboBox { SelectedItem: CpuUsageProfile profile } ||
-            profile == ViewModel.SelectedCpuUsageProfile) return;
-        await RunUiActionAsync(() => ViewModel.SetCpuUsageProfileAsync(profile));
+        if (sender is not ListBox { SelectedItem: CpuUsageOption option } ||
+            option.Profile == ViewModel.SelectedCpuUsageProfile) return;
+        await RunUiActionAsync(() => ViewModel.SetCpuUsageProfileAsync(option.Profile));
     }
 
     private void CancelOcrSetup(object? sender, RoutedEventArgs args) => ViewModel.CancelOcrSetup();

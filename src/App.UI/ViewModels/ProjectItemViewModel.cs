@@ -5,12 +5,22 @@ using ContextMole.Indexing;
 
 namespace ContextMole.App.UI.ViewModels;
 
+/// <summary>A watched folder with the folder-level problem that currently affects it, if any.</summary>
+public sealed record ProjectFolderRow(string Path, string? Issue)
+{
+    public string Name => System.IO.Path.GetFileName(Path.TrimEnd(System.IO.Path.DirectorySeparatorChar,
+        System.IO.Path.AltDirectorySeparatorChar)) is { Length: > 0 } name ? name : Path;
+    public bool HasIssue => Issue is not null;
+    public AppStatusTone Tone => HasIssue ? AppStatusTone.Error : AppStatusTone.Ready;
+}
+
 public sealed class ProjectItemViewModel : ViewModelBase
 {
     private string _name = string.Empty;
     private ProjectState _state;
     private IReadOnlyList<ProjectFolderInfo> _folders = [];
     private IReadOnlyList<ProjectFolderIssue> _folderIssues = [];
+    private IReadOnlyList<ProjectFolderRow> _folderRows = [];
     private IReadOnlyList<ProjectFileTypeCount> _fileTypeCounts = [];
     private long _searchGeneration;
     private int _documentCount;
@@ -23,9 +33,7 @@ public sealed class ProjectItemViewModel : ViewModelBase
     private int _errorCount;
     private int _excludedPathCount;
     private bool _isDiscovering;
-    private bool _isErrorsExpanded = true;
     private bool _isErrorsLoading;
-    private int _errorPageIndex;
     private DateTimeOffset? _lastCompletedUtc;
     private string? _currentFile;
     private ProjectWorkSummary _work = new(0, 0, 0, 0, null);
@@ -40,7 +48,6 @@ public sealed class ProjectItemViewModel : ViewModelBase
     private DateTimeOffset? _lastChecked;
     private bool _isInitialScanComplete;
     private string _issueQuery = string.Empty;
-    private string _issueCodeFilter = string.Empty;
     private int _issueImpactFilterIndex;
     private bool _showHiddenIssues;
     private ProjectIssueListResponse? _issuePage;
@@ -56,6 +63,74 @@ public sealed class ProjectItemViewModel : ViewModelBase
     private int _excludedPageIndex;
     private string _excludedQuery = string.Empty;
 
+    // Every computed value the views read. State changes raise PropertyChanged only for values
+    // that actually changed, so one-second polling never re-renders text that stayed the same.
+    private static readonly (string Name, Func<ProjectItemViewModel, object?> Read)[] DerivedProperties =
+    [
+        (nameof(Phase), project => project.Phase),
+        (nameof(PhaseDetails), project => project.PhaseDetails),
+        (nameof(StatusTone), project => project.StatusTone),
+        (nameof(StatusHeadline), project => project.StatusHeadline),
+        (nameof(StatusSummary), project => project.StatusSummary),
+        (nameof(SidebarStatus), project => project.SidebarStatus),
+        (nameof(IdleActivityDisplay), project => project.IdleActivityDisplay),
+        (nameof(IsPaused), project => project.IsPaused),
+        (nameof(IsReady), project => project.IsReady),
+        (nameof(IsRetrying), project => project.IsRetrying),
+        (nameof(IsRetryScheduled), project => project.IsRetryScheduled),
+        (nameof(IsRetryStatus), project => project.IsRetryStatus),
+        (nameof(IsWaitingForResources), project => project.IsWaitingForResources),
+        (nameof(NeedsAttention), project => project.NeedsAttention),
+        (nameof(IsDiscovering), project => project.IsDiscovering),
+        (nameof(IsReadinessStale), project => project.IsReadinessStale),
+        (nameof(HasErrors), project => project.HasErrors),
+        (nameof(ShowSidebarIssueCount), project => project.ShowSidebarIssueCount),
+        (nameof(HasAttentionFiles), project => project.HasAttentionFiles),
+        (nameof(HasFolderIssues), project => project.HasFolderIssues),
+        (nameof(AreActionsEnabled), project => project.AreActionsEnabled),
+        (nameof(CanReindex), project => project.CanReindex),
+        (nameof(CanRetryFailedFiles), project => project.CanRetryFailedFiles),
+        (nameof(ReindexToolTip), project => project.ReindexToolTip),
+        (nameof(PauseActionLabel), project => project.PauseActionLabel),
+        (nameof(FolderCountDisplay), project => project.FolderCountDisplay),
+        (nameof(DocumentCountDisplay), project => project.DocumentCountDisplay),
+        (nameof(SidebarErrorCountDisplay), project => project.SidebarErrorCountDisplay),
+        (nameof(ErrorCountDisplay), project => project.ErrorCountDisplay),
+        (nameof(ProjectDetailsDisplay), project => project.ProjectDetailsDisplay),
+        (nameof(ShowProgress), project => project.ShowProgress),
+        (nameof(ProgressMaximum), project => project.ProgressMaximum),
+        (nameof(ProgressDescription), project => project.ProgressDescription),
+        (nameof(ProcessingCount), project => project.ProcessingCount),
+        (nameof(QueuedCount), project => project.QueuedCount),
+        (nameof(RetryScheduledCount), project => project.RetryScheduledCount),
+        (nameof(RunningRetryCount), project => project.RunningRetryCount),
+        (nameof(NextRetryUtc), project => project.NextRetryUtc),
+        (nameof(WaitingForCpuCount), project => project.WaitingForCpuCount),
+        (nameof(QueuedBreakdownDisplay), project => project.QueuedBreakdownDisplay),
+        (nameof(HasProcessingFiles), project => project.HasProcessingFiles),
+        (nameof(HasQueuedFiles), project => project.HasQueuedFiles),
+        (nameof(ReadyLegend), project => project.ReadyLegend),
+        (nameof(ProcessingLegend), project => project.ProcessingLegend),
+        (nameof(QueuedLegend), project => project.QueuedLegend),
+        (nameof(AttentionLegend), project => project.AttentionLegend),
+        (nameof(KeywordSearchTone), project => project.KeywordSearchTone),
+        (nameof(KeywordSearchLabel), project => project.KeywordSearchLabel),
+        (nameof(KeywordSearchMessage), project => project.KeywordSearchMessage),
+        (nameof(HasMixedSemanticIndex), project => project.HasMixedSemanticIndex),
+        (nameof(HasSemanticCoverageWarning), project => project.HasSemanticCoverageWarning),
+        (nameof(IsSemanticCoverageComplete), project => project.IsSemanticCoverageComplete),
+        (nameof(IsSemanticRepairQueued), project => project.IsSemanticRepairQueued),
+        (nameof(ShowSemanticRepairButton), project => project.ShowSemanticRepairButton),
+        (nameof(CanRepairSemanticIndex), project => project.CanRepairSemanticIndex),
+        (nameof(SemanticIndexStatusLabel), project => project.SemanticIndexStatusLabel),
+        (nameof(SemanticIndexStatusTone), project => project.SemanticIndexStatusTone),
+        (nameof(SemanticIndexStatusMessage), project => project.SemanticIndexStatusMessage),
+        (nameof(RepairSemanticIndexToolTip), project => project.RepairSemanticIndexToolTip),
+        (nameof(IsSemanticSetupNeeded), project => project.IsSemanticSetupNeeded),
+        (nameof(GroupedIssuesSummary), project => project.GroupedIssuesSummary),
+        (nameof(ExcludedPathsDisplay), project => project.ExcludedPathsDisplay)
+    ];
+
     public ProjectItemViewModel(ProjectSummary project)
     {
         Id = project.Id;
@@ -66,15 +141,16 @@ public sealed class ProjectItemViewModel : ViewModelBase
     public Guid Id { get; }
     public override string ToString() => Name;
     public const int ErrorPageSize = 25;
-    public ObservableCollection<ProjectErrorItemViewModel> RecentErrors { get; } = [];
 
     public string Name { get => _name; private set => SetProperty(ref _name, value); }
     public ProjectState State { get => _state; private set => SetProperty(ref _state, value); }
     public IReadOnlyList<ProjectFolderInfo> Folders { get => _folders; private set => SetProperty(ref _folders, value); }
     public IReadOnlyList<ProjectFolderIssue> FolderIssues { get => _folderIssues; private set => SetProperty(ref _folderIssues, value); }
+    public IReadOnlyList<ProjectFolderRow> FolderRows { get => _folderRows; private set => SetProperty(ref _folderRows, value); }
     public bool HasFolderIssues => FolderIssues.Count > 0;
     public bool IsDiscovering => _isDiscovering;
     public int ProgressMaximum => Math.Max(1, DocumentCount);
+    public bool ShowProgress => !IsPaused && (PendingCount > 0 || IsDiscovering);
     public string ProgressDescription => $"{ReadyCount:N0} of {DocumentCount:N0} files up to date. {PendingCount:N0} pending. {AttentionCount:N0} need attention.";
     public IReadOnlyList<ProjectFileTypeCount> FileTypeCounts { get => _fileTypeCounts; private set => SetProperty(ref _fileTypeCounts, value); }
     public long SearchGeneration { get => _searchGeneration; private set => SetProperty(ref _searchGeneration, value); }
@@ -132,13 +208,13 @@ public sealed class ProjectItemViewModel : ViewModelBase
 
     public string PhaseDetails => Phase switch
     {
-        "Status unavailable" => "Current readiness could not be verified. Counts and search coverage below are from the last successful check.",
-        "Awaiting first scan" => "Waiting for the first folder scan. No supported-file or search-coverage result has been verified yet.",
-        "No supported files" => "The folder scan completed, but no supported files were found. Choose a different folder or add supported files.",
-        "Pausing" => "Stopping active extraction. Folder discovery and removal checks continue; interrupted files are queued for resume.",
+        "Status unavailable" => "Current status could not be checked. The counts shown are from the last successful check.",
+        "Awaiting first scan" => "Waiting for the first folder scan. Nothing has been counted or indexed yet.",
+        "No supported files" => "The folder scan completed, but no supported files were found. Edit the project to choose other folders, or add supported files.",
+        "Pausing" => "Stopping the files that are being indexed right now. They will continue when indexing resumes.",
         "Paused" => PendingCount > 0
-            ? $"{PendingCount:N0} {(PendingCount == 1 ? "file will" : "files will")} continue when indexing resumes. Changes are still detected and queued; saved evidence stays searchable unless its source is removed."
-            : "Extraction is paused. Folder changes are still detected and queued, and removed sources leave search. Other saved evidence stays searchable.",
+            ? $"{PendingCount:N0} {(PendingCount == 1 ? "file will" : "files will")} continue when indexing resumes. Changes are still detected; indexed files stay searchable unless their source is removed."
+            : "Indexing is paused. Changes are still detected, and removed sources leave search. Other indexed files stay searchable.",
         "Finding files" => "Checking folders for new, changed, and removed files. Counts update as files are found.",
         "Retrying" => RetryingSourcePath is null
             ? "A failed file is being retried now."
@@ -152,14 +228,97 @@ public sealed class ProjectItemViewModel : ViewModelBase
         "Retry scheduled" when NextRetryUtc is not null =>
             $"Next retry is scheduled for {NextRetryUtc.Value.ToLocalTime():g}.",
         "Retry scheduled" => "A retry is scheduled for later.",
-        "Queued" => QueuedCount == 1 ? "1 file is waiting to be processed."
-            : $"{QueuedCount} files are waiting to be processed.",
-        _ when HasFolderIssues => "Some folders cannot be checked for changes. Previously indexed files remain searchable.",
-        _ when ErrorCount > 0 => "Review the current issues below. Files with a previous successful index remain searchable.",
+        "Queued" => QueuedCount == 1 ? "1 file is waiting to be indexed."
+            : $"{QueuedCount} files are waiting to be indexed.",
+        _ when HasFolderIssues => "A watched folder can't be checked for changes. Files indexed before stay searchable.",
+        _ when ErrorCount > 0 => "Some files could not be fully indexed. Files indexed before stay searchable.",
         _ when AttentionCount > 0 => "Some files have no completed index. Reindex this project to queue them again.",
         _ when DocumentCount == 0 => "No supported files have been found in the watched folders.",
-        _ => "All discovered files are up to date. Folders are watched for changes."
+        _ => "All files are indexed. Folders are watched for changes."
     };
+
+    /// <summary>One tone for the project's dot and pill, derived from <see cref="Phase"/>.</summary>
+    public AppStatusTone StatusTone => Phase switch
+    {
+        "Ready" => AppStatusTone.Ready,
+        "Needs attention" => AppStatusTone.Error,
+        "Paused" or "Pausing" or "Status unavailable" or "Retrying" or "Retry scheduled" => AppStatusTone.Warning,
+        "Awaiting first scan" or "No supported files" => AppStatusTone.Neutral,
+        _ => AppStatusTone.Busy
+    };
+
+    private bool IsWorking => Phase is "Indexing" or "Retrying" or "Waiting for CPU" or "Queued";
+    public int AttentionFileCount => Math.Max(AttentionCount, ErrorFileCount);
+
+    /// <summary>The one-line answer to "how is my data?".</summary>
+    public string StatusHeadline => Phase switch
+    {
+        "Status unavailable" => "Status could not be checked",
+        "Awaiting first scan" => "Getting ready to scan",
+        "No supported files" => "No supported files found",
+        "Finding files" => "Looking for files",
+        "Pausing" => "Pausing…",
+        "Paused" => PendingCount > 0 ? $"Paused · {Files(PendingCount)} waiting" : "Paused",
+        "Retry scheduled" => NextRetryUtc is { } next ? $"Retry scheduled for {next.ToLocalTime():t}" : "Retry scheduled",
+        _ when IsWorking => $"Indexing · {Files(PendingCount)} left",
+        "Needs attention" => AttentionFileCount > 0
+            ? $"{Files(AttentionFileCount)} {(AttentionFileCount == 1 ? "needs" : "need")} attention"
+            : HasFolderIssues ? "A folder can't be read" : "Needs attention",
+        _ => "Everything is indexed"
+    };
+
+    public string StatusSummary
+    {
+        get
+        {
+            var searchable = SearchableCount == 1 ? "1 file is" : $"{SearchableCount:N0} files are";
+            var summary = Phase switch
+            {
+                "Status unavailable" => _lastChecked is { } checkedAt
+                    ? $"Current status could not be checked. These counts are from {checkedAt.ToLocalTime():g}."
+                    : "Current status could not be checked. These are the last known counts.",
+                "Awaiting first scan" => "Context Mole will look through the project's folders shortly.",
+                "No supported files" => "The folders were scanned but contain no supported files. Edit the project to choose other folders.",
+                "Finding files" => "Looking for new, changed and removed files. Counts update as files are found.",
+                "Pausing" => "Stopping the files being indexed right now.",
+                "Paused" => $"{searchable} still searchable. Changes are detected and indexed when you resume.",
+                "Retry scheduled" => $"{searchable} searchable. Files that failed will be tried again automatically.",
+                _ when IsWorking => SearchableCount > 0
+                    ? $"{searchable} already searchable. New results appear as each file finishes."
+                    : "Each file becomes searchable as soon as it finishes.",
+                "Needs attention" => HasFolderIssues && AttentionFileCount == 0
+                    ? "A watched folder can't be checked for changes. Files indexed before stay searchable."
+                    : $"{searchable} searchable. Some files could not be fully indexed; see the list below.",
+                _ => $"{searchable} searchable by your AI assistant. Folders are watched for changes."
+            };
+            var empty = IndexedCount - SearchableCount;
+            return empty > 0 && Phase is not ("Status unavailable" or "Awaiting first scan" or "No supported files")
+                ? $"{summary} {Files(empty)} had no text to index."
+                : summary;
+        }
+    }
+
+    public string SidebarStatus
+    {
+        get
+        {
+            var detail = Phase switch
+            {
+                "Ready" => DocumentCountDisplay,
+                "Paused" => PendingCount > 0 ? $"{PendingCount:N0} waiting" : DocumentCountDisplay,
+                "Needs attention" => AttentionFileCount > 0 ? $"{Files(AttentionFileCount)}" : "folder issue",
+                "Finding files" => DocumentCount > 0 ? $"{DocumentCountDisplay} so far" : string.Empty,
+                _ when IsWorking || Phase == "Retry scheduled" => $"{PendingCount:N0} left",
+                _ => string.Empty
+            };
+            return detail.Length == 0 ? Phase : $"{Phase} · {detail}";
+        }
+    }
+
+    public string IdleActivityDisplay => IsPaused ? "Indexing is paused. Changes in watched folders are still detected."
+        : IsDiscovering ? "Checking watched folders for new, changed and removed files…"
+        : LastCompletedUtc is { } last ? $"Last indexed {FriendlyTime.Ago(last)} · watching {FolderCountDisplay} for changes"
+        : $"Watching {FolderCountDisplay} for changes";
 
     public bool IsPaused => State == ProjectState.Paused;
     public bool IsReady => !_isReadinessStale && Phase == "Ready";
@@ -169,44 +328,66 @@ public sealed class ProjectItemViewModel : ViewModelBase
     public bool IsWaitingForResources => Phase == "Waiting for CPU";
     public bool NeedsAttention => Phase == "Needs attention";
     public bool HasErrors => ErrorCount > 0;
+    public bool ShowSidebarIssueCount => HasErrors && !NeedsAttention;
     public bool HasAttentionFiles => AttentionCount > 0;
+    public bool HasProcessingFiles => ProcessingCount > 0;
+    public bool HasQueuedFiles => QueuedCount > 0;
+    public string ReadyLegend => $"{ReadyCount:N0} up to date";
+    public string ProcessingLegend => $"{ProcessingCount:N0} indexing now";
+    public string QueuedLegend => $"{QueuedCount:N0} waiting";
+    public string AttentionLegend => $"{AttentionCount:N0} need attention";
     public bool AreActionsEnabled => !_actionsBusy;
     public bool CanReindex => AreActionsEnabled && State == ProjectState.Active;
     public bool CanRetryFailedFiles => AreActionsEnabled && State == ProjectState.Active && ErrorFileCount > 0;
+
+    public AppStatusTone KeywordSearchTone => _isReadinessStale ? AppStatusTone.Warning
+        : SearchableCount > 0 ? AppStatusTone.Ready : AppStatusTone.Neutral;
+    public string KeywordSearchLabel => _isReadinessStale ? "Not verified" : SearchableCount > 0 ? "Ready" : "Not yet";
+    public string KeywordSearchMessage => SearchableCount > 0
+        ? $"{Files(SearchableCount)} can be searched by exact words and names."
+        : "Files become searchable as soon as they are indexed.";
+
     public bool HasMixedSemanticIndex => !_isSemanticCoverageLoading && _semanticCoverageError is null && _semanticIndex?.HasPartialCoverage == true;
     public bool HasSemanticCoverageWarning => HasMixedSemanticIndex || _semanticCoverageError is not null;
     public bool IsSemanticRepairQueued => _semanticIndex?.IsRepairQueued == true;
     public bool ShowSemanticRepairButton => HasMixedSemanticIndex && !IsSemanticRepairQueued;
+    public bool IsSemanticSetupNeeded => !_isReadinessStale && !_isSemanticCoverageLoading && _semanticCoverageError is null && !_semanticModelAvailable;
     public bool CanRepairSemanticIndex => AreActionsEnabled && ShowSemanticRepairButton && State == ProjectState.Active &&
                                           _semanticModelAvailable && !_isReadinessStale && _semanticCoverageError is null && IsSemanticSnapshotCurrent;
     private bool IsSemanticSnapshotCurrent => _semanticIndex is null || _semanticIndex.SearchGeneration == SearchGeneration;
-    public string SemanticIndexStatusLabel => _isReadinessStale ? "LAST CHECK · STALE"
-        : _isSemanticCoverageLoading ? "CHECKING"
-        : _semanticCoverageError is not null ? "UNABLE TO CHECK"
-        : !_semanticModelAvailable ? "KEYWORD ONLY"
-        : _semanticIndex is null || _semanticIndex.TotalDocumentCount == 0 ? "NO INDEXED FILES"
-        : IsSemanticRepairQueued ? "REPAIR QUEUED"
-        : HasMixedSemanticIndex ? "PARTIAL COVERAGE" : !IsSemanticSnapshotCurrent ? "REFRESHING COVERAGE" : "COMPLETE";
+    public string SemanticIndexStatusLabel => _isReadinessStale ? "Not verified"
+        : _isSemanticCoverageLoading ? "Checking"
+        : _semanticCoverageError is not null ? "Couldn't check"
+        : !_semanticModelAvailable ? "Off"
+        : _semanticIndex is null || _semanticIndex.TotalDocumentCount == 0 ? "No files yet"
+        : IsSemanticRepairQueued ? "Repair queued"
+        : HasMixedSemanticIndex ? "Partial" : !IsSemanticSnapshotCurrent ? "Updating" : "Complete";
+    public AppStatusTone SemanticIndexStatusTone => SemanticIndexStatusLabel switch
+    {
+        "Complete" => AppStatusTone.Ready,
+        "Checking" or "Updating" or "Repair queued" => AppStatusTone.Busy,
+        "Partial" or "Couldn't check" or "Not verified" => AppStatusTone.Warning,
+        _ => AppStatusTone.Neutral
+    };
     public string SemanticIndexStatusMessage
     {
         get
         {
-            if (_isReadinessStale) return "Current meaning-based coverage could not be verified. The last known counts may have changed.";
-            if (_isSemanticCoverageLoading) return "Checking meaning-based coverage for the current index and selected model…";
+            if (_isReadinessStale) return "Coverage could not be verified. The last known result may have changed.";
+            if (_isSemanticCoverageLoading) return "Checking which files support meaning-based search…";
             if (_semanticCoverageError is not null)
-                return $"Current coverage could not be checked. {_semanticCoverageError}" +
-                       (_semanticIndex is { } previous ? $" Last verified: {previous.CompatibleDocumentCount:N0} of {previous.TotalDocumentCount:N0} indexed files covered." : string.Empty);
-            if (!_semanticModelAvailable) return "Keyword search remains available. Set up a semantic model in Settings to add meaning-based search.";
+                return $"Coverage could not be checked. {_semanticCoverageError}" +
+                       (_semanticIndex is { } previous ? $" Last result: {previous.CompatibleDocumentCount:N0} of {previous.TotalDocumentCount:N0} files." : string.Empty);
+            if (!_semanticModelAvailable) return "Finds passages by meaning, not just exact words. Turn it on in Settings; keyword search works without it.";
             if (_semanticIndex is not { } metadata || metadata.TotalDocumentCount == 0)
                 return "No indexed files are available for meaning-based search yet.";
             var excluded = metadata.ExcludedDocumentCount;
-            var coverage = $"Last verified meaning-based coverage: {metadata.CompatibleDocumentCount:N0} of " +
-                           $"{metadata.TotalDocumentCount:N0} indexed files.";
+            var coverage = $"{metadata.CompatibleDocumentCount:N0} of {metadata.TotalDocumentCount:N0} indexed files.";
             if (!IsSemanticSnapshotCurrent)
-                return $"{coverage} Coverage is refreshing as the index changes. Background work and completed jobs are shown below.";
+                return $"{coverage} Updating as files finish indexing.";
             if (!metadata.HasPartialCoverage) return coverage;
             if (metadata.IsRepairQueued)
-                return $"{coverage} The remaining {excluded} {(excluded == 1 ? "file is" : "files are")} queued for background repair.";
+                return $"{coverage} The other {Files(excluded)} {(excluded == 1 ? "is" : "are")} queued for repair.";
             if (metadata.RepairQueuedDocumentCount > 0)
             {
                 var remaining = excluded - metadata.RepairQueuedDocumentCount;
@@ -215,31 +396,28 @@ public sealed class ProjectItemViewModel : ViewModelBase
             }
             var legacy = metadata.ReextractionRequiredDocumentCount;
             if (legacy > 0)
-                return $"{coverage} {legacy} {(legacy == 1 ? "legacy file needs" : "legacy files need")} source re-extraction; " +
-                       $"{metadata.EmbeddingRepairEligibleDocumentCount} can reuse extracted text for embedding repair. Complete search coverage queues the appropriate work.";
-            return $"{coverage} {excluded} {(excluded == 1 ? "file needs" : "files need")} compatible embeddings.";
+                return $"{coverage} {Files(legacy)} indexed by an older version must be re-read from the source; " +
+                       $"{Files(metadata.EmbeddingRepairEligibleDocumentCount)} only need their meaning-based data rebuilt. Complete coverage queues both.";
+            return $"{coverage} {Files(excluded)} still {(excluded == 1 ? "needs" : "need")} meaning-based search data.";
         }
     }
     public string RepairSemanticIndexToolTip => State == ProjectState.Paused
-        ? "Resume indexing before repairing semantic coverage."
-        : _isReadinessStale ? "Current coverage could not be verified. Wait for a successful status check before queuing repair."
-        : _isSemanticCoverageLoading ? "Checking meaning-based coverage before repair can be queued."
+        ? "Resume indexing before completing meaning-based coverage."
+        : _isReadinessStale ? "Status could not be verified. Wait for a successful check before queuing repair."
+        : _isSemanticCoverageLoading ? "Checking coverage before repair can be queued."
         : _semanticCoverageError is not null ? "Coverage could not be checked. Wait for a successful refresh before queuing repair."
-        : !_semanticModelAvailable ? "The selected semantic model must be available before repair can be queued."
-        : !IsSemanticSnapshotCurrent ? "Coverage is refreshing for the current index. Follow indexing activity below."
-        : IsSemanticRepairQueued ? "Coverage repair is already queued. Follow indexing activity below."
-        : IsSemanticCoverageComplete ? "Current meaning-based coverage is complete."
-        : "Queue compatible embedding repair, including source re-extraction where legacy text preparation needs upgrading.";
+        : !_semanticModelAvailable ? "Turn on meaning-based search in Settings first."
+        : !IsSemanticSnapshotCurrent ? "Coverage is updating for the current index."
+        : IsSemanticRepairQueued ? "Coverage repair is already queued."
+        : IsSemanticCoverageComplete ? "Meaning-based coverage is complete."
+        : "Queue the missing meaning-based search data. Files indexed by an older version are re-read from their sources.";
+    public bool IsSemanticCoverageComplete => SemanticIndexStatusLabel == "Complete";
+
     public string ReindexToolTip => IsPaused
         ? "Resume indexing before rebuilding this project."
         : "Rebuild the local index from the watched folders.";
-    public string RetryFailedFilesToolTip => IsPaused
-        ? "Resume indexing before retrying failed files."
-        : ErrorFileCount == 0 ? "These issues apply to the project or its folders. Review the issue details to restore access."
-        : "Queue failed files that do not already have active indexing work.";
     public bool HasFileTypeCounts => FileTypeCounts.Count > 0;
     public bool HasNoFileTypeCounts => !HasFileTypeCounts;
-    public bool HasQueueBreakdown => QueuedBreakdownDisplay.Length > 0;
     public string QueuedBreakdownDisplay
     {
         get
@@ -248,56 +426,28 @@ public sealed class ProjectItemViewModel : ViewModelBase
             if (RetryScheduledCount > 0)
                 parts.Add(RetryScheduledCount == 1 ? "1 scheduled retry" : $"{RetryScheduledCount} scheduled retries");
             if (WaitingForCpuCount > 0)
-                parts.Add($"{WaitingForCpuCount} CPU wait");
-            return string.Join(" · ", parts);
+                parts.Add($"{WaitingForCpuCount} waiting for CPU");
+            return parts.Count == 0 ? "Files waiting to be indexed." : string.Join(" · ", parts);
         }
     }
-    public bool HasRecentErrors => RecentErrors.Count > 0;
-    public bool IsErrorsExpanded
-    {
-        get => _isErrorsExpanded;
-        set
-        {
-            if (SetProperty(ref _isErrorsExpanded, value)) OnPropertyChanged(nameof(IsErrorsCollapsed));
-        }
-    }
-    public bool IsErrorsCollapsed => !IsErrorsExpanded;
     public bool IsErrorsLoading
     {
         get => _isErrorsLoading;
         set
         {
             if (!SetProperty(ref _isErrorsLoading, value)) return;
-            NotifyErrorPagingChanged();
             NotifyIssuePresentation();
         }
     }
-    public int ErrorPageIndex => _errorPageIndex;
-    public int ErrorPageOffset => ErrorPageIndex * ErrorPageSize;
-    public bool HasErrorPages => ErrorCount > ErrorPageSize;
-    public bool CanGoToPreviousErrorPage => !IsErrorsLoading && ErrorPageIndex > 0;
-    public bool CanGoToNextErrorPage => !IsErrorsLoading && ErrorPageOffset + ErrorPageSize < ErrorCount;
     public string PauseActionLabel => State == ProjectState.Paused ? "Resume indexing" : "Pause indexing";
     public string FolderCountDisplay => Folders.Count == 1 ? "1 folder" : $"{Folders.Count} folders";
-    public string DocumentCountDisplay => DocumentCount == 1 ? "1 file" : $"{DocumentCount:N0} files";
+    public string DocumentCountDisplay => Files(DocumentCount);
     public string SidebarErrorCountDisplay => ErrorCount == 1 ? "1 issue" : $"{ErrorCount:N0} issues";
     public string ErrorCountDisplay => ErrorCount == 1 ? "1 current issue" : $"{ErrorCount:N0} current issues";
-    public string RecentErrorsSummary => ErrorFileCount > 0
-        ? $"{ErrorCountDisplay} affecting {ErrorFileCount:N0} {(ErrorFileCount == 1 ? "file" : "files")}. Hidden issues still affect coverage. Issues clear only when their cause is resolved."
-        : $"{ErrorCountDisplay}. Hidden issues still affect coverage. Issues clear only when their cause is resolved.";
-    public string ErrorPageDisplay => IsErrorsLoading && RecentErrors.Count == 0 ? "Loading current issues…"
-        : RecentErrors.Count == 0 ? "Refreshing current issues…"
-        : $"{ErrorPageOffset + 1:N0}–{ErrorPageOffset + RecentErrors.Count:N0} of {Math.Max(ErrorCount, ErrorPageOffset + RecentErrors.Count):N0} issues";
-    public string SearchableSummary => _isReadinessStale
-        ? $"Last verified: {SearchableCount:N0} files with searchable content. Current coverage is unavailable."
-        : $"{SearchableCount:N0} {(SearchableCount == 1 ? "file is" : "files are")} searchable now. " +
-          (IndexedCount > SearchableCount ? $"{IndexedCount - SearchableCount:N0} completed files contain no searchable passages. " : string.Empty) +
-          "Searchable content can be partial or from a previous indexed version while updates are processed.";
-    public string LastCompletedDisplay => LastCompletedUtc?.ToLocalTime().ToString("g") ?? "Not yet completed";
-    public string ProjectDetailsDisplay => LastCompletedUtc is null
-        ? $"{FolderCountDisplay} · Not indexed yet{ExcludedPathsDisplay}"
-        : $"{FolderCountDisplay} · Last completed {LastCompletedDisplay}{ExcludedPathsDisplay}";
-    private string ExcludedPathsDisplay => ExcludedPathCount > 0 ? $" · {ExcludedPathCount:N0} exact paths excluded" : string.Empty;
+    public string ProjectDetailsDisplay => $"{FolderCountDisplay} · {DocumentCountDisplay}{ExcludedPathsDisplay}";
+    public string ExcludedPathsDisplay => ExcludedPathCount > 0 ? $" · {ExcludedPathCount:N0} excluded" : string.Empty;
+
+    private static string Files(int count) => count == 1 ? "1 file" : $"{count:N0} files";
 
     public void UpdateFrom(ProjectSummary project)
     {
@@ -306,45 +456,13 @@ public sealed class ProjectItemViewModel : ViewModelBase
             throw new ArgumentException("A project view model cannot change identity.", nameof(project));
         }
 
-        var previousPhase = Phase;
-        var previousIsPaused = IsPaused;
-        var previousIsReady = IsReady;
-        var previousIsRetrying = IsRetrying;
-        var previousIsRetryScheduled = IsRetryScheduled;
-        var previousIsRetryStatus = IsRetryStatus;
-        var previousIsWaitingForResources = IsWaitingForResources;
-        var previousNeedsAttention = NeedsAttention;
-        var previousHasErrors = HasErrors;
-        var previousCanReindex = CanReindex;
-        var previousCanRetryFailedFiles = CanRetryFailedFiles;
-        var previousCanRepairSemanticIndex = CanRepairSemanticIndex;
-        var previousRepairSemanticIndexToolTip = RepairSemanticIndexToolTip;
-        var previousReindexToolTip = ReindexToolTip;
-        var previousRetryFailedFilesToolTip = RetryFailedFilesToolTip;
-        var previousPauseActionLabel = PauseActionLabel;
-        var previousFolderCountDisplay = FolderCountDisplay;
-        var previousDocumentCountDisplay = DocumentCountDisplay;
-        var previousSidebarErrorCountDisplay = SidebarErrorCountDisplay;
-        var previousRecentErrorsSummary = RecentErrorsSummary;
-        var previousProjectDetailsDisplay = ProjectDetailsDisplay;
-        var previousLastCompletedDisplay = LastCompletedDisplay;
-        var previousPhaseDetails = PhaseDetails;
-        var previousProcessingCount = ProcessingCount;
-        var previousQueuedCount = QueuedCount;
-        var previousRetryScheduledCount = RetryScheduledCount;
-        var previousRunningRetryCount = RunningRetryCount;
-        var previousNextRetryUtc = NextRetryUtc;
-        var previousWaitingForCpuCount = WaitingForCpuCount;
-        var previousHasQueueBreakdown = HasQueueBreakdown;
-        var previousQueuedBreakdownDisplay = QueuedBreakdownDisplay;
-        var previousSearchableSummary = SearchableSummary;
-        var previousHasAttentionFiles = HasAttentionFiles;
-
+        var before = CaptureDerived();
         Name = project.Name;
         State = project.State;
         if (!Folders.SequenceEqual(project.Folders))
         {
             Folders = project.Folders.ToArray();
+            UpdateFolderRows();
             if (_allExcludedFiles.Count > 0) UpdateExcludedPage();
         }
         var generationChanged = SearchGeneration != project.SearchGeneration;
@@ -361,81 +479,13 @@ public sealed class ProjectItemViewModel : ViewModelBase
         LastCompletedUtc = project.LastCompletedUtc;
         CurrentFile = project.CurrentFile;
         Work = project.Work;
-        if (generationChanged)
-        {
-            // Keep the current file keyset and root objects while refreshed details are read.
-            // An unrelated published revision must not interrupt ongoing issue triage.
-            // Detail rows belong to the published generation that produced them.
-            // Each committed file advances the generation. Keep the last verified coverage and
-            // inventory on screen while polling; clearing them made every job flash the page.
-            // Coverage is explicitly historical until the matching generation is read.
-            BeginSemanticIndexRefresh();
-            if (RecentErrors.Count > 0)
-            {
-                RecentErrors.Clear();
-                OnPropertyChanged(nameof(HasRecentErrors));
-            }
-        }
-        // A resolved page must not linger until the next details query finishes.
-        var lastPage = Math.Max(0, (ErrorCount - 1) / ErrorPageSize);
-        if (_errorPageIndex > lastPage)
-        {
-            _errorPageIndex = lastPage;
-            RecentErrors.Clear();
-            OnPropertyChanged(nameof(HasRecentErrors));
-        }
-        if (ErrorCount == 0 && IssueGroups.Count > 0)
-        {
-            ResetIssuePages();
-        }
-        if (ErrorCount == 0 && RecentErrors.Count > 0)
-        {
-            RecentErrors.Clear();
-            OnPropertyChanged(nameof(HasRecentErrors));
-        }
-        NotifyErrorPagingChanged();
+        // Each committed file advances the generation. Keep the last verified coverage and the
+        // current issue keyset on screen while refreshed data is read; clearing them made every
+        // job flash the page. Coverage is explicitly historical until the matching generation is read.
+        if (generationChanged) _isSemanticCoverageLoading = !_hasSemanticCoverageSnapshot;
+        if (ErrorCount == 0 && IssueGroups.Count > 0) ResetIssuePages();
         NotifyIssuePresentation();
-
-        if (!string.Equals(previousPhase, Phase, StringComparison.Ordinal)) OnPropertyChanged(nameof(Phase));
-        if (!string.Equals(previousPhaseDetails, PhaseDetails, StringComparison.Ordinal)) OnPropertyChanged(nameof(PhaseDetails));
-        if (previousIsPaused != IsPaused) OnPropertyChanged(nameof(IsPaused));
-        if (previousIsReady != IsReady) OnPropertyChanged(nameof(IsReady));
-        if (previousIsRetrying != IsRetrying) OnPropertyChanged(nameof(IsRetrying));
-        if (previousIsRetryScheduled != IsRetryScheduled) OnPropertyChanged(nameof(IsRetryScheduled));
-        if (previousIsRetryStatus != IsRetryStatus) OnPropertyChanged(nameof(IsRetryStatus));
-        if (previousIsWaitingForResources != IsWaitingForResources)
-            OnPropertyChanged(nameof(IsWaitingForResources));
-        if (previousNeedsAttention != NeedsAttention) OnPropertyChanged(nameof(NeedsAttention));
-        if (previousHasErrors != HasErrors) OnPropertyChanged(nameof(HasErrors));
-        if (previousHasAttentionFiles != HasAttentionFiles) OnPropertyChanged(nameof(HasAttentionFiles));
-        if (previousSearchableSummary != SearchableSummary) OnPropertyChanged(nameof(SearchableSummary));
-        if (previousCanReindex != CanReindex) OnPropertyChanged(nameof(CanReindex));
-        if (previousCanRetryFailedFiles != CanRetryFailedFiles) OnPropertyChanged(nameof(CanRetryFailedFiles));
-        if (previousCanRepairSemanticIndex != CanRepairSemanticIndex)
-            OnPropertyChanged(nameof(CanRepairSemanticIndex));
-        if (!string.Equals(previousRepairSemanticIndexToolTip, RepairSemanticIndexToolTip, StringComparison.Ordinal))
-            OnPropertyChanged(nameof(RepairSemanticIndexToolTip));
-        if (!string.Equals(previousReindexToolTip, ReindexToolTip, StringComparison.Ordinal)) OnPropertyChanged(nameof(ReindexToolTip));
-        if (!string.Equals(previousRetryFailedFilesToolTip, RetryFailedFilesToolTip, StringComparison.Ordinal)) OnPropertyChanged(nameof(RetryFailedFilesToolTip));
-        if (!string.Equals(previousPauseActionLabel, PauseActionLabel, StringComparison.Ordinal)) OnPropertyChanged(nameof(PauseActionLabel));
-        if (!string.Equals(previousFolderCountDisplay, FolderCountDisplay, StringComparison.Ordinal)) OnPropertyChanged(nameof(FolderCountDisplay));
-        if (!string.Equals(previousDocumentCountDisplay, DocumentCountDisplay, StringComparison.Ordinal)) OnPropertyChanged(nameof(DocumentCountDisplay));
-        if (!string.Equals(previousSidebarErrorCountDisplay, SidebarErrorCountDisplay, StringComparison.Ordinal)) OnPropertyChanged(nameof(SidebarErrorCountDisplay));
-        OnPropertyChanged(nameof(ErrorCountDisplay));
-        OnPropertyChanged(nameof(ProgressMaximum));
-        OnPropertyChanged(nameof(ProgressDescription));
-        if (!string.Equals(previousRecentErrorsSummary, RecentErrorsSummary, StringComparison.Ordinal)) OnPropertyChanged(nameof(RecentErrorsSummary));
-        if (!string.Equals(previousProjectDetailsDisplay, ProjectDetailsDisplay, StringComparison.Ordinal)) OnPropertyChanged(nameof(ProjectDetailsDisplay));
-        if (!string.Equals(previousLastCompletedDisplay, LastCompletedDisplay, StringComparison.Ordinal)) OnPropertyChanged(nameof(LastCompletedDisplay));
-        if (previousProcessingCount != ProcessingCount) OnPropertyChanged(nameof(ProcessingCount));
-        if (previousQueuedCount != QueuedCount) OnPropertyChanged(nameof(QueuedCount));
-        if (previousRetryScheduledCount != RetryScheduledCount) OnPropertyChanged(nameof(RetryScheduledCount));
-        if (previousRunningRetryCount != RunningRetryCount) OnPropertyChanged(nameof(RunningRetryCount));
-        if (previousNextRetryUtc != NextRetryUtc) OnPropertyChanged(nameof(NextRetryUtc));
-        if (previousWaitingForCpuCount != WaitingForCpuCount) OnPropertyChanged(nameof(WaitingForCpuCount));
-        if (previousHasQueueBreakdown != HasQueueBreakdown) OnPropertyChanged(nameof(HasQueueBreakdown));
-        if (!string.Equals(previousQueuedBreakdownDisplay, QueuedBreakdownDisplay, StringComparison.Ordinal))
-            OnPropertyChanged(nameof(QueuedBreakdownDisplay));
+        NotifyDerivedChanged(before);
     }
 
     public void UpdateRuntime(IndexingTimingSnapshot runtime, bool isDiscovering = false, bool isInitialScanComplete = true)
@@ -444,116 +494,31 @@ public sealed class ProjectItemViewModel : ViewModelBase
         if (runtime.ActiveItems.Any(item => item.ProjectId != Id))
             throw new ArgumentException("A runtime summary can only contain this project's work.", nameof(runtime));
 
-        var previousPhase = Phase;
-        var previousPhaseDetails = PhaseDetails;
-        var previousIsReady = IsReady;
-        var previousIsRetrying = IsRetrying;
-        var previousIsRetryScheduled = IsRetryScheduled;
-        var previousIsRetryStatus = IsRetryStatus;
-        var previousIsWaitingForResources = IsWaitingForResources;
-        var previousNeedsAttention = NeedsAttention;
-        var previousProcessingCount = ProcessingCount;
-        var previousQueuedCount = QueuedCount;
-        var previousRunningRetryCount = RunningRetryCount;
-        var previousWaitingForCpuCount = WaitingForCpuCount;
-        var previousHasQueueBreakdown = HasQueueBreakdown;
-        var previousQueuedBreakdownDisplay = QueuedBreakdownDisplay;
-
+        var before = CaptureDerived();
         _runtimeWork = runtime;
         _isDiscovering = isDiscovering;
         _isInitialScanComplete = isInitialScanComplete;
-        OnPropertyChanged(nameof(IsDiscovering));
-
-        if (!string.Equals(previousPhase, Phase, StringComparison.Ordinal)) OnPropertyChanged(nameof(Phase));
-        if (!string.Equals(previousPhaseDetails, PhaseDetails, StringComparison.Ordinal))
-            OnPropertyChanged(nameof(PhaseDetails));
-        if (previousIsReady != IsReady) OnPropertyChanged(nameof(IsReady));
-        if (previousIsRetrying != IsRetrying) OnPropertyChanged(nameof(IsRetrying));
-        if (previousIsRetryScheduled != IsRetryScheduled) OnPropertyChanged(nameof(IsRetryScheduled));
-        if (previousIsRetryStatus != IsRetryStatus) OnPropertyChanged(nameof(IsRetryStatus));
-        if (previousIsWaitingForResources != IsWaitingForResources)
-            OnPropertyChanged(nameof(IsWaitingForResources));
-        if (previousNeedsAttention != NeedsAttention) OnPropertyChanged(nameof(NeedsAttention));
-        if (previousProcessingCount != ProcessingCount) OnPropertyChanged(nameof(ProcessingCount));
-        if (previousQueuedCount != QueuedCount) OnPropertyChanged(nameof(QueuedCount));
-        if (previousRunningRetryCount != RunningRetryCount) OnPropertyChanged(nameof(RunningRetryCount));
-        if (previousWaitingForCpuCount != WaitingForCpuCount) OnPropertyChanged(nameof(WaitingForCpuCount));
-        if (previousHasQueueBreakdown != HasQueueBreakdown) OnPropertyChanged(nameof(HasQueueBreakdown));
-        if (!string.Equals(previousQueuedBreakdownDisplay, QueuedBreakdownDisplay, StringComparison.Ordinal))
-            OnPropertyChanged(nameof(QueuedBreakdownDisplay));
-    }
-
-    public void UpdateErrors(IReadOnlyList<ProjectErrorInfo> errors)
-    {
-        for (var targetIndex = 0; targetIndex < errors.Count; targetIndex++)
-        {
-            var incoming = errors[targetIndex];
-            if (targetIndex < RecentErrors.Count && RecentErrors[targetIndex].Id == incoming.Id)
-            {
-                if (RecentErrors[targetIndex].Source != incoming) RecentErrors[targetIndex] = new ProjectErrorItemViewModel(incoming);
-                continue;
-            }
-
-            var existingIndex = IndexOfError(incoming.Id, targetIndex + 1);
-            if (existingIndex >= 0)
-            {
-                RecentErrors.Move(existingIndex, targetIndex);
-                if (RecentErrors[targetIndex].Source != incoming) RecentErrors[targetIndex] = new ProjectErrorItemViewModel(incoming);
-            }
-            else
-            {
-                RecentErrors.Insert(targetIndex, new ProjectErrorItemViewModel(incoming));
-            }
-        }
-
-        while (RecentErrors.Count > errors.Count) RecentErrors.RemoveAt(RecentErrors.Count - 1);
-        OnPropertyChanged(nameof(HasRecentErrors));
-        OnPropertyChanged(nameof(RecentErrorsSummary));
-        OnPropertyChanged(nameof(ErrorPageDisplay));
-    }
-
-    public void MoveErrorPage(int direction)
-    {
-        var nextPage = Math.Clamp(ErrorPageIndex + direction, 0, Math.Max(0, (ErrorCount - 1) / ErrorPageSize));
-        if (nextPage == ErrorPageIndex) return;
-        _errorPageIndex = nextPage;
-        RecentErrors.Clear();
-        OnPropertyChanged(nameof(HasRecentErrors));
-        NotifyErrorPagingChanged();
-    }
-
-    private void NotifyErrorPagingChanged()
-    {
-        OnPropertyChanged(nameof(ErrorPageIndex));
-        OnPropertyChanged(nameof(ErrorPageOffset));
-        OnPropertyChanged(nameof(HasErrorPages));
-        OnPropertyChanged(nameof(CanGoToPreviousErrorPage));
-        OnPropertyChanged(nameof(CanGoToNextErrorPage));
-        OnPropertyChanged(nameof(ErrorPageDisplay));
+        NotifyDerivedChanged(before);
     }
 
     public void UpdateSemanticIndex(VectorSnapshotMetadata? metadata, bool modelAvailable)
     {
         if (_semanticIndex == metadata && _semanticModelAvailable == modelAvailable && !_isSemanticCoverageLoading && _semanticCoverageError is null) return;
+        var before = CaptureDerived();
         _semanticIndex = metadata;
         _semanticModelAvailable = modelAvailable;
         _hasSemanticCoverageSnapshot = true;
         _isSemanticCoverageLoading = false;
         _semanticCoverageError = null;
-        NotifySemanticCoverageChanged();
+        NotifyDerivedChanged(before);
     }
-
-    public bool IsSemanticCoverageComplete => SemanticIndexStatusLabel == "COMPLETE";
 
     public void SetActionsBusy(bool busy)
     {
         if (_actionsBusy == busy) return;
+        var before = CaptureDerived();
         _actionsBusy = busy;
-        OnPropertyChanged(nameof(AreActionsEnabled));
-        OnPropertyChanged(nameof(CanReindex));
-        OnPropertyChanged(nameof(CanRetryFailedFiles));
-        OnPropertyChanged(nameof(CanRepairSemanticIndex));
-        OnPropertyChanged(nameof(CanRetryVisibleIssueFiles));
+        NotifyDerivedChanged(before);
     }
 
     public void BeginSemanticIndexRefreshForPolicy(string? policyKey, bool modelAvailable) =>
@@ -563,6 +528,7 @@ public sealed class ProjectItemViewModel : ViewModelBase
 
     public void BeginSemanticIndexRefresh(bool invalidate = false)
     {
+        var before = CaptureDerived();
         if (invalidate)
         {
             _semanticIndex = null;
@@ -570,27 +536,15 @@ public sealed class ProjectItemViewModel : ViewModelBase
             _semanticCoverageError = null;
         }
         _isSemanticCoverageLoading = !_hasSemanticCoverageSnapshot;
-        NotifySemanticCoverageChanged();
+        NotifyDerivedChanged(before);
     }
 
     public void FailSemanticIndexRefresh(string message)
     {
+        var before = CaptureDerived();
         _isSemanticCoverageLoading = false;
         _semanticCoverageError = message;
-        NotifySemanticCoverageChanged();
-    }
-
-    private void NotifySemanticCoverageChanged()
-    {
-        OnPropertyChanged(nameof(HasMixedSemanticIndex));
-        OnPropertyChanged(nameof(HasSemanticCoverageWarning));
-        OnPropertyChanged(nameof(IsSemanticCoverageComplete));
-        OnPropertyChanged(nameof(IsSemanticRepairQueued));
-        OnPropertyChanged(nameof(ShowSemanticRepairButton));
-        OnPropertyChanged(nameof(CanRepairSemanticIndex));
-        OnPropertyChanged(nameof(SemanticIndexStatusLabel));
-        OnPropertyChanged(nameof(SemanticIndexStatusMessage));
-        OnPropertyChanged(nameof(RepairSemanticIndexToolTip));
+        NotifyDerivedChanged(before);
     }
 
     public void UpdateFileTypeCounts(IReadOnlyList<ProjectFileTypeCount> counts)
@@ -605,18 +559,18 @@ public sealed class ProjectItemViewModel : ViewModelBase
     {
         var current = issues.Where(issue => Folders.Any(folder => folder.Id == issue.FolderId)).ToArray();
         if (FolderIssues.SequenceEqual(current)) return;
+        var before = CaptureDerived();
         FolderIssues = current;
-        OnPropertyChanged(nameof(HasFolderIssues));
-        OnPropertyChanged(nameof(Phase));
-        OnPropertyChanged(nameof(PhaseDetails));
-        OnPropertyChanged(nameof(IsReady));
-        OnPropertyChanged(nameof(NeedsAttention));
+        UpdateFolderRows();
+        NotifyDerivedChanged(before);
     }
+
+    private void UpdateFolderRows() => FolderRows = Folders.Select(folder => new ProjectFolderRow(folder.Path,
+        FolderIssues.FirstOrDefault(issue => issue.FolderId == folder.Id)?.Message)).ToArray();
 
     public ObservableCollection<ProjectIssueGroupViewModel> IssueGroups { get; } = [];
     public ObservableCollection<ExcludedFileItemViewModel> ExcludedFiles { get; } = [];
     public string IssueQuery { get => _issueQuery; set { if (SetProperty(ref _issueQuery, value)) ResetIssuePages(); } }
-    public string IssueCodeFilter { get => _issueCodeFilter; set { if (SetProperty(ref _issueCodeFilter, value)) ResetIssuePages(); } }
     public int IssueImpactFilterIndex { get => _issueImpactFilterIndex; set { if (SetProperty(ref _issueImpactFilterIndex, value)) ResetIssuePages(); } }
     public bool ShowHiddenIssues { get => _showHiddenIssues; set { if (SetProperty(ref _showHiddenIssues, value)) ResetIssuePages(); } }
     public ProjectIssueImpact IssueImpactFilter => (ProjectIssueImpact)Math.Clamp(IssueImpactFilterIndex, 0, 3);
@@ -626,28 +580,34 @@ public sealed class ProjectItemViewModel : ViewModelBase
     public int HiddenIssueCount => _issuePage?.HiddenIssueCount ?? 0;
     public int HiddenIssueFileCount => _issuePage?.HiddenFileCount ?? 0;
     public bool HasHiddenIssues => HiddenIssueCount > 0;
-    public string HiddenIssuesDisplay => $"Show hidden ({HiddenIssueCount:N0} {(HiddenIssueCount == 1 ? "component" : "components")} / {HiddenIssueFileCount:N0} {(HiddenIssueFileCount == 1 ? "file" : "files")})";
+    public string HiddenIssuesDisplay => $"Show hidden ({Files(HiddenIssueFileCount)})";
     public bool HasIssueCard => HasErrors || HasIssueLoadError;
     public bool HasIssueGroups => IssueGroups.Count > 0;
     public bool HasNoMatchingIssueGroups => !IsErrorsLoading && IssueLoadError is null && !HasIssueGroups;
     public bool HasIssueLoadError => IssueLoadError is not null;
     public string? IssueLoadError { get => _issueLoadError; private set { SetProperty(ref _issueLoadError, value); NotifyIssuePresentation(); } }
     public string NoMatchingIssuesMessage => _issuePageIndex > 0
-        ? "No remaining matching files on this page. Use Previous or Refresh issues to review the latest list."
-        : HasHiddenIssues && string.IsNullOrWhiteSpace(IssueQuery) && string.IsNullOrWhiteSpace(IssueCodeFilter) && IssueImpactFilter == ProjectIssueImpact.All && !ShowHiddenIssues
-        ? "All matching current issues are hidden. They still affect readiness and coverage. Show hidden to review or restore them."
-        : "No files match these issue filters. Try a different path, cause, or impact, or show hidden issues.";
-    public string GroupedIssuesSummary => _issuePage is null ? RecentErrorsSummary :
-        $"{_issuePage.TotalIssueCount:N0} current issue components affecting {_issuePage.TotalFileCount:N0} file / operation groups · " +
-        $"{_issuePage.HiddenIssueCount:N0} components hidden. Hiding acknowledges an issue; it does not resolve it or change search.";
-    public string IssuePageDisplay => IsErrorsLoading ? "Loading current issues…" :
-        $"File page {_issuePageIndex + 1} · {IssueGroups.Count:N0} shown of {_issuePage?.FilteredFileCount ?? 0:N0} matching files · path order";
+        ? "No more matching files on this page. Go back to the previous page to see the latest list."
+        : HasHiddenIssues && string.IsNullOrWhiteSpace(IssueQuery) && IssueImpactFilter == ProjectIssueImpact.All && !ShowHiddenIssues
+        ? "All current issues are hidden. They still count toward this project's status. Show hidden to review or restore them."
+        : "No files match this search. Try other words, another filter, or show hidden issues.";
+    public string GroupedIssuesSummary
+    {
+        get
+        {
+            var issues = _issuePage?.TotalIssueCount ?? ErrorCount;
+            var files = _issuePage?.TotalFileCount ?? ErrorFileCount;
+            var summary = $"{issues:N0} {(issues == 1 ? "issue" : "issues")} in {Files(files)}.";
+            if (HiddenIssueCount > 0) summary += $" {HiddenIssueCount:N0} hidden.";
+            return summary + " Files indexed before stay searchable while you fix them.";
+        }
+    }
+    public bool HasIssuePages => _issuePageIndex > 0 || _nextIssueCursor is not null;
+    public string IssuePageDisplay => IsErrorsLoading ? "Loading…" :
+        $"Page {_issuePageIndex + 1} · {IssueGroups.Count:N0} of {_issuePage?.FilteredFileCount ?? 0:N0} matching files";
     public bool IssuesChangedDuringPaging => _issuesChangedDuringPaging;
     public bool CanPreviousIssuePage => !IsErrorsLoading && _issuePageIndex > 0;
     public bool CanNextIssuePage => !IsErrorsLoading && _nextIssueCursor is not null;
-    public bool CanRetryVisibleIssueFiles => CanReindex && IssueGroups.Any(group => group.CanRetry && !group.IsHidden);
-    public IReadOnlyList<Guid> VisibleRetryDocumentIds => IssueGroups.Where(group => group.CanRetry && !group.IsHidden)
-        .Select(group => group.DocumentId!.Value).Distinct().ToArray();
     public bool HasUndoIssueHide => _undoAcknowledgements.Count > 0;
     public IReadOnlyList<Guid> UndoAcknowledgements => _undoAcknowledgements;
     public string IssueActionMessage { get => _issueActionMessage; private set => SetProperty(ref _issueActionMessage, value); }
@@ -659,14 +619,14 @@ public sealed class ProjectItemViewModel : ViewModelBase
     public bool HasNoMatchingExcludedFiles => HasExcludedFiles && MatchingExcludedFileCount == 0;
     public int ExcludedFileCount => _allExcludedFiles.Count;
     public bool HasExcludedFiles => ExcludedFileCount > 0;
-    public string ExcludedFilesSummary => $"{ExcludedFileCount:N0} exact root paths excluded from indexing and search. Renamed paths are eligible again.";
+    public string ExcludedFilesSummary => $"Excluded files ({ExcludedFileCount:N0})";
     public bool CanPreviousExcludedPage => _excludedPageIndex > 0;
     public bool CanNextExcludedPage => (_excludedPageIndex + 1) * ErrorPageSize < MatchingExcludedFileCount;
-    public string ExcludedPageDisplay => $"Excluded path page {_excludedPageIndex + 1} · {ExcludedFiles.Count:N0} shown of {MatchingExcludedFileCount:N0} matching paths";
+    public bool HasExcludedPages => MatchingExcludedFileCount > ErrorPageSize;
+    public string ExcludedPageDisplay => $"Page {_excludedPageIndex + 1} · {ExcludedFiles.Count:N0} of {MatchingExcludedFileCount:N0} files";
     public bool IsReadinessStale => _isReadinessStale;
-    public string LastCheckedDisplay => _lastChecked is { } checkedAt ? $"Last verified {checkedAt.ToLocalTime():g}" : "Not verified yet";
 
-    public ProjectIssueListRequest CreateIssueRequest() => new(Id, IssueQuery, Code: string.IsNullOrWhiteSpace(IssueCodeFilter) ? null : IssueCodeFilter.Trim(), Impact: IssueImpactFilter,
+    public ProjectIssueListRequest CreateIssueRequest() => new(Id, IssueQuery, Impact: IssueImpactFilter,
         Visibility: IssueVisibility, Limit: ErrorPageSize, Cursor: IssueCursor);
 
     public void UpdateIssueGroups(ProjectIssueListResponse page)
@@ -721,7 +681,7 @@ public sealed class ProjectItemViewModel : ViewModelBase
     public void RecordIssueHide(HideProjectIssuesResult result)
     {
         _undoAcknowledgements = result.AcknowledgementIds;
-        SetIssueActionMessage($"Hidden {result.HiddenIssueCount:N0} current components. Discovery, retry and search are unchanged; new material failures appear again.");
+        SetIssueActionMessage($"Hid {result.HiddenIssueCount:N0} {(result.HiddenIssueCount == 1 ? "issue" : "issues")}. Indexing, retries and search are unchanged, and new failures still appear.");
         OnPropertyChanged(nameof(HasUndoIssueHide));
     }
     public void ClearIssueUndo() { _undoAcknowledgements = []; OnPropertyChanged(nameof(HasUndoIssueHide)); }
@@ -744,7 +704,7 @@ public sealed class ProjectItemViewModel : ViewModelBase
         foreach (var file in FilteredExcludedFiles.Skip(_excludedPageIndex * ErrorPageSize).Take(ErrorPageSize))
             ExcludedFiles.Add(new(file, Folders.Any(folder => IsWithinFolder(file.SourcePath, folder.Path))));
         foreach (var name in new[] { nameof(ExcludedFileCount), nameof(HasExcludedFiles), nameof(ExcludedFilesSummary),
-                     nameof(CanPreviousExcludedPage), nameof(CanNextExcludedPage), nameof(ExcludedPageDisplay),
+                     nameof(CanPreviousExcludedPage), nameof(CanNextExcludedPage), nameof(ExcludedPageDisplay), nameof(HasExcludedPages),
                      nameof(MatchingExcludedFileCount), nameof(HasNoMatchingExcludedFiles) }) OnPropertyChanged(name);
     }
     private static bool IsWithinFolder(string path, string folder)
@@ -756,17 +716,32 @@ public sealed class ProjectItemViewModel : ViewModelBase
     public void SetFreshness(bool isStale, DateTimeOffset? lastChecked)
     {
         if (_isReadinessStale == isStale && _lastChecked == lastChecked) return;
+        var before = CaptureDerived();
         _isReadinessStale = isStale; _lastChecked = lastChecked;
-        foreach (var name in new[] { nameof(IsReadinessStale), nameof(LastCheckedDisplay), nameof(Phase), nameof(PhaseDetails),
-                     nameof(IsReady), nameof(SearchableSummary) }) OnPropertyChanged(name);
-        NotifySemanticCoverageChanged();
+        NotifyDerivedChanged(before);
     }
     private void NotifyIssuePresentation()
     {
         foreach (var name in new[] { nameof(HiddenIssueCount), nameof(HiddenIssueFileCount), nameof(HasHiddenIssues),
                      nameof(HiddenIssuesDisplay), nameof(HasIssueGroups), nameof(HasNoMatchingIssueGroups), nameof(HasIssueLoadError),
                      nameof(HasIssueCard), nameof(NoMatchingIssuesMessage), nameof(GroupedIssuesSummary), nameof(IssuePageDisplay),
-                     nameof(CanPreviousIssuePage), nameof(CanNextIssuePage), nameof(CanRetryVisibleIssueFiles), nameof(IssuesChangedDuringPaging) }) OnPropertyChanged(name);
+                     nameof(HasIssuePages), nameof(CanPreviousIssuePage), nameof(CanNextIssuePage), nameof(IssuesChangedDuringPaging) }) OnPropertyChanged(name);
+    }
+
+    private object?[] CaptureDerived()
+    {
+        var values = new object?[DerivedProperties.Length];
+        for (var index = 0; index < values.Length; index++) values[index] = DerivedProperties[index].Read(this);
+        return values;
+    }
+
+    private void NotifyDerivedChanged(object?[] before)
+    {
+        for (var index = 0; index < before.Length; index++)
+        {
+            var (name, read) = DerivedProperties[index];
+            if (!Equals(before[index], read(this))) OnPropertyChanged(name);
+        }
     }
 
     public ProjectSummary ToSummary() => new(Id, Name, State, Folders, SearchGeneration, DocumentCount,
@@ -779,14 +754,17 @@ public sealed class ProjectItemViewModel : ViewModelBase
         ErrorFileCount = ErrorFileCount,
         ExcludedPathCount = ExcludedPathCount
     };
+}
 
-    private int IndexOfError(long id, int startIndex)
+/// <summary>Short, human relative times for status lines that refresh every second.</summary>
+internal static class FriendlyTime
+{
+    public static string Ago(DateTimeOffset when, DateTimeOffset? now = null)
     {
-        for (var index = startIndex; index < RecentErrors.Count; index++)
-        {
-            if (RecentErrors[index].Id == id) return index;
-        }
-
-        return -1;
+        var elapsed = (now ?? DateTimeOffset.UtcNow) - when;
+        if (elapsed < TimeSpan.FromMinutes(1)) return "just now";
+        if (elapsed < TimeSpan.FromHours(1)) return $"{(int)elapsed.TotalMinutes} min ago";
+        if (elapsed < TimeSpan.FromDays(1)) return $"{(int)elapsed.TotalHours} h ago";
+        return $"on {when.ToLocalTime():g}";
     }
 }

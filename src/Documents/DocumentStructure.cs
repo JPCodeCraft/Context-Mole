@@ -23,6 +23,13 @@ public sealed partial class DocumentExtractionRegistry
             _path.Add((level, TextNormalization.ForDisplay(text)));
             Key = $"{prefix}:{++_ordinal}";
         }
+
+        /// <summary>Appends a wrapped continuation to the current heading, keeping its level and key.</summary>
+        public void Extend(string text)
+        {
+            if (_path.Count == 0) return;
+            _path[^1] = (_path[^1].Level, TextNormalization.ForDisplay($"{_path[^1].Text} {text}"));
+        }
     }
 
     private static IReadOnlyList<ExtractedSection> HtmlSections(string html, ExtractionMethod method,
