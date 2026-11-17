@@ -14,7 +14,7 @@ public sealed partial class DocumentExtractionRegistry
 {
     private sealed record PdfTextBlock(string Text, SourceRegion? Region, double FontSize = 0,
         ExtractionMethod Method = ExtractionMethod.NativeText, double? Confidence = null,
-        bool IsTable = false, string? Warning = null);
+        bool IsTable = false, string? Warning = null, double BoldFraction = 0);
 
     private static IReadOnlyList<PdfTextBlock> NativePdfBlocks(Page page)
     {
@@ -37,16 +37,16 @@ public sealed partial class DocumentExtractionRegistry
             var blocks = RecursiveXYCut.Instance.GetBlocks(words.Where(word => !tableWords.Contains(word)))
                 .Select(block =>
                 {
-                    var size = Median(block.TextLines.SelectMany(line => line.Words).SelectMany(word => word.Letters)
-                        .Select(letter => letter.PointSize));
+                    var (size, bold) = LetterStyle(block.TextLines.SelectMany(line => line.Words));
                     var bounds = block.BoundingBox;
                     var inferred = bounds.Height <= 0 && size > 0;
                     if (inferred) bounds = new PdfRectangle(bounds.Left, bounds.Bottom - size * 0.2,
                         bounds.Right, bounds.Top + size * 0.8);
                     return new PdfTextBlock(block.Text, PdfRegion(bounds, page), size,
-                        Warning: inferred ? "native_region_inferred: missing font geometry approximated from text baseline." : null);
+                        Warning: inferred ? "native_region_inferred: missing font geometry approximated from text baseline." : null,
+                        BoldFraction: bold);
                 }).Concat(tables).ToArray();
-            return OrderPdfBlocks(blocks);
+            return JoinLineMarkers(OrderPdfBlocks(blocks));
         }
         catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or ArithmeticException)
         {
@@ -54,6 +54,14 @@ public sealed partial class DocumentExtractionRegistry
             return [new PdfTextBlock(ContentOrderTextExtractor.GetText(page, addDoubleNewline: true), null,
                 Warning: "layout_fallback: text geometry could not be ordered reliably.")];
         }
+    }
+
+    /// <summary>Median point size and the share of bold letters, for heading recognition.</summary>
+    private static (double Size, double BoldFraction) LetterStyle(IEnumerable<Word> words)
+    {
+        var letters = words.SelectMany(word => word.Letters).Where(letter => !string.IsNullOrWhiteSpace(letter.Value)).ToArray();
+        return (Median(letters.Select(letter => letter.PointSize)),
+            letters.Length == 0 ? 0 : letters.Count(IsBoldLetter) / (double)letters.Length);
     }
 
     private static IReadOnlyList<PdfTextBlock> OrderPdfBlocks(IReadOnlyList<PdfTextBlock> blocks)
@@ -93,6 +101,7 @@ public sealed partial class DocumentExtractionRegistry
             }
             return cells;
         }).ToArray();
+        var previousTableEnd = 0;
         for (var start = 0; start < candidates.Length; start++)
         {
             var first = candidates[start];
@@ -105,6 +114,20 @@ public sealed partial class DocumentExtractionRegistry
                    rows[end - 1][0].BoundingBox.Top - rows[end][0].BoundingBox.Top <= Math.Max(40, rows[end][0].BoundingBox.Height * 3.5)) end++;
             if (end - start < 3) continue;
             var tableRows = candidates.Skip(start).Take(end - start).ToArray();
+            if (first.Count == 2 && tableRows.All(row => ListItemMarker().IsMatch(string.Join(' ', row[0].Select(word => word.Text)))))
+            {
+                // Numbered steps ("1." beside "Calculate the trip distance") align like a two-column
+                // table but are prose: keep them as one text block that merges with its lead-in.
+                var items = tableRows.SelectMany(row => row.SelectMany(cell => cell)).ToArray();
+                var (size, bold) = LetterStyle(items);
+                result.Add(new PdfTextBlock(string.Join('\n', tableRows.Select(row =>
+                        string.Join(' ', row.SelectMany(cell => cell).Select(word => word.Text)))),
+                    UnionRegions(items.Select(word => PdfRegion(word.BoundingBox, page))), size, BoldFraction: bold));
+                foreach (var word in items) used.Add(word);
+                previousTableEnd = end;
+                start = end - 1;
+                continue;
+            }
             var numericRows = Enumerable.Range(0, first.Count).Max(column => tableRows.Count(row =>
             {
                 var text = string.Join(' ', row[column].Select(word => word.Text));
@@ -119,13 +142,17 @@ public sealed partial class DocumentExtractionRegistry
             // Aligned prose (especially bibliographies) can have scattered numeric fragments
             // in alternating columns. Require a consistently numeric column, or visible rules.
             if (numericRows < Math.Max(2, (int)Math.Ceiling(tableRows.Length * 0.6)) && !ruled) continue;
+            var (header, headerWords) = PdfTableHeader(page, rows, candidates, start, previousTableEnd, tableRows, left, right);
+            all = all.Concat(headerWords).ToArray();
+            top = all.Max(word => word.BoundingBox.Top);
             foreach (var word in all) used.Add(word);
-            result.Add(new PdfTextBlock(string.Join('\n', tableRows.Select(row => string.Join('\t',
-                    row.Select(cell => string.Join(' ', cell.Select(word => word.Text)))))),
+            var body = tableRows.Select(row => string.Join('\t', row.Select(cell => string.Join(' ', cell.Select(word => word.Text)))));
+            result.Add(new PdfTextBlock(string.Join('\n', header is null ? body : body.Prepend(header)),
                 PdfRegion(new PdfRectangle(left, bottom, right, top), page), IsTable: true,
                 Warning: ruled
                     ? "table_inferred: grid rules support aligned cells; merged cells and column semantics are unverified."
                     : "table_inferred: cells inferred from aligned text; merged cells and column semantics are unverified."));
+            previousTableEnd = end;
             start = end - 1;
         }
         return result;
@@ -148,6 +175,80 @@ public sealed partial class DocumentExtractionRegistry
                    Math.Abs((firstLeft + firstRight - secondLeft - secondRight) / 2) <= tolerance;
         }
     }
+
+    /// <summary>
+    /// Column headings above aligned data rows. They rarely share the data's cell count:
+    /// labels wrap ("Read &amp;" over "Write"), sit between lines, or span several columns
+    /// ("Literacy Status"). Rows directly above the table are taken while every word lies over
+    /// the table, no cell reads like data or a sentence, and no caption ("Table 6: ...") is
+    /// reached. The band must name at least half of the columns on its own, otherwise a short
+    /// line of prose above a table would be mistaken for its header.
+    /// </summary>
+    private static (string? Header, IReadOnlyList<Word> Words) PdfTableHeader(Page page, List<List<Word>> rows,
+        List<List<Word>>[] candidates, int start, int floor, List<List<Word>>[] tableRows, double left, double right)
+    {
+        var columns = tableRows[0].Count;
+        var extents = Enumerable.Range(0, columns).Select(column => (
+            Left: tableRows.Min(row => row[column][0].BoundingBox.Left),
+            Right: tableRows.Max(row => row[column][^1].BoundingBox.Right))).ToArray();
+        var tolerance = Math.Max(6, (double)page.Width * 0.02);
+        var fragments = Enumerable.Range(0, columns).Select(_ => new List<string>()).ToArray();
+        var named = new HashSet<int>();
+        var words = new List<Word>();
+        var below = rows[start];
+        for (var index = start - 1; index >= floor && index >= start - 5; index--)
+        {
+            var row = rows[index];
+            var height = Math.Max(row[0].BoundingBox.Height, below[0].BoundingBox.Height);
+            // Label lines are set close together; a wider gap separates a title from them.
+            var gap = row[0].BoundingBox.Bottom - below[0].BoundingBox.Top;
+            if (gap > (index == start - 1 ? Math.Max(24, height * 3) : height * 1.2) ||
+                row.Any(word => word.BoundingBox.Left < left - tolerance || word.BoundingBox.Right > right + tolerance))
+                break;
+            var cells = candidates[index].Select(cell => (Text: string.Join(' ', cell.Select(word => word.Text)),
+                Left: cell[0].BoundingBox.Left, Right: cell[^1].BoundingBox.Right)).ToArray();
+            if (cells.Any(cell => TableCaption().IsMatch(cell.Text) || cell.Text.Split(' ').Length > 6 || LooksNumeric(cell.Text)))
+                break;
+            var placed = new List<(int Column, string Text)>();
+            foreach (var cell in cells)
+            {
+                var spanned = Enumerable.Range(0, columns).Where(column =>
+                {
+                    var overlap = Math.Min(cell.Right, extents[column].Right) - Math.Max(cell.Left, extents[column].Left);
+                    var center = (extents[column].Left + extents[column].Right) / 2;
+                    return overlap >= Math.Min(cell.Right - cell.Left, extents[column].Right - extents[column].Left) * 0.5 ||
+                           center >= cell.Left && center <= cell.Right;
+                }).ToArray();
+                if (spanned.Length == 0)
+                    spanned = [Enumerable.Range(0, columns).MinBy(column => Math.Abs(
+                        (extents[column].Left + extents[column].Right - cell.Left - cell.Right) / 2))];
+                if (spanned.Length == 1) named.Add(spanned[0]);
+                placed.AddRange(spanned.Select(column => (column, cell.Text)));
+            }
+            // Fragments are collected bottom-up; headings read top-down.
+            foreach (var (column, text) in placed) fragments[column].Insert(0, text);
+            words.AddRange(row);
+            below = row;
+        }
+        if (words.Count == 0 || named.Count < Math.Max(2, (columns + 1) / 2)) return (null, []);
+        return (string.Join('\t', fragments.Select(parts => string.Join(' ', parts))), words);
+
+        // Labels such as "9-12 std." or "2019" name columns; a value has at most a unit letter.
+        static bool LooksNumeric(string text) => text.Any(char.IsDigit) && text.Count(char.IsLetter) < 2 &&
+            !HeaderYear().IsMatch(text.Trim());
+    }
+
+    [GeneratedRegex(@"^(?:FY\s?)?(?:1[89]|2[01])\d\d[A-Za-z]?$", RegexOptions.CultureInvariant)]
+    private static partial Regex HeaderYear();
+
+    // "1.", "a)", "(iv)", "B." or a bullet glyph at the start of a list item.
+    [GeneratedRegex(@"^(?:\(?(?:\d{1,3}|[A-Za-z]|[ivxlcIVXLC]{1,6})[.)]|[•◦▪‣⁃●○■□►▸–*])$", RegexOptions.CultureInvariant)]
+    private static partial Regex ListItemMarker();
+
+    // "Table 6 : ...", "Table 2-1.", "TABLE IV", "Tabela 3 –": the caption that names a table.
+    [GeneratedRegex(@"^(?:table|tab\.|tabela|tabla|tableau|tabelle|quadro|exhibit)\s*(?:[A-Z]?\d+[A-Za-z]?(?:[.\-\u2013]\d+)*|[IVXLC]+)(?:\s|[.:\-\u2013]|$)",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex TableCaption();
 
     private static bool HasPdfTableRules(Page page, double left, double bottom, double right, double top, int columns)
     {
@@ -399,34 +500,6 @@ public sealed partial class DocumentExtractionRegistry
     {
         var sorted = values.Where(double.IsFinite).Order().ToArray();
         return sorted.Length == 0 ? 0 : sorted[sorted.Length / 2];
-    }
-
-    private static void AddPdfSections(List<ExtractedSection> sections, IReadOnlyList<PdfTextBlock> blocks,
-        int pageNumber, HeadingContext heading)
-    {
-        // A page with one title and one long body block should use the body font as its baseline.
-        var sizes = blocks.Where(block => !block.IsTable && block.FontSize > 0)
-            .GroupBy(block => block.FontSize).OrderBy(group => group.Key)
-            .Select(group => (Size: group.Key, Weight: group.Sum(block => (long)Math.Max(1, block.Text.Length)))).ToArray();
-        var midpoint = sizes.Sum(item => item.Weight) / 2;
-        long cumulative = 0;
-        var typicalSize = 0d;
-        foreach (var item in sizes)
-        { cumulative += item.Weight; if (cumulative > midpoint) { typicalSize = item.Size; break; } }
-        var ordinal = 0;
-        foreach (var block in GroupOcrParagraphs(blocks))
-        {
-            if (string.IsNullOrWhiteSpace(block.Text)) continue;
-            var isHeading = typicalSize > 0 && block.FontSize >= typicalSize * 1.2 &&
-                block.Text.Length <= 180 && !block.Text.Contains('\n') &&
-                block.Text.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length <= 18 && !block.IsTable;
-            if (isHeading) heading.Start(block.FontSize >= typicalSize * 1.6 ? 1 : 2, block.Text, "pdf-heading");
-            var path = block.IsTable ? $"page[{pageNumber}]/table[{++ordinal}]" : $"page[{pageNumber}]/block[{++ordinal}]";
-            sections.Add(new ExtractedSection(block.Text,
-                new SourceLocation(LocationKind.Page, Page: pageNumber, StructurePath: path, Region: block.Region,
-                    LayoutWarning: block.Warning), block.Method, block.Confidence, heading.Heading,
-                heading.Key == "document" ? $"page:{pageNumber}" : heading.Key, heading.Path));
-        }
     }
 
     private static void MarkRepeatedPdfMargins(List<ExtractedSection> sections)

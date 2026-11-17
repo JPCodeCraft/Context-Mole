@@ -287,7 +287,7 @@ public sealed class HybridSearchService(
             .ThenBy(item => item.Candidate.PassageId).ToArray();
         var groups = ranked.GroupBy(item => scope == SearchScope.Section ? CandidateKey(item.Candidate) : item.Candidate.ContentId)
             .Select(group => BuildGroup(group.ToArray(), clauses, minimumShouldMatch, options, preparedQuery,
-                diversifyPreviews, semanticAnchors))
+                diversifyPreviews, semanticAnchors, previewsFollowFusedScore: semanticCompleted))
             .OrderByDescending(group => group.Score).ThenBy(group => group.DocumentId).ThenBy(group => group.ContentId)
             .ThenBy(group => group.SectionId)
             .ToArray();
@@ -472,7 +472,7 @@ public sealed class HybridSearchService(
 
     private static SearchResultGroup BuildGroup(IReadOnlyList<Fused> matches, IReadOnlyList<SearchClause> clauses,
         int minimumShouldMatch, SearchResultOptions options, StructuredSearchQuery.PreparedQuery preparedQuery,
-        bool diversifyPreviews, SemanticPreviewAnchors? semanticAnchors)
+        bool diversifyPreviews, SemanticPreviewAnchors? semanticAnchors, bool previewsFollowFusedScore)
     {
         var best = matches.OrderByDescending(match => match.Score).ThenBy(match => match.Candidate.PassageId).First();
         var scopeCandidate = best.Candidate;
@@ -500,7 +500,13 @@ public sealed class HybridSearchService(
             preparedQuery.FindFieldMatches(item.Candidate))).ToArray();
         var matchingEvidence = evaluated.Where(item => item.Spans.Length > 0 || item.Fields.Count > 0 ||
             item.Item.Candidate.SemanticRank is not null).ToArray();
-        var rankedEvidence = matchingEvidence.OrderByDescending(item => item.Spans.Select(span => span.ClauseId)
+        // Keyword-only previews lead with the passages that satisfy the most clauses. When vectors ran,
+        // the fused score already credits clause matches through the keyword rank, and counting matched
+        // clauses first would let long passages full of common query words push out the best semantic
+        // evidence, including the passage that gave this group its rank.
+        var rankedEvidence = matchingEvidence
+            .OrderByDescending(item => previewsFollowFusedScore ? item.Item.Score : 0)
+            .ThenByDescending(item => item.Spans.Select(span => span.ClauseId)
                 .Concat(item.Fields.Select(field => field.ClauseId)).Distinct().Count())
             .ThenByDescending(item => item.Item.Score).ThenByDescending(item => item.Item.Candidate.SemanticScore)
             .ThenBy(item => item.Item.Candidate.Ordinal)

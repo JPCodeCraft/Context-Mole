@@ -42,6 +42,25 @@ public static class SemanticEvidenceEligibility
         return excluded;
     }
 
+    /// <summary>
+    /// Text worth a vector. Symbols, lone numbers and section labels ("$", ":=", "0", "2.1")
+    /// produce vectors made almost entirely of heading and file-name context, which then
+    /// crowd real passages out of semantic results. OCR below <see cref="MinimumOcrConfidence"/>
+    /// is mostly misrecognition. Both stay searchable as literal evidence.
+    /// </summary>
+    public static bool HasSemanticSubstance(string cleanBody, bool isTable, ExtractionMethod method, double? ocrConfidence)
+    {
+        if (method == ExtractionMethod.Ocr && ocrConfidence is < MinimumOcrConfidence) return false;
+        // A numeric table still has meaning through its caption and header context.
+        if (isTable) return true;
+        var letters = 0;
+        foreach (var character in cleanBody)
+            if (char.IsLetter(character) && ++letters >= 2) return true;
+        return false;
+    }
+
+    public const double MinimumOcrConfidence = 40;
+
     private static bool IsReliableBlock(ExtractedSection section) =>
         IsLocatedBlock(section) && section.Location.LayoutWarning is null;
 
