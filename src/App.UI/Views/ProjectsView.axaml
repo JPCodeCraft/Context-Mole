@@ -2,555 +2,500 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:vm="using:ContextMole.App.UI.ViewModels"
              xmlns:core="using:ContextMole.Core"
-             xmlns:indexing="using:ContextMole.Indexing"
+             xmlns:controls="using:ContextMole.App.UI.Controls"
              x:Class="ContextMole.App.UI.Views.ProjectsView"
              x:DataType="vm:MainViewModel">
-  <ScrollViewer>
-    <StackPanel Classes="pageContent">
-      <Border IsVisible="{Binding IsProjectLoadPending}" Classes="card" MinHeight="150">
-        <StackPanel Spacing="12">
-          <TextBlock Text="Loading local projects…" Classes="sectionTitle" AutomationProperties.LiveSetting="Polite" />
-          <ProgressBar IsIndeterminate="True" Height="5" AutomationProperties.Name="Loading project status" />
+  <Grid RowDefinitions="Auto,*">
+    <!-- The project header stays in place while the details scroll. -->
+    <Border Grid.Row="0" IsVisible="{Binding HasSelection}" Classes="pageHeader">
+      <Grid ColumnDefinitions="*,Auto" ColumnSpacing="20" MaxWidth="1120">
+        <StackPanel Spacing="5" VerticalAlignment="Center">
+          <Grid ColumnDefinitions="Auto,Auto" ColumnSpacing="12" HorizontalAlignment="Left">
+            <TextBlock Text="{Binding SelectedProject.Name}" Classes="pageTitle" TextTrimming="CharacterEllipsis"
+                       ToolTip.Tip="{Binding SelectedProject.Name}" />
+            <controls:StatusBadge Grid.Column="1" Text="{Binding SelectedProject.Phase}" Tone="{Binding SelectedProject.StatusTone}"
+                                  ToolTip.Tip="{Binding SelectedProject.PhaseDetails}" Margin="0,4,0,0"
+                                  AutomationProperties.Name="Project status" />
+          </Grid>
+          <TextBlock Text="{Binding SelectedProject.ProjectDetailsDisplay}" Classes="muted" TextTrimming="CharacterEllipsis" />
         </StackPanel>
-      </Border>
-      <Border IsVisible="{Binding HasInitialProjectLoadError}" Classes="card">
-        <StackPanel Spacing="10">
-          <TextBlock Text="Projects could not be loaded" Classes="sectionTitle" />
-          <TextBlock Text="{Binding ProjectLoadError}" TextWrapping="Wrap" AutomationProperties.LiveSetting="Assertive" />
-          <Button Content="Try again" Click="ReloadProjects" HorizontalAlignment="Left" />
-        </StackPanel>
-      </Border>
-      <Border IsVisible="{Binding IsProjectActionBusy}" Classes="card">
-        <StackPanel Spacing="10">
-          <TextBlock Text="{Binding ProjectActionMessage}" TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
-          <ProgressBar IsIndeterminate="True" Height="4" AutomationProperties.Name="Project action in progress" />
-        </StackPanel>
-      </Border>
-      <Border IsVisible="{Binding HasNoSelection}" Classes="card" MinHeight="260">
-        <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="9" MaxWidth="420">
-          <Button Width="48" Height="48" Classes="addProjectButton" Click="AddProject"
-                  IsEnabled="{Binding CanRunProjectAction}"
-                  HorizontalAlignment="Center"
-                  ToolTip.Tip="Add project" AutomationProperties.Name="Add project">
-            <TextBlock Text="+" Foreground="{DynamicResource AccentBrush}" FontSize="27"
-                       HorizontalAlignment="Center" VerticalAlignment="Center" />
+        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center"
+                    IsEnabled="{Binding SelectedProject.AreActionsEnabled}">
+          <Button Content="{Binding SelectedProject.PauseActionLabel}" Click="TogglePause" />
+          <Button Content="Edit" Click="EditProject" ToolTip.Tip="Rename the project or change its folders." />
+          <Button Content="More" AutomationProperties.Name="More project actions">
+            <Button.Flyout>
+              <MenuFlyout Placement="BottomEdgeAlignedRight">
+                <MenuItem Header="Reindex project…" Click="ReindexProject" IsEnabled="{Binding SelectedProject.CanReindex}"
+                          ToolTip.Tip="{Binding SelectedProject.ReindexToolTip}" />
+                <Separator />
+                <MenuItem Header="Remove project…" Classes="danger" Click="RemoveProject"
+                          ToolTip.Tip="Delete this project's local index. Original files stay untouched." />
+              </MenuFlyout>
+            </Button.Flyout>
           </Button>
-          <TextBlock Text="Create your first project" Classes="sectionTitle" HorizontalAlignment="Center" />
-          <TextBlock Text="Choose one or more folders and Context Mole will build a private, local search index."
-                     Classes="muted" TextWrapping="Wrap" TextAlignment="Center" />
         </StackPanel>
-      </Border>
+      </Grid>
+    </Border>
 
-      <ContentControl Content="{Binding SelectedProject}" HorizontalContentAlignment="Stretch">
-        <ContentControl.ContentTemplate>
-          <DataTemplate x:DataType="vm:ProjectItemViewModel">
-            <StackPanel Spacing="18">
-              <Grid RowDefinitions="Auto,Auto" RowSpacing="12">
-                <StackPanel Spacing="5">
-                  <Grid ColumnDefinitions="*,Auto" ColumnSpacing="10">
-                    <TextBlock Text="{Binding Name}" Classes="detailTitle"
-                               TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding Name}" />
-                    <Border Grid.Column="1" Classes="phaseBadge" Classes.paused="{Binding IsPaused}"
-                            Classes.ready="{Binding IsReady}" Classes.retrying="{Binding IsRetryStatus}"
-                            Classes.attention="{Binding NeedsAttention}"
-                            CornerRadius="10" Padding="9,3" VerticalAlignment="Center"
-                            ToolTip.Tip="{Binding PhaseDetails}">
-                      <TextBlock Text="{Binding Phase}" Classes="phaseText"
-                                 Classes.paused="{Binding IsPaused}" Classes.ready="{Binding IsReady}"
-                                 Classes.retrying="{Binding IsRetryStatus}" Classes.attention="{Binding NeedsAttention}"
-                                 FontSize="11" FontWeight="SemiBold" />
-                    </Border>
-                  </Grid>
-                  <TextBlock Text="{Binding ProjectDetailsDisplay}" Classes="muted" TextWrapping="Wrap" />
-                  <TextBlock Text="{Binding LastCheckedDisplay}" Classes="quiet" FontSize="11" />
-                  <TextBlock Text="{Binding PhaseDetails}" Classes="quiet" TextWrapping="Wrap" Height="36"
-                             MaxLines="2" TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding PhaseDetails}" />
+    <ScrollViewer Grid.Row="1">
+      <StackPanel Classes="pageContent">
+        <Border IsVisible="{Binding IsProjectLoadPending}" Classes="card" MinHeight="150">
+          <StackPanel Spacing="12">
+            <TextBlock Text="Loading your projects…" Classes="sectionTitle" AutomationProperties.LiveSetting="Polite" />
+            <ProgressBar IsIndeterminate="True" Height="5" AutomationProperties.Name="Loading project status" />
+          </StackPanel>
+        </Border>
+        <Border IsVisible="{Binding HasInitialProjectLoadError}" Classes="card">
+          <StackPanel Spacing="10">
+            <TextBlock Text="Projects could not be loaded" Classes="sectionTitle" />
+            <TextBlock Text="{Binding ProjectLoadError}" TextWrapping="Wrap" AutomationProperties.LiveSetting="Assertive" />
+            <Button Content="Try again" Click="ReloadProjects" HorizontalAlignment="Left" />
+          </StackPanel>
+        </Border>
+        <Border IsVisible="{Binding IsProjectActionBusy}" Classes="row">
+          <StackPanel Spacing="8">
+            <TextBlock Text="{Binding ProjectActionMessage}" TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
+            <ProgressBar IsIndeterminate="True" Height="3" AutomationProperties.Name="Project action in progress" />
+          </StackPanel>
+        </Border>
+
+        <!-- First run: what the app does, in three steps, and the two ways to start. -->
+        <Border IsVisible="{Binding HasNoSelection}" Classes="card" Padding="36,34">
+          <StackPanel Spacing="26" MaxWidth="760" HorizontalAlignment="Center">
+            <StackPanel Spacing="7">
+              <TextBlock Text="Let your AI assistant search your files" Classes="pageTitle" HorizontalAlignment="Center"
+                         TextAlignment="Center" TextWrapping="Wrap" />
+              <TextBlock Text="Context Mole builds a private search index on this PC. Your assistant uses it to find the right passages in large folders."
+                         Classes="muted" TextWrapping="Wrap" TextAlignment="Center" HorizontalAlignment="Center" />
+            </StackPanel>
+            <UniformGrid Columns="3">
+              <Border Classes="stepCard" Margin="0,0,10,0">
+                <StackPanel Spacing="8">
+                  <Border Classes="stepNumber"><TextBlock Text="1" /></Border>
+                  <TextBlock Text="Add a project" Classes="cardTitle" />
+                  <TextBlock Text="Pick one or more folders with the documents you want to search." Classes="muted" TextWrapping="Wrap" />
                 </StackPanel>
-                <WrapPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Left"
-                           IsEnabled="{Binding AreActionsEnabled}"
-                           VerticalAlignment="Center">
-                  <Button Content="{Binding PauseActionLabel}" Click="TogglePause" Margin="0,0,8,8" />
-                  <Button Content="Reindex" Click="ReindexProject" IsEnabled="{Binding CanReindex}"
-                          ToolTip.Tip="{Binding ReindexToolTip}" Margin="0,0,8,8" />
-                  <Button Content="Edit" Click="EditProject" Margin="0,0,8,8" />
-                  <Button Classes="danger" Content="Remove" Click="RemoveProject" Margin="0,0,0,8" />
-                </WrapPanel>
+              </Border>
+              <Border Classes="stepCard" Margin="5,0,5,0">
+                <StackPanel Spacing="8">
+                  <Border Classes="stepNumber"><TextBlock Text="2" /></Border>
+                  <TextBlock Text="Context Mole indexes it" Classes="cardTitle" />
+                  <TextBlock Text="Documents, PDFs, email and scanned pages are read on this PC. Folders are watched for changes." Classes="muted" TextWrapping="Wrap" />
+                </StackPanel>
+              </Border>
+              <Border Classes="stepCard" Margin="10,0,0,0">
+                <StackPanel Spacing="8">
+                  <Border Classes="stepNumber"><TextBlock Text="3" /></Border>
+                  <TextBlock Text="Ask your assistant" Classes="cardTitle" />
+                  <TextBlock Text="Connect Claude, Codex or another assistant, then ask it about your files." Classes="muted" TextWrapping="Wrap" />
+                </StackPanel>
+              </Border>
+            </UniformGrid>
+            <StackPanel Orientation="Horizontal" Spacing="10" HorizontalAlignment="Center">
+              <Button Classes="primary" Content="Add your first project" Click="AddProject" IsEnabled="{Binding CanRunProjectAction}" />
+              <Button Content="Connect an assistant" Click="ShowAiConnections" />
+            </StackPanel>
+          </StackPanel>
+        </Border>
+
+        <StackPanel IsVisible="{Binding HasSelection}" Spacing="16">
+          <!-- 1. How is my data? One headline, one sentence, one bar. -->
+          <Border Classes="card" AutomationProperties.Name="Project status">
+            <StackPanel Spacing="14">
+              <StackPanel Spacing="4">
+                <TextBlock Text="{Binding SelectedProject.StatusHeadline}" Classes="statusHeadline" TextWrapping="Wrap"
+                           AutomationProperties.LiveSetting="Polite" />
+                <TextBlock Text="{Binding SelectedProject.StatusSummary}" Classes="muted" TextWrapping="Wrap" />
+              </StackPanel>
+              <controls:SegmentBar Ready="{Binding SelectedProject.ReadyCount}" Processing="{Binding SelectedProject.ProcessingCount}"
+                                   Queued="{Binding SelectedProject.QueuedCount}" Attention="{Binding SelectedProject.AttentionCount}"
+                                   ToolTip.Tip="{Binding SelectedProject.ProgressDescription}"
+                                   AutomationProperties.Name="{Binding SelectedProject.ProgressDescription}" />
+              <WrapPanel Orientation="Horizontal">
+                <StackPanel Classes="legend">
+                  <Border Classes="legendSwatch ready" />
+                  <TextBlock Text="{Binding SelectedProject.ReadyLegend}" Classes="muted" FontSize="13" />
+                </StackPanel>
+                <StackPanel Classes="legend" IsVisible="{Binding SelectedProject.HasProcessingFiles}">
+                  <Border Classes="legendSwatch processing" />
+                  <TextBlock Text="{Binding SelectedProject.ProcessingLegend}" Classes="muted" FontSize="13" />
+                </StackPanel>
+                <StackPanel Classes="legend" IsVisible="{Binding SelectedProject.HasQueuedFiles}"
+                            ToolTip.Tip="{Binding SelectedProject.QueuedBreakdownDisplay}">
+                  <Border Classes="legendSwatch queued" />
+                  <TextBlock Text="{Binding SelectedProject.QueuedLegend}" Classes="muted" FontSize="13" />
+                </StackPanel>
+                <StackPanel Classes="legend" IsVisible="{Binding SelectedProject.HasAttentionFiles}">
+                  <Border Classes="legendSwatch attention" />
+                  <TextBlock Text="{Binding SelectedProject.AttentionLegend}" Classes="muted" FontSize="13" />
+                </StackPanel>
+              </WrapPanel>
+              <Border Classes="divider" />
+              <!-- A single line of fixed height: the active file or the last update. -->
+              <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12" MinHeight="28">
+                <TextBlock IsVisible="{Binding HasActiveIndexingItems}" Text="{Binding IndexingNowDisplay}"
+                           Foreground="{DynamicResource AccentBrush}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"
+                           ToolTip.Tip="{Binding IndexingNowDisplay}" />
+                <TextBlock IsVisible="{Binding HasNoActiveIndexingItems}" Text="{Binding SelectedProject.IdleActivityDisplay}"
+                           Classes="quiet" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                <ToggleButton Grid.Column="1" Classes="linkToggle" IsChecked="{Binding IsActiveIndexingExpanded, Mode=TwoWay}"
+                              AutomationProperties.Name="Show or hide indexing details">
+                  <Panel>
+                    <TextBlock Text="Show details" IsVisible="{Binding IsActiveIndexingCollapsed}" />
+                    <TextBlock Text="Hide details" IsVisible="{Binding IsActiveIndexingExpanded}" />
+                  </Panel>
+                </ToggleButton>
               </Grid>
-
-              <UniformGrid Columns="5">
-                <Border Classes="metricCard" Margin="0,0,9,0">
-                  <StackPanel Spacing="5">
-                    <TextBlock Text="SUPPORTED ROOT FILES" Classes="eyebrow" TextWrapping="Wrap" MinHeight="26" />
-                    <Viewbox Stretch="Uniform" StretchDirection="DownOnly" Height="31" HorizontalAlignment="Left">
-                      <TextBlock Text="{Binding DocumentCount, StringFormat={}{0:N0}}" Classes="metricValue"
-                                 ToolTip.Tip="Unique files currently discovered across this project's folders." />
-                    </Viewbox>
-                  </StackPanel>
-                </Border>
-                <Border Classes="metricCard" Margin="0,0,9,0">
-                  <StackPanel Spacing="5">
-                    <TextBlock Text="UP TO DATE" Classes="eyebrow" TextWrapping="Wrap" MinHeight="26" />
-                    <Viewbox Stretch="Uniform" StretchDirection="DownOnly" Height="31" HorizontalAlignment="Left">
-                      <TextBlock Text="{Binding ReadyCount, StringFormat={}{0:N0}}" Classes="metricValue"
-                                 ToolTip.Tip="Included supported root files with no pending updates or current extraction issues. This does not mean every attachment or byte is searchable." />
-                    </Viewbox>
-                  </StackPanel>
-                </Border>
-                <Border Classes="metricCard" Margin="0,0,9,0">
-                  <StackPanel Spacing="5">
-                    <TextBlock Text="PROCESSING" Classes="eyebrow" TextWrapping="Wrap" MinHeight="26" />
-                    <Viewbox Stretch="Uniform" StretchDirection="DownOnly" Height="31" HorizontalAlignment="Left">
-                      <TextBlock Text="{Binding ProcessingCount, StringFormat={}{0:N0}}" Classes="metricValue"
-                                 ToolTip.Tip="Files currently being processed. Files waiting for processor capacity are counted in Queued." />
-                    </Viewbox>
-                  </StackPanel>
-                </Border>
-                <Border Classes="metricCard" Margin="0,0,9,0">
-                  <StackPanel Spacing="5">
-                    <TextBlock Text="QUEUED" Classes="eyebrow" TextWrapping="Wrap" MinHeight="26" />
-                    <Viewbox Stretch="Uniform" StretchDirection="DownOnly" Height="31" HorizontalAlignment="Left">
-                      <TextBlock Text="{Binding QueuedCount, StringFormat={}{0:N0}}" Classes="metricValue"
-                                 ToolTip.Tip="Files waiting for processing, including scheduled retries. A previous indexed version may remain searchable." />
-                    </Viewbox>
-                    <TextBlock Text="{Binding QueuedBreakdownDisplay}" Classes="quiet" FontSize="10"
-                               Height="26" MaxLines="2" TextWrapping="Wrap" TextTrimming="CharacterEllipsis"
-                               ToolTip.Tip="{Binding QueuedBreakdownDisplay}" />
-                  </StackPanel>
-                </Border>
-                <Border Classes="metricCard" Classes.hasErrors="{Binding HasAttentionFiles}">
-                  <StackPanel Spacing="5">
-                    <TextBlock Text="NEEDS ATTENTION" Classes="eyebrow" TextWrapping="Wrap" MinHeight="26" />
-                    <Viewbox Stretch="Uniform" StretchDirection="DownOnly" Height="31" HorizontalAlignment="Left">
-                      <TextBlock Text="{Binding AttentionCount, StringFormat={}{0:N0}}" Classes="metricValue"
-                                 Classes.hasErrors="{Binding HasAttentionFiles}"
-                                 ToolTip.Tip="Files with current issues and no retry queued or running. Review the issues below, then retry when the problem is fixed." />
-                    </Viewbox>
-                  </StackPanel>
-                </Border>
-              </UniformGrid>
-              <TextBlock Text="{Binding SearchableSummary}"
-                         Classes="quiet" FontSize="11" TextWrapping="Wrap" Height="32" MaxLines="2"
-                         TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding SearchableSummary}" />
-              <TextBlock Text="Counts cover included supported root files. Unsupported root formats are not counted; unsupported embedded attachments are skipped while supported content stays searchable. Up to date does not mean every byte or attachment is searchable."
-                         Classes="quiet" FontSize="11" TextWrapping="Wrap" />
-
-              <Border IsVisible="{Binding HasFolderIssues}" Classes="card semanticCoverageWarning">
-                <StackPanel Spacing="9">
-                  <TextBlock Text="Folder access needs attention" Classes="sectionTitle" />
-                  <TextBlock Text="Some folders cannot be checked for changes. Previously indexed files remain searchable."
-                             Classes="muted" TextWrapping="Wrap" />
-                  <ItemsControl ItemsSource="{Binding FolderIssues}">
-                    <ItemsControl.ItemTemplate>
-                      <DataTemplate x:DataType="indexing:ProjectFolderIssue">
-                        <StackPanel Spacing="3" Margin="0,4">
-                          <TextBlock Text="{Binding Path}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"
-                                     ToolTip.Tip="{Binding Path}" />
-                          <TextBlock Text="{Binding Message}" Classes="quiet" TextWrapping="Wrap" />
-                        </StackPanel>
-                      </DataTemplate>
-                    </ItemsControl.ItemTemplate>
-                  </ItemsControl>
-                </StackPanel>
-              </Border>
-
-              <Border Classes="card" Classes.semanticCoverageWarning="{Binding HasSemanticCoverageWarning}"
-                      AutomationProperties.Name="Meaning-based search coverage">
-                <Grid ColumnDefinitions="*,210" RowDefinitions="24,22,60" ColumnSpacing="18" Height="106">
-                  <TextBlock Grid.ColumnSpan="2" Text="Meaning-based search coverage" Classes="sectionTitle"
-                             TextTrimming="CharacterEllipsis" />
-                  <Border Grid.Row="1" Grid.ColumnSpan="2" Classes="statusBadge" HorizontalAlignment="Left"
-                          Classes.ready="{Binding IsSemanticCoverageComplete}" Classes.warning="{Binding HasSemanticCoverageWarning}">
-                    <TextBlock Text="{Binding SemanticIndexStatusLabel}" Classes="statusText"
-                               Classes.ready="{Binding IsSemanticCoverageComplete}" Classes.warning="{Binding HasSemanticCoverageWarning}" />
-                  </Border>
-                  <TextBlock Grid.Row="2" Text="{Binding SemanticIndexStatusMessage}" Classes="muted"
-                             TextWrapping="Wrap" MaxLines="3" TextTrimming="CharacterEllipsis"
-                             ToolTip.Tip="{Binding SemanticIndexStatusMessage}" VerticalAlignment="Center" />
-                  <Button Grid.Row="2" Grid.Column="1" Content="Complete search coverage" Click="RepairSemanticIndex"
-                          IsEnabled="{Binding CanRepairSemanticIndex}" ToolTip.Tip="{Binding RepairSemanticIndexToolTip}"
-                          VerticalAlignment="Center" />
+              <StackPanel IsVisible="{Binding IsActiveIndexingExpanded}" Spacing="8">
+                <Grid ColumnDefinitions="Auto,*" ColumnSpacing="10">
+                  <controls:StatusBadge Text="{Binding IndexingActivityStatusLabel}" />
+                  <TextBlock Grid.Column="1" Text="{Binding IndexingTimingSummary}" Classes="quiet" FontSize="12"
+                             TextTrimming="CharacterEllipsis" VerticalAlignment="Center" ToolTip.Tip="{Binding IndexingLastCompletionDisplay}" />
                 </Grid>
-              </Border>
-
-              <Border Classes="card" AutomationProperties.Name="Indexing activity">
-                <StackPanel Spacing="12">
-                  <ToggleButton Classes="sectionToggle"
-                                AutomationProperties.Name="Expand or collapse indexing activity"
-                                IsChecked="{Binding $parent[UserControl].((vm:MainViewModel)DataContext).IsActiveIndexingExpanded, Mode=TwoWay}">
-                    <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="12">
-                      <StackPanel Spacing="3">
-                        <TextBlock Text="Indexing activity" Classes="sectionTitle" />
-                        <TextBlock Text="{Binding $parent[UserControl].((vm:MainViewModel)DataContext).IndexingTimingSummary}"
-                                   Classes="quiet" FontSize="12" TextTrimming="CharacterEllipsis"
-                                   ToolTip.Tip="{Binding $parent[UserControl].((vm:MainViewModel)DataContext).IndexingTimingSummary}" />
-                      </StackPanel>
-                      <Border Grid.Column="1" Classes="statusBadge"
-                              CornerRadius="10" Padding="9,4" VerticalAlignment="Center">
-                        <TextBlock Text="{Binding $parent[UserControl].((vm:MainViewModel)DataContext).IndexingActivityStatusLabel}" Classes="statusText"
-                                   FontSize="10" FontWeight="SemiBold" LetterSpacing="0.6" />
-                      </Border>
-                      <TextBlock Grid.Column="2" Text="⌃" RenderTransform="rotate(180deg)"
-                                 RenderTransformOrigin="50%,50%"
-                                 IsVisible="{Binding $parent[UserControl].((vm:MainViewModel)DataContext).IsActiveIndexingCollapsed}"
-                                 Classes="muted" FontSize="18" VerticalAlignment="Center" />
-                      <TextBlock Grid.Column="2" Text="⌃"
-                                 IsVisible="{Binding $parent[UserControl].((vm:MainViewModel)DataContext).IsActiveIndexingExpanded}"
-                                 Classes="muted" FontSize="18" VerticalAlignment="Center" />
-                    </Grid>
-                  </ToggleButton>
-                  <TextBlock Text="{Binding $parent[UserControl].((vm:MainViewModel)DataContext).IndexingLastCompletionDisplay}"
-                             Classes="quiet" FontSize="11" Height="32" MaxLines="2" TextWrapping="Wrap"
-                             TextTrimming="CharacterEllipsis"
-                             ToolTip.Tip="{Binding $parent[UserControl].((vm:MainViewModel)DataContext).IndexingLastCompletionDisplay}" />
-                  <!-- The viewport changes size only when the user expands/collapses it. Empty
-                       gaps and worker-count changes must never move the rest of the project. -->
-                  <Grid Height="166" IsVisible="{Binding $parent[UserControl].((vm:MainViewModel)DataContext).IsActiveIndexingExpanded}">
-                    <TextBlock IsVisible="{Binding $parent[UserControl].((vm:MainViewModel)DataContext).HasNoActiveIndexingItems}"
-                               Text="{Binding $parent[UserControl].((vm:MainViewModel)DataContext).IndexingIdleMessage}"
-                               Classes="quiet" TextWrapping="Wrap" VerticalAlignment="Center" Margin="12" />
-                    <ScrollViewer IsVisible="{Binding $parent[UserControl].((vm:MainViewModel)DataContext).HasActiveIndexingItems}"
-                                  HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
-                    <ItemsControl ItemsSource="{Binding $parent[UserControl].((vm:MainViewModel)DataContext).ActiveIndexingItems}">
-                    <ItemsControl.ItemTemplate>
-                      <DataTemplate x:DataType="vm:IndexingActivityItemViewModel">
-                        <Border Classes="subtleCard" Margin="0,3">
-                          <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto,Auto,Auto">
-                            <TextBlock Text="{Binding FileName}" FontWeight="SemiBold"
-                                       TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding SourcePath}" />
-                            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="13" Margin="16,0,0,0"
-                                        IsVisible="{Binding ShowTimers}">
-                              <TextBlock Text="{Binding ElapsedDisplay}" Classes="muted" FontSize="12" />
-                              <TextBlock Text="{Binding StageElapsedDisplay}" Classes="quiet" FontSize="12" />
-                            </StackPanel>
-                            <TextBlock Grid.Row="1" Grid.ColumnSpan="2" Text="{Binding SourcePath}" Classes="quiet"
-                                       FontSize="12" TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding SourcePath}"
-                                       Margin="0,3,0,0" />
-                            <TextBlock Grid.Row="2" Grid.ColumnSpan="2" Text="{Binding StageDisplay}"
-                                       Foreground="{DynamicResource AccentBrush}" FontSize="12"
-                                       FontWeight="SemiBold" Margin="0,9,0,5" />
-                            <ProgressBar Grid.Row="3" Grid.ColumnSpan="2" Height="5"
-                                         IsIndeterminate="{Binding IsProgressIndeterminate}"
-                                         AutomationProperties.Name="File indexing activity; completion time is unknown" />
-                          </Grid>
-                        </Border>
-                      </DataTemplate>
-                    </ItemsControl.ItemTemplate>
-                    </ItemsControl>
-                    </ScrollViewer>
-                  </Grid>
-                </StackPanel>
-              </Border>
-
-              <Grid ColumnDefinitions="3*,2*" ColumnSpacing="18">
-                <Border Classes="card">
-                  <StackPanel Spacing="13">
-                    <StackPanel Spacing="3">
-                      <TextBlock Text="File types" Classes="sectionTitle" />
-                      <TextBlock Text="Last verified inventory totals by format, not completed-work counts. They change when files are added or removed." Classes="quiet" FontSize="12" TextWrapping="Wrap" />
-                    </StackPanel>
-                      <TextBlock IsVisible="{Binding HasNoFileTypeCounts}" Text="File-type totals are not available yet."
-                               Classes="muted" TextWrapping="Wrap" />
-                    <ItemsControl IsVisible="{Binding HasFileTypeCounts}" ItemsSource="{Binding FileTypeCounts}">
-                      <ItemsControl.ItemsPanel>
-                        <ItemsPanelTemplate>
-                          <WrapPanel Orientation="Horizontal" />
-                        </ItemsPanelTemplate>
-                      </ItemsControl.ItemsPanel>
+                <!-- The list keeps one height while open so workers starting and finishing never move the page. -->
+                <Grid Height="172">
+                  <TextBlock IsVisible="{Binding HasNoActiveIndexingItems}" Text="{Binding IndexingIdleMessage}"
+                             Classes="quiet" TextWrapping="Wrap" VerticalAlignment="Center" HorizontalAlignment="Center"
+                             TextAlignment="Center" MaxWidth="560" />
+                  <ScrollViewer IsVisible="{Binding HasActiveIndexingItems}"
+                                HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
+                    <ItemsControl ItemsSource="{Binding ActiveIndexingItems}">
                       <ItemsControl.ItemTemplate>
-                        <DataTemplate x:DataType="core:ProjectFileTypeCount">
-                          <Border Classes="fileTypeChip" Margin="0,0,8,8">
-                            <StackPanel Orientation="Horizontal" Spacing="8">
-                              <TextBlock Text="{Binding Extension}" FontWeight="SemiBold"
-                                         Foreground="#C7D7F3" />
-                              <Border Background="#26354B" CornerRadius="7" Padding="7,1">
-                                <TextBlock Text="{Binding Count}" Classes="muted" FontSize="11" />
-                              </Border>
-                            </StackPanel>
-                          </Border>
-                        </DataTemplate>
-                      </ItemsControl.ItemTemplate>
-                    </ItemsControl>
-                  </StackPanel>
-                </Border>
-
-                <Border Grid.Column="1" Classes="card">
-                  <StackPanel Spacing="13">
-                    <StackPanel Spacing="3">
-                      <TextBlock Text="Folders" Classes="sectionTitle" />
-                      <TextBlock Text="Watched for changes when available." Classes="quiet" FontSize="12" />
-                    </StackPanel>
-                    <ItemsControl ItemsSource="{Binding Folders}">
-                      <ItemsControl.ItemTemplate>
-                        <DataTemplate x:DataType="core:ProjectFolderInfo">
-                          <Border Classes="folderRow" Margin="0,3">
-                            <Grid ColumnDefinitions="Auto,*" ColumnSpacing="10">
-                              <Border Width="8" Height="8" CornerRadius="4" Background="{DynamicResource AccentBrush}"
-                                      VerticalAlignment="Center" />
-                              <SelectableTextBlock Grid.Column="1" Text="{Binding Path}" Classes="muted"
-                                         TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding Path}"
-                                         AutomationProperties.Name="Watched folder path, selectable and copyable" />
+                        <DataTemplate x:DataType="vm:IndexingActivityItemViewModel">
+                          <Border Classes="row" Margin="0,0,0,6" Padding="12,9">
+                            <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto,Auto" ColumnSpacing="14" RowSpacing="3">
+                              <TextBlock Text="{Binding FileName}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"
+                                         ToolTip.Tip="{Binding SourcePath}" />
+                              <TextBlock Grid.Column="1" Text="{Binding StageElapsedDisplay}" Classes="quiet" FontSize="12"
+                                         IsVisible="{Binding ShowTimers}" ToolTip.Tip="{Binding ElapsedDisplay}" />
+                              <TextBlock Grid.Row="1" Grid.ColumnSpan="2" Text="{Binding StageDisplay}"
+                                         Foreground="{DynamicResource AccentBrush}" FontSize="12" />
+                              <ProgressBar Grid.Row="2" Grid.ColumnSpan="2" Height="3" Margin="0,4,0,0"
+                                           IsIndeterminate="{Binding IsProgressIndeterminate}"
+                                           AutomationProperties.Name="File indexing activity; completion time is unknown" />
                             </Grid>
                           </Border>
                         </DataTemplate>
                       </ItemsControl.ItemTemplate>
                     </ItemsControl>
-                  </StackPanel>
-                </Border>
-              </Grid>
-
-              <Border Classes="card issuesCard" IsVisible="{Binding HasIssueCard}">
-                <StackPanel Spacing="12">
-                  <ToggleButton Classes="sectionToggle" IsChecked="{Binding IsErrorsExpanded, Mode=TwoWay}"
-                                Click="IssueSectionToggled" AutomationProperties.Name="Expand or collapse current issues">
-                    <StackPanel Spacing="4">
-                      <TextBlock Text="Current issues by root file" Classes="sectionTitle" />
-                      <TextBlock Text="{Binding GroupedIssuesSummary}" Classes="quiet" FontSize="12" TextWrapping="Wrap" />
-                    </StackPanel>
-                  </ToggleButton>
-                  <StackPanel IsVisible="{Binding IsErrorsExpanded}" Spacing="10">
-                    <TextBlock Text="Each row is one original root file. Its attachments and pages appear in component details; actions apply to the root file."
-                               Classes="quiet" FontSize="12" TextWrapping="Wrap" />
-                    <TextBox Text="{Binding IssueQuery, Mode=TwoWay}" MaxLength="500" TextChanged="IssueFiltersChanged"
-                             PlaceholderText="Search filename, full path, issue code or message"
-                             AutomationProperties.Name="Search current issues by filename path or cause" />
-                    <TextBox Text="{Binding IssueCodeFilter, Mode=TwoWay}" MaxLength="200" TextChanged="IssueFiltersChanged"
-                             PlaceholderText="Optional exact cause code, e.g. access_denied"
-                             AutomationProperties.Name="Filter current issues by exact cause code" />
-                    <WrapPanel Orientation="Horizontal">
-                      <ComboBox SelectedIndex="{Binding IssueImpactFilterIndex, Mode=TwoWay}" SelectionChanged="IssueImpactChanged"
-                                MinWidth="180" Margin="0,0,8,8" AutomationProperties.Name="Filter issues by search impact">
-                        <ComboBoxItem Content="All search impacts" />
-                        <ComboBoxItem Content="No searchable content" />
-                        <ComboBoxItem Content="Partial content" />
-                        <ComboBoxItem Content="Previous evidence retained" />
-                      </ComboBox>
-                      <ToggleButton Content="{Binding HiddenIssuesDisplay}" IsChecked="{Binding ShowHiddenIssues, Mode=TwoWay}"
-                                    Click="ShowHiddenIssues" Margin="0,0,8,8" AutomationProperties.Name="Show or hide acknowledged issues" />
-                      <Button Content="Restore all hidden" Click="RestoreAllIssues" IsVisible="{Binding HasHiddenIssues}"
-                              IsEnabled="{Binding AreActionsEnabled}" Margin="0,0,0,8" />
-                    </WrapPanel>
-                    <WrapPanel Orientation="Horizontal">
-                      <Button Content="Retry visible page" Click="RetryVisibleFiles" IsEnabled="{Binding CanRetryVisibleIssueFiles}"
-                              Margin="0,0,8,8" ToolTip.Tip="Only eligible, non-hidden root files on this displayed page." />
-                      <Button Content="Retry all files with issues" Click="RetryFailedFiles" IsEnabled="{Binding CanRetryFailedFiles}"
-                              ToolTip.Tip="Includes other pages, filters and hidden issues in this project." Margin="0,0,8,8" />
-                      <Button Content="Refresh issues" Click="RefreshIssues" IsEnabled="{Binding AreActionsEnabled}" Margin="0,0,0,8" />
-                    </WrapPanel>
-                    <Border IsVisible="{Binding IssuesChangedDuringPaging}" Classes="folderRow">
-                      <StackPanel Spacing="6">
-                        <TextBlock Text="Issues changed while you were browsing. Your page position is preserved; new or changed files earlier in path order may be on a previous page."
-                                   Classes="muted" FontSize="12" TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
-                        <Button Content="Refresh from start" Click="RefreshIssuesFromStart" HorizontalAlignment="Left" />
-                      </StackPanel>
-                    </Border>
-                    <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="8">
-                      <TextBlock Text="{Binding IssuePageDisplay}" Classes="quiet" FontSize="12" TextWrapping="Wrap" VerticalAlignment="Center" />
-                      <Button Grid.Column="1" Content="Previous" Click="PreviousErrorPage" IsEnabled="{Binding CanPreviousIssuePage}"
-                              AutomationProperties.Name="Previous root file issue page" />
-                      <Button Grid.Column="2" Content="Next" Click="NextErrorPage" IsEnabled="{Binding CanNextIssuePage}"
-                              AutomationProperties.Name="Next root file issue page" />
-                    </Grid>
-                    <Border IsVisible="{Binding HasIssueLoadError}" Classes="folderRow">
-                      <StackPanel Spacing="5">
-                        <TextBlock Text="Current issues could not be verified" FontWeight="SemiBold" />
-                        <SelectableTextBlock Text="{Binding IssueLoadError}" TextWrapping="Wrap" Classes="muted" />
-                        <Button Content="Try again" Click="RefreshIssues" HorizontalAlignment="Left" />
-                      </StackPanel>
-                    </Border>
-                    <TextBlock IsVisible="{Binding HasNoMatchingIssueGroups}" Text="{Binding NoMatchingIssuesMessage}"
-                               Classes="muted" TextWrapping="Wrap" />
-                    <ScrollViewer MaxHeight="420" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
-                                  IsVisible="{Binding HasIssueGroups}" AutomationProperties.Name="Bounded root file issue list">
-                      <ItemsControl ItemsSource="{Binding IssueGroups}">
-                        <ItemsControl.ItemTemplate>
-                          <DataTemplate x:DataType="vm:ProjectIssueGroupViewModel">
-                            <Border Classes="folderRow" Margin="0,0,0,10">
-                              <StackPanel Spacing="7">
-                                <TextBlock Text="{Binding FileName}" FontWeight="SemiBold" TextWrapping="Wrap" />
-                                <SelectableTextBlock Text="{Binding SourcePath}" Classes="quiet" FontSize="12" TextWrapping="Wrap"
-                                                     AutomationProperties.Name="Exact original root source path, selectable and copyable" />
-                                <TextBlock Text="{Binding IssueCountDisplay}" Classes="quiet" FontSize="12" TextWrapping="Wrap" />
-                                <TextBlock Text="{Binding ImpactLabel}" Foreground="{DynamicResource WarningBrush}" FontWeight="SemiBold" TextWrapping="Wrap" />
-                                <TextBlock Text="{Binding ImpactMessage}" Classes="muted" FontSize="12" TextWrapping="Wrap" />
-                                <TextBlock Text="{Binding RecoveryGuidance}" Classes="muted" FontSize="12" TextWrapping="Wrap" />
-                                <TextBlock Text="{Binding RetryLabel}" FontWeight="SemiBold" TextWrapping="Wrap" />
-                                <TextBlock Text="{Binding RetryMessage}" Classes="quiet" FontSize="12" TextWrapping="Wrap" />
-                                <WrapPanel Orientation="Horizontal" IsEnabled="{Binding $parent[UserControl].((vm:MainViewModel)DataContext).CanRunProjectAction}">
-                                  <Button Content="Retry file" Click="RetryIssueFile" IsEnabled="{Binding CanRetry}" Margin="0,0,7,7" />
-                                  <Button Content="Hide current issues" Click="HideIssueFile" IsVisible="{Binding CanHide}" Margin="0,0,7,7"
-                                          ToolTip.Tip="Acknowledge current issues only. Discovery, indexing, automatic retries and search are unchanged." />
-                                  <Button Content="Restore hidden issues" Click="RestoreIssueFile" IsVisible="{Binding HasHiddenIssues}" Margin="0,0,7,7" />
-                                  <Button Content="Exclude root file…" Click="ExcludeIssueFile" IsVisible="{Binding IsRootFile}" Margin="0,0,0,7"
-                                          ToolTip.Tip="Separate from Hide: remove this exact project/path from indexing and search. Original file is untouched." />
-                                </WrapPanel>
-                                <Expander Header="Component details and exact locations" IsExpanded="{Binding IsExpanded, Mode=TwoWay}"
-                                          HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch">
-                                  <StackPanel Spacing="8">
-                                    <TextBlock IsVisible="{Binding DetailsWereRefreshed}" Text="Component issues changed; details were refreshed from the first page."
-                                               Classes="quiet" FontSize="11" TextWrapping="Wrap" />
-                                    <TextBlock Text="Component locators distinguish attachments with the same name. Select text to copy paths, codes or messages."
-                                               Classes="quiet" FontSize="11" TextWrapping="Wrap" />
-                                    <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="7">
-                                      <TextBlock Text="{Binding DetailsPageDisplay}" Classes="quiet" FontSize="11" TextWrapping="Wrap" VerticalAlignment="Center" />
-                                      <Button Grid.Column="1" Content="Previous" Click="PreviousIssueDetails" IsEnabled="{Binding CanPreviousDetails}" />
-                                      <Button Grid.Column="2" Content="Next" Click="NextIssueDetails" IsEnabled="{Binding CanNextDetails}" />
-                                    </Grid>
-                                    <ItemsControl ItemsSource="{Binding Details}">
-                                      <ItemsControl.ItemTemplate>
-                                        <DataTemplate x:DataType="vm:ProjectIssueDetailViewModel">
-                                          <Border BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,1,0,0" Padding="0,9,0,3">
-                                            <StackPanel Spacing="4">
-                                              <SelectableTextBlock Text="{Binding ComponentName}" FontWeight="SemiBold" TextWrapping="Wrap" />
-                                              <SelectableTextBlock Text="{Binding ComponentKey}" Classes="quiet" FontSize="11" TextWrapping="Wrap"
-                                                                   AutomationProperties.Name="Exact attachment page or component locator" />
-                                              <SelectableTextBlock Text="{Binding Message}" Classes="muted" TextWrapping="Wrap" />
-                                              <SelectableTextBlock Text="{Binding Code}" Classes="quiet" FontSize="11" TextWrapping="Wrap" />
-                                              <TextBlock Text="{Binding AttemptDisplay}" Classes="quiet" FontSize="11" />
-                                              <TextBlock Text="Hidden acknowledgement" IsVisible="{Binding IsHidden}" Classes="quiet" FontSize="11" />
-                                              <TextBlock Text="{Binding CreatedDisplay}" Classes="quiet" FontSize="11" TextWrapping="Wrap" />
-                                            </StackPanel>
-                                          </Border>
-                                        </DataTemplate>
-                                      </ItemsControl.ItemTemplate>
-                                    </ItemsControl>
-                                    <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="7">
-                                      <TextBlock Text="{Binding DetailsPageDisplay}" Classes="quiet" FontSize="11" TextWrapping="Wrap" VerticalAlignment="Center" />
-                                      <Button Grid.Column="1" Content="Previous" Click="PreviousIssueDetails" IsEnabled="{Binding CanPreviousDetails}" />
-                                      <Button Grid.Column="2" Content="Next" Click="NextIssueDetails" IsEnabled="{Binding CanNextDetails}" />
-                                    </Grid>
-                                  </StackPanel>
-                                </Expander>
-                              </StackPanel>
-                            </Border>
-                          </DataTemplate>
-                        </ItemsControl.ItemTemplate>
-                      </ItemsControl>
-                    </ScrollViewer>
-                    <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="8">
-                      <TextBlock Text="{Binding IssuePageDisplay}" Classes="quiet" FontSize="12" TextWrapping="Wrap" VerticalAlignment="Center" />
-                      <Button Grid.Column="1" Content="Previous" Click="PreviousErrorPage" IsEnabled="{Binding CanPreviousIssuePage}" />
-                      <Button Grid.Column="2" Content="Next" Click="NextErrorPage" IsEnabled="{Binding CanNextIssuePage}" />
-                    </Grid>
-                    <WrapPanel Orientation="Horizontal">
-                      <Button Content="Retry visible page" Click="RetryVisibleFiles" IsEnabled="{Binding CanRetryVisibleIssueFiles}" Margin="0,0,8,8" />
-                      <Button Content="Retry all files with issues" Click="RetryFailedFiles" IsEnabled="{Binding CanRetryFailedFiles}" Margin="0,0,8,8" />
-                      <ToggleButton Content="{Binding HiddenIssuesDisplay}" IsChecked="{Binding ShowHiddenIssues, Mode=TwoWay}"
-                                    Click="ShowHiddenIssues" Margin="0,0,8,8" />
-                      <Button Content="Issues changed · Refresh from start" IsVisible="{Binding IssuesChangedDuringPaging}"
-                              Click="RefreshIssuesFromStart" Margin="0,0,0,8" />
-                    </WrapPanel>
-                  </StackPanel>
-                </StackPanel>
-              </Border>
-
-              <Border Classes="card" IsVisible="{Binding HasIssueActionMessage}">
-                <StackPanel Spacing="8">
-                  <TextBlock Text="{Binding IssueActionMessage}" TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
-                  <Button Content="Undo last hide" Click="UndoIssueHide" IsVisible="{Binding HasUndoIssueHide}"
-                          IsEnabled="{Binding AreActionsEnabled}" HorizontalAlignment="Left" />
-                </StackPanel>
-              </Border>
-
-              <Border Classes="card" IsVisible="{Binding HasExcludedFiles}">
-                <StackPanel Spacing="10">
-                  <TextBlock Text="Excluded from indexing and search" Classes="sectionTitle" />
-                  <TextBlock Text="{Binding ExcludedFilesSummary}" Classes="quiet" FontSize="12" TextWrapping="Wrap" />
-                  <TextBox Text="{Binding ExcludedQuery, Mode=TwoWay}" MaxLength="500" PlaceholderText="Find an excluded path"
-                           AutomationProperties.Name="Search excluded root paths" />
-                  <TextBlock IsVisible="{Binding HasNoMatchingExcludedFiles}" Text="No excluded paths match this search." Classes="muted" />
-                  <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="8">
-                    <TextBlock Text="{Binding ExcludedPageDisplay}" Classes="quiet" FontSize="12" TextWrapping="Wrap" />
-                    <Button Grid.Column="1" Content="Previous" Click="PreviousExcludedPage" IsEnabled="{Binding CanPreviousExcludedPage}" />
-                    <Button Grid.Column="2" Content="Next" Click="NextExcludedPage" IsEnabled="{Binding CanNextExcludedPage}" />
-                  </Grid>
-                  <ScrollViewer MaxHeight="260" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-                    <ItemsControl ItemsSource="{Binding ExcludedFiles}">
-                      <ItemsControl.ItemTemplate>
-                        <DataTemplate x:DataType="vm:ExcludedFileItemViewModel">
-                          <Border Classes="folderRow" Margin="0,0,0,7">
-                            <StackPanel Spacing="6">
-                              <SelectableTextBlock Text="{Binding SourcePath}" TextWrapping="Wrap" FontSize="12" />
-                              <TextBlock Text="{Binding ExcludedDisplay}" Classes="quiet" FontSize="11" />
-                              <TextBlock Text="{Binding ScopeDisplay}" Classes="quiet" FontSize="12" TextWrapping="Wrap" />
-                              <Button Content="Include and reindex" Click="IncludeIssueFile" HorizontalAlignment="Left"
-                                      IsEnabled="{Binding $parent[UserControl].((vm:MainViewModel)DataContext).CanRunProjectAction}" />
-                            </StackPanel>
-                          </Border>
-                        </DataTemplate>
-                      </ItemsControl.ItemTemplate>
-                    </ItemsControl>
                   </ScrollViewer>
-                  <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="8">
-                    <TextBlock Text="{Binding ExcludedPageDisplay}" Classes="quiet" FontSize="12" TextWrapping="Wrap" />
-                    <Button Grid.Column="1" Content="Previous" Click="PreviousExcludedPage" IsEnabled="{Binding CanPreviousExcludedPage}" />
-                    <Button Grid.Column="2" Content="Next" Click="NextExcludedPage" IsEnabled="{Binding CanNextExcludedPage}" />
-                  </Grid>
+                </Grid>
+              </StackPanel>
+            </StackPanel>
+          </Border>
+
+          <!-- 2. Can my assistant use it? -->
+          <Border Classes="card" AutomationProperties.Name="Search with your AI assistant">
+            <StackPanel Spacing="16">
+              <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
+                <StackPanel Spacing="3">
+                  <TextBlock Text="Search with your AI assistant" Classes="sectionTitle" />
+                  <TextBlock Text="Indexing and search run on this PC. Your assistant reads the passages it finds and may send them to its provider."
+                             Classes="quiet" FontSize="12" TextWrapping="Wrap" />
+                </StackPanel>
+                <Button Grid.Column="1" Content="Copy starter question" Click="CopyStarterPrompt" VerticalAlignment="Top"
+                        ToolTip.Tip="Copy a question to paste into your assistant to try this project." />
+              </Grid>
+              <Grid ColumnDefinitions="180,*,Auto" RowDefinitions="Auto,Auto,Auto" ColumnSpacing="14" RowSpacing="14">
+                <TextBlock Text="Keyword search" Classes="fieldLabel" VerticalAlignment="Top" Margin="0,3,0,0" />
+                <StackPanel Grid.Column="1" Spacing="4">
+                  <controls:StatusBadge Text="{Binding SelectedProject.KeywordSearchLabel}" Tone="{Binding SelectedProject.KeywordSearchTone}" />
+                  <TextBlock Text="{Binding SelectedProject.KeywordSearchMessage}" Classes="muted" FontSize="13" TextWrapping="Wrap" />
+                </StackPanel>
+
+                <TextBlock Grid.Row="1" Text="Meaning-based search" Classes="fieldLabel" VerticalAlignment="Top" Margin="0,3,0,0" />
+                <StackPanel Grid.Row="1" Grid.Column="1" Spacing="4">
+                  <controls:StatusBadge Text="{Binding SelectedProject.SemanticIndexStatusLabel}" Tone="{Binding SelectedProject.SemanticIndexStatusTone}" />
+                  <TextBlock Text="{Binding SelectedProject.SemanticIndexStatusMessage}" Classes="muted" FontSize="13" TextWrapping="Wrap" />
+                </StackPanel>
+                <StackPanel Grid.Row="1" Grid.Column="2" VerticalAlignment="Top">
+                  <Button Content="Complete coverage" Click="RepairSemanticIndex" IsVisible="{Binding SelectedProject.ShowSemanticRepairButton}"
+                          IsEnabled="{Binding SelectedProject.CanRepairSemanticIndex}" ToolTip.Tip="{Binding SelectedProject.RepairSemanticIndexToolTip}" />
+                  <Button Content="Turn on" Click="ShowSettings" IsVisible="{Binding SelectedProject.IsSemanticSetupNeeded}"
+                          ToolTip.Tip="Set up meaning-based search in Settings." />
+                </StackPanel>
+
+                <TextBlock Grid.Row="2" Text="Assistants" Classes="fieldLabel" VerticalAlignment="Top" Margin="0,3,0,0" />
+                <StackPanel Grid.Row="2" Grid.Column="1" Spacing="4">
+                  <controls:StatusBadge Text="{Binding AiConnectionsStatusLabel}" Tone="{Binding AiConnectionsStatusTone}" />
+                  <TextBlock Text="{Binding ConnectedAssistantsSummary}" Classes="muted" FontSize="13" TextWrapping="Wrap" />
+                </StackPanel>
+                <StackPanel Grid.Row="2" Grid.Column="2" VerticalAlignment="Top">
+                  <Button Content="Manage" Click="ShowAiConnections" IsVisible="{Binding HasConnectedAssistants}" />
+                  <Button Classes="primary" Content="Connect an assistant" Click="ShowAiConnections" IsVisible="{Binding !HasConnectedAssistants}" />
+                </StackPanel>
+              </Grid>
+            </StackPanel>
+          </Border>
+
+          <!-- 3. What needs my attention? -->
+          <Border Classes="card issuesCard" IsVisible="{Binding SelectedProject.HasIssueCard}">
+            <StackPanel Spacing="12">
+              <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
+                <StackPanel Spacing="3">
+                  <TextBlock Text="Files that need attention" Classes="sectionTitle" />
+                  <TextBlock Text="{Binding SelectedProject.GroupedIssuesSummary}" Classes="quiet" FontSize="12" TextWrapping="Wrap" />
+                </StackPanel>
+                <Button Grid.Column="1" Content="Retry all" Click="RetryFailedFiles" VerticalAlignment="Top"
+                        IsEnabled="{Binding SelectedProject.CanRetryFailedFiles}"
+                        ToolTip.Tip="Queue every file with a current issue again, including hidden issues and other pages." />
+              </Grid>
+              <Grid ColumnDefinitions="*,Auto,Auto,Auto" ColumnSpacing="8">
+                <TextBox Text="{Binding SelectedProject.IssueQuery, Mode=TwoWay}" MaxLength="500" TextChanged="IssueFiltersChanged"
+                         PlaceholderText="Search by file name, folder or problem"
+                         AutomationProperties.Name="Search files that need attention" />
+                <ComboBox Grid.Column="1" SelectedIndex="{Binding SelectedProject.IssueImpactFilterIndex, Mode=TwoWay}"
+                          SelectionChanged="IssueImpactChanged" MinWidth="190" AutomationProperties.Name="Filter by what is missing from search">
+                  <ComboBoxItem Content="All problems" />
+                  <ComboBoxItem Content="Not searchable" />
+                  <ComboBoxItem Content="Partly searchable" />
+                  <ComboBoxItem Content="Older version searchable" />
+                </ComboBox>
+                <ToggleButton Grid.Column="2" Content="{Binding SelectedProject.HiddenIssuesDisplay}"
+                              IsChecked="{Binding SelectedProject.ShowHiddenIssues, Mode=TwoWay}" Click="ShowHiddenIssues"
+                              IsVisible="{Binding SelectedProject.HasHiddenIssues}" AutomationProperties.Name="Show or hide hidden issues" />
+                <Button Grid.Column="3" Content="Restore all" Click="RestoreAllIssues" IsVisible="{Binding SelectedProject.HasHiddenIssues}"
+                        IsEnabled="{Binding SelectedProject.AreActionsEnabled}" ToolTip.Tip="Show every hidden issue in this list again." />
+              </Grid>
+              <Border IsVisible="{Binding SelectedProject.IssuesChangedDuringPaging}" Classes="row">
+                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
+                  <TextBlock Text="This list changed while you were browsing. New or changed files may be on an earlier page."
+                             Classes="muted" FontSize="13" TextWrapping="Wrap" VerticalAlignment="Center" AutomationProperties.LiveSetting="Polite" />
+                  <Button Grid.Column="1" Classes="compact" Content="Back to first page" Click="RefreshIssuesFromStart" />
+                </Grid>
+              </Border>
+              <Border IsVisible="{Binding SelectedProject.HasIssueLoadError}" Classes="row">
+                <StackPanel Spacing="6">
+                  <TextBlock Text="This list could not be loaded" FontWeight="SemiBold" />
+                  <SelectableTextBlock Text="{Binding SelectedProject.IssueLoadError}" TextWrapping="Wrap" Foreground="{DynamicResource TextSecondaryBrush}" />
+                  <Button Classes="compact" Content="Try again" Click="RefreshIssues" HorizontalAlignment="Left" />
                 </StackPanel>
               </Border>
+              <TextBlock IsVisible="{Binding SelectedProject.HasNoMatchingIssueGroups}" Text="{Binding SelectedProject.NoMatchingIssuesMessage}"
+                         Classes="muted" TextWrapping="Wrap" />
+              <ItemsControl ItemsSource="{Binding SelectedProject.IssueGroups}" IsEnabled="{Binding CanRunProjectAction}"
+                            AutomationProperties.Name="Files that need attention">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate x:DataType="vm:ProjectIssueGroupViewModel">
+                    <Border Classes="row" Margin="0,0,0,8">
+                      <StackPanel Spacing="6">
+                        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="10">
+                          <TextBlock Text="{Binding FileName}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"
+                                     ToolTip.Tip="{Binding SourcePath}" VerticalAlignment="Center" />
+                          <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6">
+                            <controls:StatusBadge Text="{Binding ImpactLabel}" Tone="{Binding ImpactTone}" ToolTip.Tip="{Binding ImpactMessage}" />
+                            <controls:StatusBadge Text="{Binding RetryLabel}" Tone="{Binding RetryTone}" ToolTip.Tip="{Binding RetryMessage}" />
+                          </StackPanel>
+                        </Grid>
+                        <SelectableTextBlock Text="{Binding SourcePath}" Foreground="{DynamicResource TextMutedBrush}" FontSize="12"
+                                             TextWrapping="Wrap" AutomationProperties.Name="Original file path, selectable and copyable" />
+                        <TextBlock Text="{Binding RecoveryGuidance}" Classes="muted" FontSize="13" TextWrapping="Wrap" />
+                        <Grid ColumnDefinitions="Auto,*" ColumnSpacing="10" Margin="0,4,0,0">
+                          <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Top">
+                            <Button Classes="compact" Content="Retry" Click="RetryIssueFile" IsEnabled="{Binding CanRetry}"
+                                    ToolTip.Tip="Index this file again now." />
+                            <Button Classes="compact" Content="Hide" Click="HideIssueFile" IsVisible="{Binding CanHide}"
+                                    ToolTip.Tip="Remove this file from the list. The issue is not fixed and search is unchanged." />
+                            <Button Classes="compact" Content="Unhide" Click="RestoreIssueFile" IsVisible="{Binding HasHiddenIssues}" />
+                            <Button Classes="compact ghost danger" Content="Exclude…" Click="ExcludeIssueFile" IsVisible="{Binding IsRootFile}"
+                                    ToolTip.Tip="Stop indexing this file and remove it from search. The original file is untouched." />
+                          </StackPanel>
+                          <Expander Grid.Column="1" IsExpanded="{Binding IsExpanded, Mode=TwoWay}" HorizontalAlignment="Stretch"
+                                    HorizontalContentAlignment="Stretch" Padding="0" Margin="0,-6,0,0" MinHeight="0">
+                            <Expander.Header>
+                              <TextBlock Text="{Binding IssueCountDisplay, StringFormat='Details · {0}'}" Classes="quiet" FontSize="12" />
+                            </Expander.Header>
+                            <StackPanel Spacing="6" Margin="0,6,0,0">
+                              <TextBlock IsVisible="{Binding DetailsWereRefreshed}" Text="These details changed and were reloaded from the first page."
+                                         Classes="quiet" FontSize="12" TextWrapping="Wrap" />
+                              <ItemsControl ItemsSource="{Binding Details}">
+                                <ItemsControl.ItemTemplate>
+                                  <DataTemplate x:DataType="vm:ProjectIssueDetailViewModel">
+                                    <Border BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,1,0,0" Padding="0,8,0,2">
+                                      <StackPanel Spacing="3">
+                                        <SelectableTextBlock Text="{Binding ComponentName}" FontWeight="SemiBold" TextWrapping="Wrap" />
+                                        <SelectableTextBlock Text="{Binding Message}" Foreground="{DynamicResource TextSecondaryBrush}" TextWrapping="Wrap" />
+                                        <SelectableTextBlock Text="{Binding ComponentKey}" Foreground="{DynamicResource TextMutedBrush}" FontSize="12" TextWrapping="Wrap"
+                                                             AutomationProperties.Name="Exact attachment, page or component location" />
+                                        <SelectableTextBlock Text="{Binding CodeAndAttempt}" Foreground="{DynamicResource TextMutedBrush}" FontSize="12" TextWrapping="Wrap" />
+                                        <TextBlock Text="{Binding CreatedDisplay}" Classes="quiet" FontSize="12" TextWrapping="Wrap" />
+                                      </StackPanel>
+                                    </Border>
+                                  </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                              </ItemsControl>
+                              <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="6" IsVisible="{Binding HasDetailPages}">
+                                <TextBlock Text="{Binding DetailsPageDisplay}" Classes="quiet" FontSize="12" VerticalAlignment="Center" />
+                                <Button Grid.Column="1" Classes="compact" Content="Previous" Click="PreviousIssueDetails" IsEnabled="{Binding CanPreviousDetails}" />
+                                <Button Grid.Column="2" Classes="compact" Content="Next" Click="NextIssueDetails" IsEnabled="{Binding CanNextDetails}" />
+                              </Grid>
+                            </StackPanel>
+                          </Expander>
+                        </Grid>
+                      </StackPanel>
+                    </Border>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+              <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="8" IsVisible="{Binding SelectedProject.HasIssuePages}">
+                <TextBlock Text="{Binding SelectedProject.IssuePageDisplay}" Classes="quiet" FontSize="12" VerticalAlignment="Center" />
+                <Button Grid.Column="1" Classes="compact" Content="Previous" Click="PreviousIssuePage" IsEnabled="{Binding SelectedProject.CanPreviousIssuePage}"
+                        AutomationProperties.Name="Previous page of files that need attention" />
+                <Button Grid.Column="2" Classes="compact" Content="Next" Click="NextIssuePage" IsEnabled="{Binding SelectedProject.CanNextIssuePage}"
+                        AutomationProperties.Name="Next page of files that need attention" />
+              </Grid>
             </StackPanel>
-          </DataTemplate>
-        </ContentControl.ContentTemplate>
-      </ContentControl>
-    </StackPanel>
-  </ScrollViewer>
+          </Border>
+
+          <Border Classes="row" IsVisible="{Binding SelectedProject.HasIssueActionMessage}">
+            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
+              <TextBlock Text="{Binding SelectedProject.IssueActionMessage}" TextWrapping="Wrap" VerticalAlignment="Center"
+                         AutomationProperties.LiveSetting="Polite" />
+              <Button Grid.Column="1" Classes="compact" Content="Undo" Click="UndoIssueHide" IsVisible="{Binding SelectedProject.HasUndoIssueHide}"
+                      IsEnabled="{Binding SelectedProject.AreActionsEnabled}" AutomationProperties.Name="Undo last hide" />
+            </Grid>
+          </Border>
+
+          <!-- 4. What is in this project? -->
+          <Border Classes="card" AutomationProperties.Name="Folders and file types">
+            <StackPanel Spacing="16">
+              <StackPanel Spacing="3">
+                <TextBlock Text="Folders and file types" Classes="sectionTitle" />
+                <TextBlock Text="Folders are watched for new, changed and removed files." Classes="quiet" FontSize="12" />
+              </StackPanel>
+              <ItemsControl ItemsSource="{Binding SelectedProject.FolderRows}">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate x:DataType="vm:ProjectFolderRow">
+                    <Border Classes="row" Margin="0,0,0,6" Padding="12,10">
+                      <Grid ColumnDefinitions="Auto,*" ColumnSpacing="11">
+                        <controls:StatusDot Tone="{Binding Tone}" VerticalAlignment="Top" Margin="0,6,0,0" />
+                        <StackPanel Grid.Column="1" Spacing="2">
+                          <TextBlock Text="{Binding Name}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                          <SelectableTextBlock Text="{Binding Path}" Foreground="{DynamicResource TextMutedBrush}" FontSize="12" TextWrapping="Wrap"
+                                               AutomationProperties.Name="Watched folder path, selectable and copyable" />
+                          <TextBlock IsVisible="{Binding HasIssue}" Text="{Binding Issue}" Foreground="{DynamicResource DangerBrush}"
+                                     FontSize="13" TextWrapping="Wrap" Margin="0,3,0,0" />
+                        </StackPanel>
+                      </Grid>
+                    </Border>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+              <StackPanel Spacing="8">
+                <TextBlock Text="File types found" Classes="fieldLabel" />
+                <TextBlock IsVisible="{Binding SelectedProject.HasNoFileTypeCounts}" Text="No supported files have been counted yet."
+                           Classes="muted" TextWrapping="Wrap" />
+                <ItemsControl IsVisible="{Binding SelectedProject.HasFileTypeCounts}" ItemsSource="{Binding SelectedProject.FileTypeCounts}">
+                  <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate>
+                      <WrapPanel Orientation="Horizontal" />
+                    </ItemsPanelTemplate>
+                  </ItemsControl.ItemsPanel>
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate x:DataType="core:ProjectFileTypeCount">
+                      <Border Classes="fileTypeChip" Margin="0,0,8,8">
+                        <StackPanel Orientation="Horizontal" Spacing="7">
+                          <TextBlock Text="{Binding Extension}" FontWeight="SemiBold" Foreground="#C7D7F3" />
+                          <TextBlock Text="{Binding Count, StringFormat={}{0:N0}}" Classes="muted" />
+                        </StackPanel>
+                      </Border>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </StackPanel>
+              <Expander IsVisible="{Binding SelectedProject.HasExcludedFiles}" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch"
+                        Header="{Binding SelectedProject.ExcludedFilesSummary}">
+                <StackPanel Spacing="8">
+                  <TextBlock Text="These files are left out of indexing and search. A file that is renamed or moved is indexed again."
+                             Classes="quiet" FontSize="12" TextWrapping="Wrap" />
+                  <TextBox Text="{Binding SelectedProject.ExcludedQuery, Mode=TwoWay}" MaxLength="500" PlaceholderText="Find an excluded file"
+                           AutomationProperties.Name="Search excluded files" />
+                  <TextBlock IsVisible="{Binding SelectedProject.HasNoMatchingExcludedFiles}" Text="No excluded files match this search." Classes="muted" />
+                  <ItemsControl ItemsSource="{Binding SelectedProject.ExcludedFiles}" IsEnabled="{Binding CanRunProjectAction}">
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate x:DataType="vm:ExcludedFileItemViewModel">
+                        <Border Classes="row" Margin="0,0,0,6" Padding="12,10">
+                          <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
+                            <StackPanel Spacing="3">
+                              <TextBlock Text="{Binding FileName}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                              <SelectableTextBlock Text="{Binding SourcePath}" Foreground="{DynamicResource TextMutedBrush}" FontSize="12" TextWrapping="Wrap" />
+                              <TextBlock Text="{Binding ScopeDisplay}" Classes="quiet" FontSize="12" TextWrapping="Wrap" ToolTip.Tip="{Binding ExcludedDisplay}" />
+                            </StackPanel>
+                            <Button Grid.Column="1" Classes="compact" Content="Include again" Click="IncludeIssueFile" VerticalAlignment="Top" />
+                          </Grid>
+                        </Border>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                  <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="8" IsVisible="{Binding SelectedProject.HasExcludedPages}">
+                    <TextBlock Text="{Binding SelectedProject.ExcludedPageDisplay}" Classes="quiet" FontSize="12" VerticalAlignment="Center" />
+                    <Button Grid.Column="1" Classes="compact" Content="Previous" Click="PreviousExcludedPage" IsEnabled="{Binding SelectedProject.CanPreviousExcludedPage}" />
+                    <Button Grid.Column="2" Classes="compact" Content="Next" Click="NextExcludedPage" IsEnabled="{Binding SelectedProject.CanNextExcludedPage}" />
+                  </Grid>
+                </StackPanel>
+              </Expander>
+            </StackPanel>
+          </Border>
+        </StackPanel>
+      </StackPanel>
+    </ScrollViewer>
+  </Grid>
 
   <UserControl.Styles>
-    <Style Selector="Button.addProjectButton">
-      <Setter Property="MinHeight" Value="48" />
-      <Setter Property="Padding" Value="0" />
-      <Setter Property="CornerRadius" Value="14" />
-      <Setter Property="Background" Value="{DynamicResource AccentSubtleBrush}" />
+    <Style Selector="Border.pageHeader">
+      <Setter Property="Background" Value="{DynamicResource AppBackgroundBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}" />
+      <Setter Property="BorderThickness" Value="0,0,0,1" />
+      <Setter Property="Padding" Value="30,20" />
+    </Style>
+    <Style Selector="StackPanel.legend">
+      <Setter Property="Orientation" Value="Horizontal" />
+      <Setter Property="Spacing" Value="7" />
+      <Setter Property="Margin" Value="0,0,20,4" />
+    </Style>
+    <Style Selector="ToggleButton.linkToggle">
+      <Setter Property="MinHeight" Value="28" />
+      <Setter Property="Padding" Value="10,4" />
+      <Setter Property="FontSize" Value="13" />
+      <Setter Property="Foreground" Value="{DynamicResource TextSecondaryBrush}" />
+      <Setter Property="Background" Value="Transparent" />
       <Setter Property="BorderBrush" Value="Transparent" />
     </Style>
-    <Style Selector="Button.addProjectButton:pointerover">
-      <Setter Property="Background" Value="#20395F" />
-      <Setter Property="BorderBrush" Value="#31568C" />
+    <Style Selector="ToggleButton.linkToggle:checked /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource SurfaceRaisedBrush}" />
+      <Setter Property="BorderBrush" Value="Transparent" />
+      <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
     </Style>
-    <Style Selector="Button.addProjectButton:pressed">
-      <Setter Property="Background" Value="#294775" />
-      <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
+    <Style Selector="MenuItem.danger">
+      <Setter Property="Foreground" Value="{DynamicResource DangerBrush}" />
     </Style>
-    <Style Selector="Border.metricCard">
-      <Setter Property="Background" Value="{DynamicResource SurfaceBrush}" />
+    <Style Selector="Border.stepCard">
+      <Setter Property="Background" Value="{DynamicResource SurfaceRaisedBrush}" />
       <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}" />
       <Setter Property="BorderThickness" Value="1" />
-      <Setter Property="CornerRadius" Value="11" />
+      <Setter Property="CornerRadius" Value="10" />
       <Setter Property="Padding" Value="16" />
-      <Setter Property="MinHeight" Value="86" />
     </Style>
-    <Style Selector="Border.metricCard.hasErrors">
-      <Setter Property="Background" Value="{DynamicResource DangerSubtleBrush}" />
-      <Setter Property="BorderBrush" Value="#50303B" />
+    <Style Selector="Border.stepNumber">
+      <Setter Property="Width" Value="28" />
+      <Setter Property="Height" Value="28" />
+      <Setter Property="CornerRadius" Value="14" />
+      <Setter Property="HorizontalAlignment" Value="Left" />
+      <Setter Property="Background" Value="{DynamicResource AccentSubtleBrush}" />
     </Style>
-    <Style Selector="TextBlock.metricValue">
-      <Setter Property="FontSize" Value="25" />
+    <Style Selector="Border.stepNumber > TextBlock">
+      <Setter Property="Foreground" Value="{DynamicResource AccentBrush}" />
       <Setter Property="FontWeight" Value="SemiBold" />
-    </Style>
-    <Style Selector="TextBlock.metricValue.hasErrors">
-      <Setter Property="Foreground" Value="{DynamicResource DangerBrush}" />
+      <Setter Property="HorizontalAlignment" Value="Center" />
+      <Setter Property="VerticalAlignment" Value="Center" />
     </Style>
     <Style Selector="Border.fileTypeChip">
       <Setter Property="Background" Value="{DynamicResource SurfaceRaisedBrush}" />
       <Setter Property="BorderBrush" Value="{DynamicResource BorderStrongBrush}" />
       <Setter Property="BorderThickness" Value="1" />
       <Setter Property="CornerRadius" Value="9" />
-      <Setter Property="Padding" Value="10,7" />
-    </Style>
-    <Style Selector="Border.folderRow">
-      <Setter Property="Background" Value="{DynamicResource SurfaceRaisedBrush}" />
-      <Setter Property="CornerRadius" Value="8" />
-      <Setter Property="Padding" Value="12,10" />
-    </Style>
-    <Style Selector="Border.errorRow">
-      <Setter Property="Background" Value="{DynamicResource SurfaceRaisedBrush}" />
-      <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}" />
-      <Setter Property="BorderThickness" Value="1" />
-      <Setter Property="CornerRadius" Value="9" />
-      <Setter Property="Padding" Value="0,13,14,13" />
-    </Style>
-    <Style Selector="Border.semanticCoverageWarning">
-      <Setter Property="Background" Value="{DynamicResource WarningSubtleBrush}" />
-      <Setter Property="BorderBrush" Value="#5C4A2D" />
+      <Setter Property="Padding" Value="10,6" />
     </Style>
   </UserControl.Styles>
 </UserControl>

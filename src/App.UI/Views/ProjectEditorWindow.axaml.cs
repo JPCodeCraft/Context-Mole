@@ -17,6 +17,7 @@ public partial class ProjectEditorWindow : Window
     private readonly ObservableCollection<string> _folders = [];
     private readonly HashSet<string> _originalFolderKeys = new(PathComparer());
     private readonly Func<ProjectEditorResult, Task>? _persist;
+    private readonly string _saveLabel;
     private bool _saving;
     private bool _confirmingSave;
 
@@ -36,7 +37,12 @@ public partial class ProjectEditorWindow : Window
             _originalFolderKeys.Add(ProjectValidation.FolderKey(folder.Path));
         }
         FoldersList.ItemsSource = _folders;
+        _folders.CollectionChanged += (_, _) => NoFoldersHint.IsVisible = _folders.Count == 0;
+        NoFoldersHint.IsVisible = _folders.Count == 0;
         Title = project is null ? "Add project" : "Edit project";
+        EditorTitle.Text = Title;
+        _saveLabel = project is null ? "Add project" : "Save changes";
+        SaveButton.Content = _saveLabel;
         Opened += (_, _) =>
         {
             ProjectNameBox.Focus();
@@ -88,10 +94,10 @@ public partial class ProjectEditorWindow : Window
             _confirmingSave = true;
             try
             {
-                if (!await ConfirmWindow.AskAsync(this, "Remove watched folders?",
-                    $"Saving removes {removed.Length} watched {(removed.Length == 1 ? "folder" : "folders")} from this project and removes their cached indexed evidence from search. " +
-                    "Original folders and files remain untouched. Other watched folders stay included.\n\n" + string.Join("\n", removed),
-                    "Save and remove folders", destructive: true)) return;
+                if (!await ConfirmWindow.AskAsync(this, removed.Length == 1 ? "Remove this folder?" : $"Remove {removed.Length} folders?",
+                    $"Files in {(removed.Length == 1 ? "this folder" : "these folders")} will no longer be searchable. The folders and files themselves are not touched.\n\n" +
+                    string.Join("\n", removed),
+                    removed.Length == 1 ? "Remove folder" : "Remove folders", destructive: true)) return;
             }
             finally { _confirmingSave = false; }
         }
@@ -117,7 +123,7 @@ public partial class ProjectEditorWindow : Window
             EditorForm.IsEnabled = true;
             SaveButton.IsEnabled = true;
             CancelButton.IsEnabled = true;
-            SaveButton.Content = "Save project";
+            SaveButton.Content = _saveLabel;
         }
     }
 

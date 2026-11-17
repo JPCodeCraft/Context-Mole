@@ -2,7 +2,8 @@ using ContextMole.Core;
 
 namespace ContextMole.App.UI.ViewModels;
 
-internal enum AppStatusTone { Neutral, Busy, Ready, Warning, Error }
+/// <summary>Shared status tone for badges, dots and the app status line.</summary>
+public enum AppStatusTone { Neutral, Busy, Ready, Warning, Error }
 
 internal sealed record AppStatus(string Message, string Details, AppStatusTone Tone);
 

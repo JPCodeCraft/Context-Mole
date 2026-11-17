@@ -28,19 +28,6 @@ internal partial class MainViewModel
         await RefreshAsync();
     }
 
-    public async Task RetryVisibleIssueFilesAsync(Guid projectId, IReadOnlyList<Guid> documentIds)
-    {
-        var queued = 0;
-        var pending = 0;
-        foreach (var documentId in documentIds.Distinct())
-        {
-            var result = await _writer.RetryFileAsync(projectId, documentId);
-            queued += result.QueuedCount; pending += result.AlreadyPendingCount;
-        }
-        Notify("retry_action", $"{queued} files queued; {pending} already pending. Only the selected visible page was retried.", projectId);
-        await RefreshAsync();
-    }
-
     public async Task HideIssueFileAsync(ProjectItemViewModel project, string sourcePath)
     {
         var result = await _writer.HideProjectIssuesAsync(project.Id, sourcePath);

@@ -1,5 +1,6 @@
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Input.Platform;
 using Avalonia.Interactivity;
 using Avalonia.VisualTree;
 
@@ -30,6 +31,23 @@ public partial class ProjectsView : UserControl
             await mainWindow.AddProjectAsync(sender as Control);
     }
 
+    private void ShowAiConnections(object? sender, RoutedEventArgs args) => ViewModel.ShowAiConnections();
+    private void ShowSettings(object? sender, RoutedEventArgs args) => ViewModel.ShowSettings();
+
+    private async void CopyStarterPrompt(object? sender, RoutedEventArgs args)
+    {
+        if (ViewModel.SelectedProject is not { } project || TopLevel.GetTopLevel(this)?.Clipboard is not { } clipboard) return;
+        try
+        {
+            await clipboard.SetTextAsync($"List my Context Mole projects, then search the project named {project.Name} for [your topic]. Return passages with their source filenames.");
+            ViewModel.NotifyStarterQuestionCopied(project);
+        }
+        catch (Exception exception)
+        {
+            await ConfirmWindow.ShowErrorAsync(Owner, $"Could not copy the starter question: {exception.Message}");
+        }
+    }
+
     private async void EditProject(object? sender, RoutedEventArgs args)
     {
         if (ProjectActionBusy || ViewModel.SelectedProject is not { } project) return;
@@ -47,40 +65,40 @@ public partial class ProjectsView : UserControl
     private async void RetryFailedFiles(object? sender, RoutedEventArgs args)
     {
         if (ProjectActionBusy || _confirmingAction || ViewModel.SelectedProject is not { CanRetryFailedFiles: true } project) return;
-        if (!await AskProjectActionAsync("Retry all files with current issues?",
-                $"Queue up to {project.ErrorFileCount:N0} root files with current issues in “{project.Name}”, including hidden issues, other pages and filters. " +
-                "Partially indexed searchable files may also be retried. Files without current issues are not queued. Existing evidence remains searchable while replacements are processed; already-pending work is skipped.", "Retry all issue files")) return;
+        if (!await AskProjectActionAsync("Retry all files that need attention?",
+                $"Index up to {project.ErrorFileCount:N0} files with current issues in “{project.Name}” again, including hidden ones and files on other pages. " +
+                "Files that are already waiting are skipped. Earlier indexed versions stay searchable until the new ones are ready.", "Retry all")) return;
         await RunUiActionAsync(sender as Control, () => ViewModel.RetryFailedFilesAsync(project.Id), project.Id, "Queuing failed files…", "retry_action");
     }
 
-    private async void PreviousErrorPage(object? sender, RoutedEventArgs args) =>
-        await MoveErrorPageAsync(sender as Control, -1);
+    private async void PreviousIssuePage(object? sender, RoutedEventArgs args) =>
+        await MoveIssuePageAsync(sender as Control, -1);
 
-    private async void NextErrorPage(object? sender, RoutedEventArgs args) =>
-        await MoveErrorPageAsync(sender as Control, 1);
+    private async void NextIssuePage(object? sender, RoutedEventArgs args) =>
+        await MoveIssuePageAsync(sender as Control, 1);
 
-    private async Task MoveErrorPageAsync(Control? source, int direction)
+    private async Task MoveIssuePageAsync(Control? source, int direction)
     {
         var section = source?.GetVisualAncestors().OfType<Border>()
             .FirstOrDefault(border => border.Classes.Contains("issuesCard"));
-        await RunUiActionAsync(source, () => ViewModel.MoveErrorPageAsync(direction));
+        await RunUiActionAsync(source, () => ViewModel.MoveIssuePageAsync(direction));
         section?.BringIntoView(new Rect(0, 0, section.Bounds.Width, 1));
     }
 
     private async void RepairSemanticIndex(object? sender, RoutedEventArgs args)
     {
         if (ProjectActionBusy || ViewModel.SelectedProject is not { CanRepairSemanticIndex: true } project) return;
-        if (!await AskProjectActionAsync("Complete meaning-based search coverage?",
-                "Files missing compatible embeddings will be queued. Older indexes that need current text preparation are re-read and re-extracted from their original sources; other files can reuse saved extracted text. " +
-                "Existing keyword evidence stays available while replacements are processed. Unavailable sources may prevent repair. Original files are untouched.", "Queue coverage work")) return;
+        if (!await AskProjectActionAsync("Complete meaning-based search?",
+                "Files without meaning-based search data are queued. Files indexed by an older version are read again from their original source, so that source must be available. " +
+                "Keyword search keeps working while this runs. Original files are untouched.", "Complete coverage")) return;
         await RunUiActionAsync(sender as Control, () => ViewModel.RepairSemanticIndexAsync(project.Id), project.Id, "Queuing coverage repair…", "repair_action");
     }
 
     private async void ReindexProject(object? sender, RoutedEventArgs args)
     {
-        if (ProjectActionBusy || ViewModel.SelectedProject is not { } project) return;
+        if (ProjectActionBusy || ViewModel.SelectedProject is not { CanReindex: true } project) return;
         if (!await AskProjectActionAsync("Reindex project?",
-                "A fresh index will be built. Original files remain untouched.", "Reindex")) return;
+                $"Build a fresh index for “{project.Name}” from its folders. The current index stays searchable until files are replaced. Original files remain untouched.", "Reindex")) return;
         await RunUiActionAsync(sender as Control, () => ViewModel.ReindexAsync(project.Id), project.Id, $"Queuing reindex for {project.Name}…", "reindex_action");
     }
 
@@ -88,7 +106,7 @@ public partial class ProjectsView : UserControl
     {
         if (ProjectActionBusy || ViewModel.SelectedProject is not { } project) return;
         if (!await AskProjectActionAsync("Remove project?",
-                $"Remove the local index for “{project.Name}”? Original files remain untouched.",
+                $"Delete the local index for “{project.Name}”? Your assistant can no longer search it. Original files remain untouched.",
                 "Remove project", destructive: true)) return;
         await RunUiActionAsync(sender as Control, () => ViewModel.RemoveAsync(project.Id), project.Id, $"Removing {project.Name}…", "remove_action");
     }
@@ -104,10 +122,9 @@ public partial class ProjectsView : UserControl
     private async void IssueFiltersChanged(object? sender, TextChangedEventArgs args) => await ScheduleIssueFiltersAsync(sender as Control);
     private async void IssueImpactChanged(object? sender, SelectionChangedEventArgs args) => await ScheduleIssueFiltersAsync(sender as Control);
     private async void ShowHiddenIssues(object? sender, RoutedEventArgs args) => await ScheduleIssueFiltersAsync(sender as Control);
-    private async void IssueSectionToggled(object? sender, RoutedEventArgs args) => await ScheduleIssueFiltersAsync(sender as Control);
     private async Task ScheduleIssueFiltersAsync(Control? source)
     {
-        if (source?.DataContext is not ProjectItemViewModel project || DataContext is not MainViewModel viewModel) return;
+        if (DataContext is not MainViewModel { SelectedProject: { } project } viewModel) return;
         _issueFilterDelay?.Cancel();
         using var delay = new CancellationTokenSource();
         _issueFilterDelay = delay;
@@ -132,16 +149,6 @@ public partial class ProjectsView : UserControl
         project.ResetIssuePages();
         try { await ViewModel.RefreshIssueFiltersAsync(); }
         catch (Exception exception) { project.FailIssueRefresh(exception.Message); }
-    }
-    private async void RetryVisibleFiles(object? sender, RoutedEventArgs args)
-    {
-        if (ProjectActionBusy || ViewModel.SelectedProject is not { CanRetryVisibleIssueFiles: true } project) return;
-        var ids = project.VisibleRetryDocumentIds.ToArray();
-        if (!await AskProjectActionAsync("Retry this visible page?",
-                $"Queue {ids.Length:N0} eligible root files currently shown on this page. Hidden files, other pages and nonmatching filters are not included. " +
-                "Existing searchable evidence stays available while replacements are processed.", "Retry visible page")) return;
-        await RunUiActionAsync(sender as Control, () => ViewModel.RetryVisibleIssueFilesAsync(project.Id, ids), project.Id,
-            "Queuing visible issue files…", "retry_action");
     }
     private async void RetryIssueFile(object? sender, RoutedEventArgs args)
     {
@@ -174,12 +181,12 @@ public partial class ProjectsView : UserControl
     {
         if (ProjectActionBusy || ViewModel.SelectedProject is not { } project ||
             (sender as Control)?.DataContext is not ProjectIssueGroupViewModel { IsRootFile: true } group) return;
-        if (!await AskProjectActionAsync("Exclude this exact root file?",
-                $"Project: {project.Name}\nExact root path: {group.SourcePath}\n\n" +
-                "This stops indexing and retries for this path and removes its retained indexed evidence, including all indexed attachments and any older revision, from search. " +
-                "The original file and attachments remain untouched. A replacement at the same path stays excluded; a renamed path is eligible again. Other same-name files are not affected. " +
-                "Include and reindex rebuilds from the source available then; it does not restore removed cached evidence. Removing and re-adding a watched folder does not undo this path rule.",
-                "Exclude root file", destructive: true)) return;
+        if (!await AskProjectActionAsync("Exclude this file?",
+                $"{group.SourcePath}\n\n" +
+                "Context Mole stops indexing this exact path and removes it, with its attachments, from search. The original file is untouched. " +
+                "A new file saved at the same path stays excluded; a renamed or moved file is indexed again. " +
+                "You can include it again later from Folders and file types; it is then indexed from scratch.",
+                "Exclude file", destructive: true)) return;
         await RunUiActionAsync(sender as Control, () => ViewModel.ExcludeIssueFileAsync(project, group.SourcePath), project.Id, "Excluding root file…", "exclude_action");
     }
     private async void IncludeIssueFile(object? sender, RoutedEventArgs args)

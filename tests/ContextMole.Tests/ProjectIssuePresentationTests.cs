@@ -18,7 +18,7 @@ public sealed class ProjectIssuePresentationTests
         Assert.Equal(50, project.IssueGroups[0].Details.Select(item => item.ComponentKey).Distinct().Count());
         Assert.True(project.IssueGroups[0].CanNextDetails);
         Assert.Contains("1000", project.IssueGroups[0].DetailsPageDisplay.Replace(",", ""));
-        Assert.Contains("issue components", project.GroupedIssuesSummary);
+        Assert.Contains("issues in", project.GroupedIssuesSummary);
         Assert.Equal(group.SourcePath, project.IssueGroups[0].SourcePath);
         Assert.Equal("Some content missing", project.IssueGroups[0].ImpactLabel);
     }
@@ -48,8 +48,8 @@ public sealed class ProjectIssuePresentationTests
         Assert.True(project.HasIssueCard);
         Assert.False(project.IsReady);
         Assert.True(project.HasHiddenIssues);
-        Assert.Contains("All matching current issues are hidden", project.NoMatchingIssuesMessage);
-        Assert.Contains("3 components / 1 file", project.HiddenIssuesDisplay);
+        Assert.Contains("All current issues are hidden", project.NoMatchingIssuesMessage);
+        Assert.Equal("Show hidden (1 file)", project.HiddenIssuesDisplay);
         var acknowledgement = Guid.NewGuid();
         project.RecordIssueHide(new([acknowledgement], 3));
         Assert.Equal(acknowledgement, Assert.Single(project.UndoAcknowledgements));
@@ -76,11 +76,10 @@ public sealed class ProjectIssuePresentationTests
         Assert.True(project.CanPreviousIssuePage);
         Assert.True(project.IssueQueryVersion > version);
         project.IssueQuery = "mail";
-        project.IssueCodeFilter = " access_denied ";
         project.IssueImpactFilterIndex = 1;
         Assert.Null(project.CreateIssueRequest().Cursor);
         Assert.Equal("mail", project.CreateIssueRequest().Query);
-        Assert.Equal("access_denied", project.CreateIssueRequest().Code);
+        Assert.Null(project.CreateIssueRequest().Code);
         Assert.Equal(ProjectIssueImpact.Unsearchable, project.CreateIssueRequest().Impact);
         Assert.False(project.CanPreviousIssuePage);
         Assert.Empty(project.IssueGroups);
@@ -115,7 +114,7 @@ public sealed class ProjectIssuePresentationTests
         Assert.False(project.IsReady);
         Assert.False(project.IsSemanticCoverageComplete);
         Assert.Equal("Status unavailable", project.Phase);
-        Assert.Contains("STALE", project.SemanticIndexStatusLabel);
+        Assert.Equal("Not verified", project.SemanticIndexStatusLabel);
         var notifications = 0;
         project.PropertyChanged += (_, _) => notifications++;
         project.SetFreshness(true, checkedAt);
@@ -201,7 +200,7 @@ public sealed class ProjectIssuePresentationTests
             Assert.True(root.CanPreviousDetails);
             Assert.Equal("component-page-two", root.DetailsCursor);
             Assert.Equal("stable-file-page-two", project.CreateIssueRequest().Cursor);
-            Assert.StartsWith("File page 2", project.IssuePageDisplay);
+            Assert.StartsWith("Page 2", project.IssuePageDisplay);
         }
         Assert.True(project.IssuesChangedDuringPaging);
         project.UpdateIssueGroups(Page(project.Id, [source], 100));
@@ -217,8 +216,8 @@ public sealed class ProjectIssuePresentationTests
         var project = new ProjectItemViewModel(Summary(0));
         project.UpdateSemanticIndex(new(1, null, 1, TotalDocumentCount: 20, CompatibleDocumentCount: 1)
         { ReextractionRequiredDocumentCount = 12, EmbeddingRepairEligibleDocumentCount = 7 }, true);
-        Assert.Contains("12 legacy files need source re-extraction", project.SemanticIndexStatusMessage);
-        Assert.Contains("7 can reuse extracted text", project.SemanticIndexStatusMessage);
+        Assert.Contains("12 files indexed by an older version must be re-read", project.SemanticIndexStatusMessage);
+        Assert.Contains("7 files only need their meaning-based data rebuilt", project.SemanticIndexStatusMessage);
     }
 
     private static ProjectSummary Summary(int issues) => new(Guid.NewGuid(), "Project", ProjectState.Active,

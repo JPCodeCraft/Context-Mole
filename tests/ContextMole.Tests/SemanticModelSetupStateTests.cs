@@ -245,6 +245,28 @@ public sealed class SemanticModelSetupStateTests
         Assert.False(viewModel.IsSemanticSearchReadyStatus);
     }
 
+    [Fact]
+    public async Task ConnectedAssistantsStayInViewWhileTheRestOfTheCatalogFoldsAway()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var viewModel = fixture.ViewModel;
+        Assert.False(viewModel.HasPrimaryAiConnections);
+        Assert.True(viewModel.IsOtherAiConnectionsExpanded);
+        Assert.StartsWith("Choose an assistant to connect", viewModel.OtherAiConnectionsHeader);
+
+        var connection = viewModel.AiConnections.First(candidate => candidate.SupportsAutomaticSetup);
+        connection.IsBusy = false;
+        connection.Apply(new AiConnectionStatus(connection.Client, AiConnectionState.Connected, "Configured.", "config.json"));
+
+        Assert.Equal([connection], viewModel.PrimaryAiConnections);
+        Assert.DoesNotContain(connection, viewModel.OtherAiConnections);
+        Assert.False(viewModel.IsOtherAiConnectionsExpanded);
+        Assert.StartsWith("Connect another assistant", viewModel.OtherAiConnectionsHeader);
+        // Once the person opens the list it stays open, even as statuses refresh.
+        viewModel.IsOtherAiConnectionsExpanded = true;
+        Assert.True(viewModel.IsOtherAiConnectionsExpanded);
+    }
+
     private sealed class Fixture : IAsyncDisposable
     {
         private readonly StorageTestDatabase _database;

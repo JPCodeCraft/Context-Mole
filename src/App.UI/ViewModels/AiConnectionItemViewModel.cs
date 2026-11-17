@@ -54,6 +54,8 @@ internal sealed class AiConnectionItemViewModel(AiClientDefinition client) : Vie
     public bool IsWarningStatus => !IsBusy && State == AiConnectionState.UpdateRequired;
     public bool IsErrorStatus => !IsBusy && State is (AiConnectionState.Conflict or AiConnectionState.ServerUnavailable
         or AiConnectionState.Broken);
+    public AppStatusTone StatusTone => IsBusy ? AppStatusTone.Busy : IsReadyStatus ? AppStatusTone.Ready
+        : IsWarningStatus ? AppStatusTone.Warning : IsErrorStatus ? AppStatusTone.Error : AppStatusTone.Neutral;
     public bool NeedsAttention => (HasManagedConfiguration || _explicitlyChosen) &&
         (IsWarningStatus || IsErrorStatus);
     public bool HasDetailMessage => IsBusy || State != AiConnectionState.Disconnected;
@@ -122,6 +124,7 @@ internal sealed class AiConnectionItemViewModel(AiClientDefinition client) : Vie
         OnPropertyChanged(nameof(IsReadyStatus));
         OnPropertyChanged(nameof(IsWarningStatus));
         OnPropertyChanged(nameof(IsErrorStatus));
+        OnPropertyChanged(nameof(StatusTone));
         OnPropertyChanged(nameof(NeedsAttention));
         OnPropertyChanged(nameof(HasDetailMessage));
     }
