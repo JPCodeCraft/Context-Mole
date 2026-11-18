@@ -36,16 +36,11 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
     private const long MaxRasterPixels = 25_000_000;
     private const int PdfOcrDpi = 300;
     private const int MinimumPdfOcrDpi = 72;
-    private static readonly Encoding Windows1252;
+    // LegacyTextEncodings registers the code page provider when this assembly loads.
+    private static readonly Encoding Windows1252 = Encoding.GetEncoding(1252);
     private static readonly MarkdownPipeline PlainTextMarkdownPipeline = new MarkdownPipelineBuilder().DisableHtml().UsePipeTables().Build();
     private static readonly SemaphoreSlim PdfRenderGate = new(1, 1);
     private readonly IOcrEngine _ocrEngine = ocrEngine;
-
-    static DocumentExtractionRegistry()
-    {
-        Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
-        Windows1252 = Encoding.GetEncoding(1252);
-    }
 
     public IReadOnlyCollection<string> Extensions => SupportedContent.Extensions;
 

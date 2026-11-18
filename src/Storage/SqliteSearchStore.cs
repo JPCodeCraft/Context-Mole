@@ -285,7 +285,14 @@ public sealed partial class SqliteSearchStore : ISearchStore
             command.Parameters.AddWithValue("$project_state", (int)projectState);
             command.Parameters.AddWithValue("$active_state", (int)ProjectState.Active);
 
-            if (request.Status != DocumentStatusFilter.All)
+            if (request.Status == DocumentStatusFilter.Error)
+            {
+                // A queued retry or reindex reports the document as pending, but its recorded errors still stand
+                // (and still count in the project's error files), so the error filter keeps returning it.
+                sql.Append(" AND (current_status=$status OR error_count>0)");
+                command.Parameters.AddWithValue("$status", StatusValue(request.Status));
+            }
+            else if (request.Status != DocumentStatusFilter.All)
             {
                 sql.Append(" AND current_status=$status");
                 command.Parameters.AddWithValue("$status", StatusValue(request.Status));

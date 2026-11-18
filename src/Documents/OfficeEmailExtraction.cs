@@ -340,10 +340,8 @@ public sealed partial class DocumentExtractionRegistry
         var sections = new List<ExtractedSection>();
         if (!isWebArchive)
         {
-            var headers = $"From: {message.From}\nTo: {message.To}\nCc: {message.Cc}\nDate: {message.Date:O}\nSubject: {message.Subject}";
-            sections.Add(new ExtractedSection(headers,
-                new SourceLocation(LocationKind.EmailPart, EmailPart: "headers"), ExtractionMethod.Email,
-                SectionKey: "email:headers"));
+            sections.Add(EmailHeaderSection(message.From.ToString(), message.To.ToString(), message.Cc.ToString(),
+                message.Bcc.ToString(), message.Date.ToString("O", CultureInfo.InvariantCulture), message.Subject));
         }
 
         var hasHtml = !string.IsNullOrWhiteSpace(message.HtmlBody);
@@ -427,11 +425,29 @@ public sealed partial class DocumentExtractionRegistry
     {
         using var input = new MemoryStream(bytes, writable: false);
         using var message = new Storage.Message(input, FileAccess.Read, leaveStreamOpen: true);
+        return await OutlookMessageNodeAsync(message, name, mimeType, relationship, depth, context, cancellationToken);
+    }
+
+    private async Task<ExtractedNode> EmbeddedMsgNodeAsync(Storage.Message message, string name, string relationship, int depth,
+        ExpansionContext context, CancellationToken cancellationToken)
+    {
+        const string mimeType = "application/vnd.ms-outlook";
+        using var component = context.EnterComponent(name, relationship);
+        if (depth > context.Request.MaxDepth)
+            return Rejected(name, mimeType, relationship, context, "attachment_depth_limit", "Attachment depth exceeds the limit.");
+        return await OutlookMessageNodeAsync(message, name, mimeType, relationship, depth, context, cancellationToken);
+    }
+
+    /// <summary>Extracts a top-level or embedded Outlook message the same way: headers, body, then attachments.</summary>
+    private async Task<ExtractedNode> OutlookMessageNodeAsync(Storage.Message message, string name, string? mimeType,
+        string relationship, int depth, ExpansionContext context, CancellationToken cancellationToken)
+    {
         var sections = new List<ExtractedSection>
         {
-            new($"From: {message.Sender}\nTo: {string.Join("; ", message.Recipients ?? [])}\nDate: {message.SentOn:O}\nSubject: {message.Subject}",
-                new SourceLocation(LocationKind.EmailPart, EmailPart: "headers"), ExtractionMethod.Email,
-                SectionKey: "email:headers")
+            EmailHeaderSection(OutlookMailbox(message.Sender?.DisplayName, message.Sender?.Email),
+                OutlookRecipients(message, RecipientType.To), OutlookRecipients(message, RecipientType.Cc),
+                OutlookRecipients(message, RecipientType.Bcc),
+                message.SentOn?.ToString("O", CultureInfo.InvariantCulture), message.Subject)
         };
         var body = message.BodyText;
         var method = ExtractionMethod.Email;
@@ -449,6 +465,7 @@ public sealed partial class DocumentExtractionRegistry
                 sections.Add(new ExtractedSection(body, location, method, SectionKey: "email:body"));
         }
 
+        // ContentMaterializationService.ExtractMsgChild counts attachments the same way; keep the two in step.
         var attachments = new List<ExtractedNode>();
         var ordinal = 0;
         foreach (var item in message.Attachments ?? [])
@@ -462,14 +479,15 @@ public sealed partial class DocumentExtractionRegistry
                     {
                         var attachmentName = string.IsNullOrWhiteSpace(attachment.FileName) ? $"attachment-{ordinal}" : attachment.FileName;
                         await using var stream = new MemoryStream(attachment.Data, writable: false);
-                        attachments.Add(await ExtractStreamAsync(stream, attachmentName, attachment.MimeType, attachment.IsInline ? "email-inline" : "email-attachment",
-                            depth + 1, context, cancellationToken));
+                        attachments.Add(await ExtractStreamAsync(stream, attachmentName, attachment.MimeType,
+                            attachment.IsInline ? "email-inline" : "email-attachment", depth + 1, context, cancellationToken));
                         break;
                     }
                 case Storage.Message nested:
                     {
                         var attachmentName = string.IsNullOrWhiteSpace(nested.FileName) ? $"message-{ordinal}.msg" : nested.FileName;
-                        attachments.Add(await MsgObjectNodeAsync(nested, attachmentName, "email-attachment", depth + 1, context, cancellationToken));
+                        attachments.Add(await EmbeddedMsgNodeAsync(nested, attachmentName, "email-attachment", depth + 1, context,
+                            cancellationToken));
                         break;
                     }
             }
@@ -477,44 +495,38 @@ public sealed partial class DocumentExtractionRegistry
         return new ExtractedNode(name, mimeType, relationship, sections, attachments);
     }
 
-    private async Task<ExtractedNode> MsgObjectNodeAsync(Storage.Message message, string name, string relationship, int depth,
-        ExpansionContext context, CancellationToken cancellationToken)
+    /// <summary>
+    /// The header block for every email format, so .eml and .msg messages read and embed alike. Bcc appears
+    /// only when the message records it, which is mostly in sent copies.
+    /// </summary>
+    internal static ExtractedSection EmailHeaderSection(string? from, string? to, string? cc, string? bcc, string? date,
+        string? subject)
     {
-        using var component = context.EnterComponent(name, relationship);
-        if (depth > context.Request.MaxDepth)
-            return Rejected(name, "application/vnd.ms-outlook", relationship, context, "attachment_depth_limit", "Attachment depth exceeds the limit.");
-        var sections = new List<ExtractedSection>
-        {
-            new($"From: {message.Sender}\nDate: {message.SentOn:O}\nSubject: {message.Subject}",
-                new SourceLocation(LocationKind.EmailPart, EmailPart: "headers"), ExtractionMethod.Email,
-                SectionKey: "email:headers")
-        };
-        var body = !string.IsNullOrWhiteSpace(message.BodyText) ? message.BodyText : InertHtmlText(message.BodyHtml);
-        if (!string.IsNullOrWhiteSpace(body))
-            sections.Add(new ExtractedSection(body, new SourceLocation(LocationKind.EmailPart, EmailPart: "body"), ExtractionMethod.Email,
-                SectionKey: "email:body"));
-        var attachments = new List<ExtractedNode>();
-        var ordinal = 0;
-        foreach (var item in message.Attachments ?? [])
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (!context.TryAddAttachment(name)) break;
-            ordinal++;
-            if (item is Storage.Attachment attachment && attachment.Data is { Length: > 0 })
-            {
-                var attachmentName = string.IsNullOrWhiteSpace(attachment.FileName) ? $"attachment-{ordinal}" : attachment.FileName;
-                await using var stream = new MemoryStream(attachment.Data, writable: false);
-                attachments.Add(await ExtractStreamAsync(stream, attachmentName, attachment.MimeType,
-                    attachment.IsInline ? "email-inline" : "email-attachment", depth + 1, context, cancellationToken));
-            }
-            else if (item is Storage.Message nested)
-            {
-                var nestedName = string.IsNullOrWhiteSpace(nested.FileName) ? $"message-{ordinal}.msg" : nested.FileName;
-                attachments.Add(await MsgObjectNodeAsync(nested, nestedName, "email-attachment", depth + 1, context, cancellationToken));
-            }
-        }
-        return new ExtractedNode(name, "application/vnd.ms-outlook", relationship, sections, attachments);
+        var bccLine = string.IsNullOrWhiteSpace(bcc) ? string.Empty : $"\nBcc: {bcc}";
+        return new ExtractedSection($"From: {from}\nTo: {to}\nCc: {cc}{bccLine}\nDate: {date}\nSubject: {subject}",
+            new SourceLocation(LocationKind.EmailPart, EmailPart: "headers"), ExtractionMethod.Email,
+            SectionKey: "email:headers");
     }
+
+    /// <summary>Outlook stores names and addresses as separate properties; show them the way mail clients do.</summary>
+    internal static string OutlookMailbox(string? displayName, string? email)
+    {
+        var name = displayName?.Trim() ?? string.Empty;
+        var address = email?.Trim() ?? string.Empty;
+        if (address.Length == 0) return name;
+        if (name.Length == 0 || string.Equals(name, address, StringComparison.OrdinalIgnoreCase)) return address;
+        return $"{name} <{address}>";
+    }
+
+    /// <summary>
+    /// Outlook's own separator, because display names such as "Doe, Jane" contain commas. A recipient without a
+    /// recorded type is listed under To rather than dropped.
+    /// </summary>
+    private static string OutlookRecipients(Storage.Message message, RecipientType type) =>
+        string.Join("; ", (message.Recipients ?? [])
+            .Where(recipient => (recipient.Type ?? RecipientType.To) == type)
+            .Select(recipient => OutlookMailbox(recipient.DisplayName, recipient.Email))
+            .Where(mailbox => mailbox.Length > 0));
 
     private static string InertHtmlText(string? html)
     {

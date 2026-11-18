@@ -66,6 +66,8 @@ public sealed partial class DatabaseWriterService : BackgroundService, IIndexWri
             connection.CreateFunction<string?, string>("lexical", value => LexicalText.Canonicalize(value));
             connection.CreateFunction<string, string>("name_key", TextNormalization.NameKey);
             await Schema.MigrateAsync(connection, _logger, stoppingToken).ConfigureAwait(false);
+            // Before readiness, so the repair jobs are already queued when the writer reports ready.
+            await RepairLegacyEvidenceForMaintenanceAsync(connection, stoppingToken).ConfigureAwait(false);
             _logger.LogInformation("Database ready at {DatabasePath}, schema version {SchemaVersion}", _paths.DatabasePath, Schema.CurrentVersion);
             _ready.TrySetResult();
             await PruneJobHistoryForMaintenanceAsync(connection, null, stoppingToken).ConfigureAwait(false);

@@ -66,7 +66,7 @@ public sealed class BrokerMcpTools(BrokerRpcClient broker, ILogger<BrokerMcpTool
         new BrokerGetDocumentInfoRequest(project_id, document_id, content_id), cancellationToken);
 
     [McpServerTool(Name = "list_documents", OutputSchemaType = typeof(DocumentListResponse), ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false, UseStructuredContent = true)]
-    [Description("Use to browse or filter a project's root-document inventory and indexing status. Returns deterministic, cursor-paginated metadata, counts, errors, and revisions only; attachments are represented by counts and extracted text is never loaded.")]
+    [Description("Use to browse or filter a project's root-document inventory and indexing status. Returns deterministic, cursor-paginated metadata, counts, errors, and revisions only; attachments are represented by counts and extracted text is never loaded. status \"error\" returns every document with recorded errors, including one reported as pending because its retry or reindex is queued.")]
     public Task<CallToolResult> ListDocuments(Guid project_id, string status = "all",
         IReadOnlyList<string>? extensions = null, IReadOnlyList<string>? path_prefixes = null,
         string? name_query = null, DateTimeOffset? modified_from_utc = null, DateTimeOffset? modified_to_utc = null,
