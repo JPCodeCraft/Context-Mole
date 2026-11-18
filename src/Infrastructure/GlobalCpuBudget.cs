@@ -9,6 +9,7 @@ public sealed class GlobalCpuBudget : IGlobalCpuBudget, IDisposable
     private readonly AsyncLocal<WorkerLease?> _ambientWorker = new();
     private readonly LinkedList<Waiter> _waiters = [];
     private int _activeCapacity;
+    private int _fullCapacityLeases;
     private bool _disposed;
 
     public GlobalCpuBudget(ICpuUsageSettings settings)
@@ -54,6 +55,16 @@ public sealed class GlobalCpuBudget : IGlobalCpuBudget, IDisposable
             PumpWaitersLocked();
         }
         return new WorkerSuspension(this, worker);
+    }
+
+    public CpuBudgetUsage DescribeUsage()
+    {
+        lock (_gate)
+        {
+            var waitingForFullCapacity = _waiters.Count(waiter => waiter.FullCapacity);
+            return new CpuBudgetUsage(_settings.ThreadLimit, _activeCapacity, _fullCapacityLeases,
+                _waiters.Count - waitingForFullCapacity, waitingForFullCapacity);
+        }
     }
 
     public void Dispose()
@@ -115,6 +126,7 @@ public sealed class GlobalCpuBudget : IGlobalCpuBudget, IDisposable
             {
                 var capacity = _settings.ThreadLimit;
                 _activeCapacity = capacity;
+                _fullCapacityLeases++;
                 return new FullCapacityRequest(Task.FromResult(new CapacityGrant(capacity)), suspendedWorker);
             }
 
@@ -204,6 +216,7 @@ public sealed class GlobalCpuBudget : IGlobalCpuBudget, IDisposable
             if (lease.IsDisposed) return;
             lease.IsDisposed = true;
             _activeCapacity -= lease.ThreadCount;
+            _fullCapacityLeases--;
             if (lease.SuspendedWorker is { State: WorkerLeaseState.Suspended } worker)
             {
                 worker.State = WorkerLeaseState.Held;
@@ -239,6 +252,7 @@ public sealed class GlobalCpuBudget : IGlobalCpuBudget, IDisposable
                 _waiters.RemoveFirst();
                 waiter.Node = null;
                 _activeCapacity = limit;
+                _fullCapacityLeases++;
                 waiter.Completion.TrySetResult(new CapacityGrant(limit));
                 return;
             }

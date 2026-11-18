@@ -51,7 +51,21 @@ public interface IGlobalCpuBudget
     /// Without a current worker it does nothing.
     /// </summary>
     IAsyncDisposable SuspendWorker() => NoCpuWorkerSuspension.Instance;
+
+    /// <summary>How the slots are used right now, for diagnostics; null when the budget does not track it.</summary>
+    CpuBudgetUsage? DescribeUsage() => null;
 }
+
+/// <summary>
+/// A moment's view of an <see cref="IGlobalCpuBudget"/>: <paramref name="SlotsInUse"/> of <paramref name="SlotLimit"/>
+/// slots are taken (a full-capacity lease takes them all), and the waiters are queued in arrival order.
+/// </summary>
+public sealed record CpuBudgetUsage(
+    int SlotLimit,
+    int SlotsInUse,
+    int FullCapacityLeases,
+    int WaitingForSlot,
+    int WaitingForFullCapacity);
 
 /// <summary>The scope <see cref="IGlobalCpuBudget.SuspendWorker"/> returns when there is no slot to give back.</summary>
 public sealed class NoCpuWorkerSuspension : IAsyncDisposable

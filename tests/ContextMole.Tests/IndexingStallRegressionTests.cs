@@ -1,10 +1,9 @@
-using System.Reflection;
-
 using ContextMole.Core;
 using ContextMole.Documents;
 using ContextMole.Indexing;
 using ContextMole.Infrastructure;
 
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace ContextMole.Tests;
@@ -146,13 +145,121 @@ public sealed class IndexingStallRegressionTests
         }
     }
 
-    private static string DescribeBudget(GlobalCpuBudget cpu)
+    [Fact]
+    public async Task CpuBudgetDescribesItsSlotsLeasesAndQueues()
     {
-        var type = typeof(GlobalCpuBudget);
-        var active = type.GetField("_activeCapacity", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(cpu);
-        var waiters = (System.Collections.ICollection)type.GetField("_waiters",
-            BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(cpu)!;
-        return $"active={active}, waiters={waiters.Count}";
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var cpu = new GlobalCpuBudget(new MutableCpuUsageSettings(5, CpuUsageProfile.Normal));
+        Assert.Equal(new CpuBudgetUsage(2, 0, 0, 0, 0), cpu.DescribeUsage());
+
+        var first = await cpu.AcquireWorkerAsync(cancellationToken);
+        var second = await cpu.AcquireWorkerAsync(cancellationToken);
+        var third = cpu.AcquireWorkerAsync(cancellationToken).AsTask();
+        var full = cpu.AcquireFullCapacityAsync(cancellationToken).AsTask();
+        Assert.Equal(new CpuBudgetUsage(2, 2, 0, 1, 1), cpu.DescribeUsage());
+
+        first.Dispose();
+        using (await third.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken))
+        {
+            second.Dispose();
+            Assert.Equal(new CpuBudgetUsage(2, 1, 0, 0, 1), cpu.DescribeUsage());
+        }
+
+        using (await full.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken))
+            Assert.Equal(new CpuBudgetUsage(2, 2, 1, 0, 0), cpu.DescribeUsage());
+        Assert.Equal(new CpuBudgetUsage(2, 0, 0, 0, 0), cpu.DescribeUsage());
+    }
+
+    [Fact]
+    public async Task AFileWaitingForCpuLogsWhichFilesHoldTheSlots()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var database = await StorageTestDatabase.CreateAsync(cancellationToken);
+        foreach (var name in new[] { "first.txt", "second.txt" })
+            await File.WriteAllTextAsync(Path.Combine(database.Paths.SourceDirectory, name), name, cancellationToken);
+        using var cpu = new GlobalCpuBudget(new SingleSlotCpuUsageSettings());
+        var extractor = new BlockingExtractor();
+        var embeddings = new StorageUnavailableEmbeddings();
+        var logger = new WarningLogger<IndexingCoordinator>();
+        var (projectId, _) = await database.CreateProjectAsync("Waits", cancellationToken);
+        using var coordinator = new IndexingCoordinator(database.Writer, database.Store, database.Paths, extractor,
+            embeddings, new IndexingActivityTracker(), new EmbeddingPolicyRefreshTracker(), cpu, logger)
+        {
+            ResourceWaitWarningDelay = TimeSpan.FromMilliseconds(200),
+            ResourceWaitWarningRepeat = TimeSpan.FromHours(1),
+            ResourceWaitWarningSpacing = TimeSpan.Zero
+        };
+
+        await coordinator.StartAsync(cancellationToken);
+        try
+        {
+            var holder = await extractor.Entered.WaitAsync(TimeSpan.FromSeconds(30), cancellationToken);
+            var warning = await logger.FirstWarning.WaitAsync(TimeSpan.FromSeconds(30), cancellationToken);
+
+            var waiting = holder == "first.txt" ? "second.txt" : "first.txt";
+            Assert.Equal(waiting, Path.GetFileName((string)warning["Path"]!));
+            Assert.StartsWith("1 of 1 slots in use, 1 files and 0 OCR or embedding requests queued",
+                (string)warning["Cpu"]!);
+            Assert.Equal(1, warning["WaitingFiles"]);
+            Assert.Equal(1, warning["InProgressCount"]);
+            Assert.Contains($"{holder} (ExtractingContent for", (string)warning["InProgress"]!);
+
+            extractor.Release();
+            var deadline = DateTime.UtcNow.AddSeconds(30);
+            while ((await database.Store.ListProjectsAsync(cancellationToken)).Single(item => item.Id == projectId)
+                   .IndexedCount < 2)
+            {
+                Assert.True(DateTime.UtcNow < deadline, "The files did not index once the slot was free.");
+                await Task.Delay(50, cancellationToken);
+            }
+        }
+        finally
+        {
+            extractor.Release();
+            await coordinator.StopAsync(CancellationToken.None);
+            await embeddings.DisposeAsync();
+        }
+    }
+
+    private static string DescribeBudget(GlobalCpuBudget cpu) => cpu.DescribeUsage().ToString();
+
+    /// <summary>Holds the first file in extraction, and with it the only CPU slot, until released.</summary>
+    private sealed class BlockingExtractor : IDocumentExtractor
+    {
+        private readonly TaskCompletionSource<string> _entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _released = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public IReadOnlyCollection<string> Extensions { get; } = [".txt"];
+        public Task<string> Entered => _entered.Task;
+        public void Release() => _released.TrySetResult();
+
+        public async Task<ExtractionResult> ExtractAsync(ExtractionRequest request, CancellationToken cancellationToken)
+        {
+            var name = Path.GetFileName(request.SourcePath);
+            if (_entered.TrySetResult(name)) await _released.Task.WaitAsync(cancellationToken);
+            return new ExtractionResult(new ExtractedNode(name, "text/plain", "root",
+                [new ExtractedSection("text " + name, new SourceLocation(LocationKind.Document),
+                    ExtractionMethod.NativeText)], []), []);
+        }
+    }
+
+    /// <summary>Captures the structured values of the first resource wait warning.</summary>
+    private sealed class WarningLogger<T> : ILogger<T>
+    {
+        private readonly TaskCompletionSource<IReadOnlyDictionary<string, object?>> _first =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task<IReadOnlyDictionary<string, object?>> FirstWarning => _first.Task;
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            if (logLevel != LogLevel.Warning || state is not IEnumerable<KeyValuePair<string, object?>> values) return;
+            var properties = values.ToDictionary(item => item.Key, item => item.Value);
+            if (properties.ContainsKey("Cpu")) _first.TrySetResult(properties);
+        }
     }
 
     private sealed class OcrLikeExtractor(IGlobalCpuBudget cpu, int seed) : IDocumentExtractor
