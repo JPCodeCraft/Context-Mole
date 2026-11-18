@@ -13,6 +13,12 @@ public static class SearchServices
         return services
             .AddSingleton<IVectorIndexFactory, FlatVectorIndexFactory>()
             .AddSingleton(_ => new VectorIndexCache(vectorCacheByteBudget, recentSnapshotReuse))
-            .AddSingleton<HybridSearchService>();
+            .AddSingleton(provider => new HybridSearchService(
+                provider.GetRequiredService<ISearchStore>(),
+                provider.GetRequiredService<IEmbeddingGenerator>(),
+                provider.GetRequiredService<IVectorIndexFactory>(),
+                provider.GetRequiredService<VectorIndexCache>(),
+                provider.GetRequiredService<IGlobalCpuBudget>(),
+                anchorSemanticPreviews: true));
     }
 }

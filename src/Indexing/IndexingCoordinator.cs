@@ -1186,7 +1186,7 @@ public sealed partial class IndexingCoordinator(
                 // Embeddings see table values paired with their column names; evidence text stays TSV.
                 string SemanticBody(string body) => SemanticTextPreparation.CleanBody(
                     prepared.TableHeader is { } header ? TableSemantics.Linearize(body, header, cellReferences) : body,
-                    section.IsBoilerplate || section.Location.EmailPart == "headers", emailBody);
+                    section.IsBoilerplate, emailBody);
                 string Semantic(string body) => BuildSemanticText(SemanticBody(body), title, fileName, sourcePath,
                     node.Name, section.Heading, section.Location.Sheet, emailSubject, prepared.TableHeader?.Display,
                     prepared.TableCaption);
@@ -1279,11 +1279,13 @@ public sealed partial class IndexingCoordinator(
         {
             if (CaptionedTable(item.Section.Location) is { } captioned)
                 tableCaptions.TryAdd(captioned, TextNormalization.ForSearch(item.Text));
+            if (item.Section.Location.Kind == LocationKind.Sheet) continue;
             var table = TableBoundary(item.Section.Location);
             if (table is null || tableHeaders.ContainsKey(table)) continue;
-            tableHeaders[table] = TableSemantics.ParseHeader(item.Text,
-                cellReferences: item.Section.Location.Kind == LocationKind.Sheet);
+            tableHeaders[table] = TableSemantics.ParseHeader(item.Text, cellReferences: false);
         }
+        var sheetContexts = BuildSpreadsheetTableContexts(
+            normalized.Select(item => (item.Ordinal, item.Section, item.Text)).ToArray());
 
         var result = new List<PreparedSection>();
         foreach (var item in normalized)
@@ -1291,8 +1293,13 @@ public sealed partial class IndexingCoordinator(
             var section = item.Section;
             var boundary = MergeBoundary(section);
             var table = TableBoundary(section.Location);
-            var tableHeader = table is not null ? tableHeaders.GetValueOrDefault(table) : null;
-            var tableCaption = table is not null ? tableCaptions.GetValueOrDefault(table) : null;
+            var hasSheetContext = sheetContexts.TryGetValue(item.Ordinal, out var sheetContext);
+            var tableHeader = hasSheetContext
+                ? sheetContext.Header
+                : table is not null ? tableHeaders.GetValueOrDefault(table) : null;
+            var tableCaption = hasSheetContext
+                ? sheetContext.Caption
+                : table is not null ? tableCaptions.GetValueOrDefault(table) : null;
             if (result.Count > 0)
             {
                 var previous = result[^1];
@@ -1325,6 +1332,105 @@ public sealed partial class IndexingCoordinator(
 
         static int CountWords(string value) =>
             value.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).Length;
+    }
+
+    private static Dictionary<int, (TableSemantics.Header? Header, string? Caption)> BuildSpreadsheetTableContexts(
+        IReadOnlyList<(int Ordinal, ExtractedSection Section, string Text)> items)
+    {
+        var contexts = new Dictionary<int, (TableSemantics.Header? Header, string? Caption)>();
+        var sheetGroups = items.Where(item => item.Section.Location.Kind == LocationKind.Sheet &&
+                !string.IsNullOrWhiteSpace(item.Section.Location.CellRange) &&
+                string.IsNullOrWhiteSpace(item.Section.Location.StructurePath))
+            .GroupBy(item => item.Section.Location.Sheet ?? string.Empty, StringComparer.Ordinal);
+        foreach (var group in sheetGroups)
+        {
+            var rows = group.Select(item => (
+                item.Ordinal,
+                item.Text,
+                Row: ParseFirstRowNumber(item.Section.Location.CellRange),
+                CellCount: item.Text.Split('\t').Count(cell => cell.Trim().Length > 0))).ToArray();
+            if (rows.Length == 0) continue;
+
+            TableSemantics.Header? activeHeader;
+            string? activeCaption = null;
+            if (rows.Length >= 3 && rows[0].CellCount == 1 && rows[1].CellCount >= 2 && rows[2].CellCount >= 2 &&
+                (rows[0].Row is null || rows[1].Row is null || rows[1].Row <= rows[0].Row + 2) &&
+                TableSemantics.ParseHeader(rows[1].Text, cellReferences: true) is { } postBannerHeader &&
+                postBannerHeader.Cells.Count(cell => cell.Length > 0) >= 2)
+            {
+                activeCaption = ExtractSpreadsheetCellValue(rows[0].Text);
+                activeHeader = postBannerHeader;
+            }
+            else
+            {
+                activeHeader = TableSemantics.ParseHeader(rows[0].Text, cellReferences: true);
+            }
+
+            for (var i = 0; i < rows.Length; i++)
+            {
+                if (i >= 2 && rows[i].Row is { } currentRow && rows[i - 1].Row is { } previousRow &&
+                    currentRow - previousRow >= 2)
+                {
+                    if (rows[i].CellCount == 1 && i + 2 < rows.Length &&
+                        rows[i + 1].Row == currentRow + 1 && rows[i + 2].Row == currentRow + 2 &&
+                        rows[i + 1].CellCount >= 2 &&
+                        IsCleanSubtableHeader(rows[i + 1].Text, out var subBannerHeader))
+                    {
+                        activeCaption = ExtractSpreadsheetCellValue(rows[i].Text);
+                        activeHeader = subBannerHeader;
+                    }
+                    else if (rows[i].CellCount >= 2 && i + 1 < rows.Length &&
+                        rows[i + 1].Row == currentRow + 1 &&
+                        IsCleanSubtableHeader(rows[i].Text, out var subHeader) &&
+                        !string.Equals(subHeader.Display, activeHeader?.Display, StringComparison.OrdinalIgnoreCase))
+                    {
+                        activeHeader = subHeader;
+                    }
+                }
+                contexts[rows[i].Ordinal] = (activeHeader, activeCaption);
+            }
+        }
+        return contexts;
+
+        static int? ParseFirstRowNumber(string? cellRange)
+        {
+            if (string.IsNullOrWhiteSpace(cellRange)) return null;
+            var index = 0;
+            while (index < cellRange.Length && char.IsAsciiLetter(cellRange[index])) index++;
+            var start = index;
+            while (index < cellRange.Length && char.IsAsciiDigit(cellRange[index])) index++;
+            return index > start && int.TryParse(cellRange.AsSpan(start, index - start), out var row) ? row : null;
+        }
+
+        static string? ExtractSpreadsheetCellValue(string rowText)
+        {
+            var colon = rowText.IndexOf(": ", StringComparison.Ordinal);
+            var value = TextNormalization.ForSearch(colon >= 0 ? rowText[(colon + 2)..] : rowText);
+            return value.Length == 0 ? null : value;
+        }
+
+        static bool IsCleanSubtableHeader(string rowText, out TableSemantics.Header header)
+        {
+            if (TableSemantics.ParseHeader(rowText, cellReferences: true) is not { } parsed)
+            {
+                header = null!;
+                return false;
+            }
+            var named = parsed.Cells.Where(cell => cell.Length > 0).ToArray();
+            if (named.Length < 2 || named.Any(cell => cell.Length > 40 || cell.Contains('@') ||
+                    cell.Contains("://", StringComparison.Ordinal) ||
+                    cell.Any(char.IsDigit) && !IsHeaderYear(cell)))
+            {
+                header = null!;
+                return false;
+            }
+            header = parsed;
+            return true;
+        }
+
+        static bool IsHeaderYear(string value) =>
+            value.Length == 4 && (value.StartsWith("19", StringComparison.Ordinal) ||
+                value.StartsWith("20", StringComparison.Ordinal)) && value.All(char.IsAsciiDigit);
     }
 
     // Neighbouring flow blocks under one heading share a passage, so a label stays with its value

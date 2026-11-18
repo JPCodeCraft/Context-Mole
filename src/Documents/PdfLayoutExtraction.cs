@@ -303,10 +303,109 @@ public sealed partial class DocumentExtractionRegistry
         var printable = normalized.Count(character => char.IsLetterOrDigit(character) || char.IsWhiteSpace(character) ||
             char.IsPunctuation(character) || char.IsSymbol(character));
         var replacements = normalized.Count(character => character is '\uFFFD' or '\0');
+        var nonWhitespace = normalized.Count(character => !char.IsWhiteSpace(character));
+        var alphaNumeric = normalized.Count(char.IsLetterOrDigit);
+        var symbolNoisePenalty = nonWhitespace >= 3 && alphaNumeric / (double)nonWhitespace < 0.45
+            ? (0.55 - alphaNumeric / (double)nonWhitespace) * 1.5
+            : 0;
         var words = normalized.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         var longWords = words.Count(word => word.Length > 30);
+        var garbledWords = words.Count(IsGarbledOcrToken);
         return Math.Clamp(printable / (double)normalized.Length - replacements / (double)normalized.Length * 8 -
-            longWords / (double)Math.Max(1, words.Length) * 0.5, 0, 1);
+            longWords / (double)Math.Max(1, words.Length) * 0.5 - symbolNoisePenalty -
+            garbledWords / (double)Math.Max(1, words.Length) * 1.4, 0, 1);
+    }
+
+    private static bool IsGarbledOcrToken(string token)
+    {
+        if (token.Length < 4 || token.Contains("://", StringComparison.Ordinal) || token.Contains('@') ||
+            token.StartsWith('/') || token.Contains(":\\", StringComparison.Ordinal))
+            return false;
+        const string outerTrim = "[\"'«“‘$#.,;:!?]\"'»”’%";
+        var core = token.AsSpan().Trim(outerTrim);
+        while (core.Length >= 2 && core[0] == '(' && core[^1] == ')')
+            core = core[1..^1].Trim(outerTrim);
+        while (core.Length > 0 && core[0] == '(' && CountChar(core, '(') > CountChar(core, ')'))
+            core = core[1..].TrimStart(outerTrim);
+        while (core.Length > 0 && core[^1] == ')' && CountChar(core, ')') > CountChar(core, '('))
+            core = core[..^1].TrimEnd(outerTrim);
+        if (core.Length < 4 || !core.ToString().Any(char.IsLetterOrDigit)) return false;
+        if (core.IndexOf("()", StringComparison.Ordinal) is >= 0 and var emptyParen && emptyParen + 2 < core.Length &&
+            core[emptyParen + 2] != '.')
+            return true;
+
+        var hasLetters = false;
+        var hasIntruder = false;
+        var parenBalance = 0;
+        var unbalancedParen = false;
+        var punctRuns = 0;
+        var prevPunct = false;
+        var prevPunctChar = '\0';
+        var jitterFlips = 0;
+        var prevCase = 0; // 1 = upper, 2 = lower
+        var runLen = 0;
+        for (var i = 0; i < core.Length; i++)
+        {
+            var ch = core[i];
+            if (char.IsLetter(ch)) hasLetters = true;
+            if (ch == '(') parenBalance++;
+            else if (ch == ')')
+            {
+                if (parenBalance == 0) unbalancedParen = true;
+                else parenBalance--;
+            }
+            if (i > 0 && i < core.Length - 1)
+            {
+                if (ch is '~' or '«' or '»' or '*' or '\\' or '|' or ';' or '!' or '?' or '"' or '£')
+                    hasIntruder = true;
+                else if (ch is '<' or '>' && (char.IsLetter(core[i - 1]) && char.IsLetter(core[i + 1]) ||
+                         !char.IsLetterOrDigit(core[i - 1]) || !char.IsLetterOrDigit(core[i + 1])))
+                    hasIntruder = true;
+            }
+            if (ch is not ('(' or ')') && (char.IsPunctuation(ch) || char.IsSymbol(ch)))
+            {
+                var isEllipsis = ch == '.' && prevPunctChar == '.';
+                var isDoublePlus = ch == '+' && prevPunctChar == '+';
+                var isPossessiveAbbrev = i == core.Length - 2 && prevPunctChar == '.' &&
+                    ch is '\'' or '’' && core[^1] is 's' or 'S';
+                if (prevPunct && ch is not '-' && !isEllipsis && !isDoublePlus && !isPossessiveAbbrev)
+                    punctRuns++;
+                prevPunct = true;
+                prevPunctChar = ch;
+            }
+            else if (ch is not ('(' or ')'))
+            {
+                prevPunct = false;
+                prevPunctChar = '\0';
+            }
+            var curCase = char.IsUpper(ch) ? 1 : char.IsLower(ch) ? 2 : 0;
+            if (curCase != 0)
+            {
+                if (prevCase != 0 && curCase != prevCase)
+                {
+                    if (!(runLen == 1 && prevCase == 1 && curCase == 2) && !(i == 1 && prevCase == 2 && curCase == 1))
+                        jitterFlips++;
+                    runLen = 1;
+                }
+                else
+                {
+                    runLen++;
+                }
+                prevCase = curCase;
+            }
+        }
+        if (parenBalance != 0) unbalancedParen = true;
+        var zeroQueuePrefix = core.Length >= 5 && core[0] == '0' && core[1] == 'Q' &&
+            char.IsLetterOrDigit(core[2]) && core.Slice(2).ToString().Any(char.IsDigit);
+        return hasIntruder || unbalancedParen || punctRuns >= 1 || zeroQueuePrefix || hasLetters && jitterFlips >= 3;
+
+        static int CountChar(ReadOnlySpan<char> span, char target)
+        {
+            var count = 0;
+            foreach (var c in span)
+                if (c == target) count++;
+            return count;
+        }
     }
 
     private static IReadOnlyList<PdfTextBlock> ReconcilePdfText(IReadOnlyList<PdfTextBlock> native, OcrResult ocr)
@@ -320,26 +419,51 @@ public sealed partial class DocumentExtractionRegistry
             TextQuality(ocr.Text) > TextQuality(nativeText) + 0.1)
             return recognized;
 
+        var totalNativeWeight = native.Sum(block => Math.Max(1, block.Text.Length));
+        var pageNativeQuality = native.Sum(block => TextQuality(block.Text) * Math.Max(1, block.Text.Length)) /
+            Math.Max(1, totalNativeWeight);
+
         var result = native.ToList();
-        var nativeKeys = native.SelectMany(block => block.Text.Split('\n'))
+        var replacedNative = new HashSet<PdfTextBlock>();
+        var nativeKeys = result.Where(block => TextQuality(block.Text) >= 0.7)
+            .SelectMany(block => block.Text.Split('\n'))
             .Select(EvidenceKey).Where(key => key.Length > 0).ToArray();
         foreach (var line in recognized)
         {
-            if (TextQuality(line.Text) < 0.7 || line.Confidence is < 50) continue;
+            var lineQuality = TextQuality(line.Text);
+            if (lineQuality < 0.7 || line.Confidence is < 50) continue;
             var key = EvidenceKey(line.Text);
             if (key.Length == 0 || nativeKeys.Any(nativeKey => nativeKey.Contains(key, StringComparison.Ordinal) ||
                     key.Contains(nativeKey, StringComparison.Ordinal) && nativeKey.Length >= key.Length * 0.8)) continue;
-            var overlapping = native.Where(block => block.Region is { } region && line.Region is { } lineRegion &&
-                RegionIntersection(region, lineRegion) > lineRegion.Width * lineRegion.Height * 0.5).ToArray();
-            // Valid native text is preferred in the same region. Add OCR only for missing image regions.
-            if (overlapping.Any(block => TextQuality(block.Text) >= 0.7)) continue;
-            var defective = native.Where(block => TextQuality(block.Text) < 0.7 &&
-                TextQuality(line.Text) > TextQuality(block.Text) + 0.1 && block.Region is { } region && line.Region is { } lineRegion &&
-                RegionIntersection(region, lineRegion) > region.Width * region.Height * 0.5).ToArray();
-            foreach (var block in defective) result.Remove(block);
-            result.Add(defective.Length == 0 ? line : line with
-            { Warning = string.Join(' ', new[] { line.Warning, "native_text_replaced: illegible native glyph mapping replaced by OCR in this region." }.Where(value => value is not null)) });
+            var colliding = native.Where(block => block.Region is { } region && line.Region is { } lineRegion &&
+                RegionIntersection(region, lineRegion) >
+                Math.Min(region.Width * region.Height, lineRegion.Width * lineRegion.Height) * 0.5).ToArray();
+            if (colliding.Length > 0)
+            {
+                var collidingWeight = colliding.Sum(block => Math.Max(1, block.Text.Length));
+                var collidingQuality = colliding.Sum(block => TextQuality(block.Text) * Math.Max(1, block.Text.Length)) /
+                    Math.Max(1, collidingWeight);
+                var replaceSandwichRegion = colliding.All(block => TextQuality(block.Text) < 0.7) ||
+                    collidingQuality < 0.72 && line.Confidence is >= 75 && lineQuality > collidingQuality + 0.15;
+                // Valid native text is preferred in the same region. Add OCR only for missing or corrupted regions.
+                if (!replaceSandwichRegion) continue;
+                var removedAny = false;
+                foreach (var block in colliding)
+                {
+                    if (lineQuality > TextQuality(block.Text) + 0.1 || collidingQuality < 0.72)
+                    {
+                        removedAny |= result.Remove(block) || replacedNative.Contains(block);
+                        replacedNative.Add(block);
+                    }
+                }
+                result.Add(!removedAny ? line : line with
+                { Warning = string.Join(' ', new[] { line.Warning, "native_text_replaced: illegible native glyph mapping replaced by OCR in this region." }.Where(value => value is not null)) });
+                continue;
+            }
+            result.Add(line);
         }
+        if (pageNativeQuality < 0.72 && ocr.Confidence is >= 75 && TextQuality(ocr.Text) > pageNativeQuality + 0.15)
+            result.RemoveAll(block => block.Method == ExtractionMethod.NativeText && TextQuality(block.Text) < 0.5);
         return OrderPdfBlocks(result);
     }
 
@@ -472,7 +596,8 @@ public sealed partial class DocumentExtractionRegistry
         {
             var previous = result.LastOrDefault();
             if (previous is not { IsTable: false, Region: { } region } || block is not { IsTable: false, Region: { } next } ||
-                previous.Warning is not null || block.Warning is not null)
+                previous.Warning is not null || block.Warning is not null ||
+                IsProseParagraph(previous.Text) || IsProseParagraph(block.Text))
             { result.Add(block); continue; }
             var lines = previous.Text.Count(value => value == '\n') + 1;
             var nextLines = block.Text.Count(value => value == '\n') + 1;
@@ -491,6 +616,13 @@ public sealed partial class DocumentExtractionRegistry
             result[^1] = previous with { Text = previous.Text + "\n" + block.Text, Region = UnionRegions([region, next]), Confidence = confidence };
         }
         return result;
+
+        static bool IsProseParagraph(string text)
+        {
+            var trimmed = text.AsSpan().TrimEnd();
+            return trimmed.Length > 0 && trimmed[^1] is '.' or '!' or '?' or '。' or '！' or '？' &&
+                text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).Length >= 4;
+        }
     }
 
     private static string EvidenceKey(string text) => string.Concat(TextNormalization.ForSearch(text).Normalize()

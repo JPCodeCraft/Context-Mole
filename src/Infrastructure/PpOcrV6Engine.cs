@@ -365,6 +365,23 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
         }
 
         if (lines.Count == 0) return new OcrResult(string.Empty, null);
+        if (lines.Any(line => line.Text.Any(char.IsAsciiLetter)) &&
+            !lines.Any(line => line.Text.Any(ch => ch >= '\u3040' && ch is not '\u4E00' and not '\u4E8C')))
+        {
+            for (var i = 0; i < lines.Count; i++)
+            {
+                var normalizedStroke = lines[i].Text switch
+                {
+                    "\u4E00" => "-",
+                    "\u4E00." => "-.",
+                    "\u4E00," => "-,",
+                    "\u4E8C" => "=",
+                    _ => null
+                };
+                if (normalizedStroke is not null)
+                    lines[i] = lines[i] with { Text = normalizedStroke };
+            }
+        }
         var ordered = ExtractionLayout.OrderLines(lines.Select(line => new OcrTextLine(line.Text, line.Confidence,
             new SourceRegion(line.Box.Left / (double)source.Width, line.Box.Top / (double)source.Height,
                 (line.Box.Right - line.Box.Left) / (double)source.Width,

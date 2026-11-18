@@ -36,38 +36,52 @@ public sealed partial class DocumentExtractionRegistry
             .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal)
             ?? new Dictionary<string, W.Style>(StringComparer.Ordinal);
 
-        foreach (var element in body.ChildElements)
+        WalkBodyElements(body.ChildElements);
+
+        void WalkBodyElements(IEnumerable<OpenXmlElement> elements)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            switch (element)
+            foreach (var element in elements)
             {
-                case W.Paragraph paragraph:
-                    {
-                        paragraphNumber++;
-                        var text = OpenXmlText(paragraph);
-                        if (string.IsNullOrWhiteSpace(text)) break;
-                        var level = WordHeadingLevel(paragraph, styles);
-                        if (level is >= 1 and <= 9) heading.Start(level, text);
-                        sections.Add(new ExtractedSection(text,
-                            new SourceLocation(LocationKind.Structure, StructurePath: $"document/paragraph[{paragraphNumber}]"),
-                            ExtractionMethod.NativeText, Heading: heading.Heading,
-                            SectionKey: heading.Key, HeadingPath: heading.Path));
-                        break;
-                    }
-                case W.Table table:
-                    {
-                        tableNumber++;
-                        var rows = table.Elements<W.TableRow>()
-                            .Select(row => string.Join("\t", row.Elements<W.TableCell>().Select(OpenXmlText)))
-                            .Where(row => !string.IsNullOrWhiteSpace(row));
-                        var text = string.Join(Environment.NewLine, rows);
-                        if (!string.IsNullOrWhiteSpace(text))
+                cancellationToken.ThrowIfCancellationRequested();
+                switch (element)
+                {
+                    case W.Paragraph paragraph:
+                        {
+                            paragraphNumber++;
+                            var text = OpenXmlText(paragraph);
+                            if (string.IsNullOrWhiteSpace(text)) break;
+                            var level = WordHeadingLevel(paragraph, styles);
+                            if (level is >= 1 and <= 9) heading.Start(level, text);
                             sections.Add(new ExtractedSection(text,
-                                new SourceLocation(LocationKind.Structure, StructurePath: $"document/table[{tableNumber}]"),
+                                new SourceLocation(LocationKind.Structure, StructurePath: $"document/paragraph[{paragraphNumber}]"),
                                 ExtractionMethod.NativeText, Heading: heading.Heading,
                                 SectionKey: heading.Key, HeadingPath: heading.Path));
+                            break;
+                        }
+                    case W.Table table:
+                        {
+                            tableNumber++;
+                            var hasSpans = table.Descendants<W.TableCellProperties>().Any(props =>
+                                (props.GridSpan?.Val?.Value ?? 1) > 1 ||
+                                props.VerticalMerge is not null ||
+                                props.HorizontalMerge is not null);
+                            var rows = table.Elements<W.TableRow>()
+                                .Select(row => string.Join("\t", row.Elements<W.TableCell>().Select(OpenXmlText)))
+                                .Where(row => !string.IsNullOrWhiteSpace(row));
+                            var text = string.Join(Environment.NewLine, rows);
+                            if (!string.IsNullOrWhiteSpace(text))
+                                sections.Add(new ExtractedSection(text,
+                                    new SourceLocation(LocationKind.Structure,
+                                        StructurePath: $"document/table[{tableNumber}]",
+                                        LayoutWarning: hasSpans ? "table_spans: merged cells retained; cell alignment is uncertain." : null),
+                                    ExtractionMethod.NativeText, Heading: heading.Heading,
+                                    SectionKey: heading.Key, HeadingPath: heading.Path));
+                            break;
+                        }
+                    case W.SdtBlock sdt when sdt.SdtContentBlock is { } sdtContent:
+                        WalkBodyElements(sdtContent.ChildElements);
                         break;
-                    }
+                }
             }
         }
 
@@ -206,10 +220,43 @@ public sealed partial class DocumentExtractionRegistry
             if (slideId.RelationshipId?.Value is not { } relationId || presentationPart.GetPartById(relationId) is not SlidePart slidePart)
                 continue;
             var slide = slidePart.Slide ?? throw new InvalidDataException($"PPTX slide {slideNumber} has no slide XML.");
+            var slideTitleShape = slide.Descendants<P.Shape>().FirstOrDefault(shape =>
+                shape.NonVisualShapeProperties?.ApplicationNonVisualDrawingProperties?.PlaceholderShape?.Type?.Value is
+                    var phType && (phType == P.PlaceholderValues.Title || phType == P.PlaceholderValues.CenteredTitle));
+            var slideHeading = slideTitleShape is null ? null : MetadataTitle(OpenXmlText(slideTitleShape));
+            var slideHeadingPath = slideHeading is null ? Array.Empty<string>() : [slideHeading];
+            var slideSectionKey = $"slide:{slideNumber}";
+
             var text = string.Join(Environment.NewLine,
-                slide.Descendants<A.Paragraph>().Select(OpenXmlText).Where(value => !string.IsNullOrWhiteSpace(value)));
+                slide.Descendants<A.Paragraph>()
+                    .Where(paragraph => paragraph.Ancestors<A.Table>().FirstOrDefault() is null)
+                    .Select(OpenXmlText).Where(value => !string.IsNullOrWhiteSpace(value)));
             if (!string.IsNullOrWhiteSpace(text))
-                sections.Add(new ExtractedSection(text, new SourceLocation(LocationKind.Slide, Slide: slideNumber), ExtractionMethod.NativeText));
+                sections.Add(new ExtractedSection(text, new SourceLocation(LocationKind.Slide, Slide: slideNumber),
+                    ExtractionMethod.NativeText, Heading: slideHeading, SectionKey: slideSectionKey,
+                    HeadingPath: slideHeadingPath));
+
+            var slideTableOrdinal = 0;
+            foreach (var table in slide.Descendants<A.Table>())
+            {
+                slideTableOrdinal++;
+                var hasSpans = table.Elements<A.TableRow>().SelectMany(row => row.Elements<A.TableCell>()).Any(cell =>
+                    (cell.GridSpan?.Value ?? 1) > 1 || (cell.RowSpan?.Value ?? 1) > 1 ||
+                    cell.HorizontalMerge?.Value == true || cell.VerticalMerge?.Value == true);
+                var tableRows = table.Elements<A.TableRow>()
+                    .Select(row => string.Join("\t", row.Elements<A.TableCell>()
+                        .Where(cell => cell.HorizontalMerge?.Value != true && cell.VerticalMerge?.Value != true)
+                        .Select(cell => TextNormalization.ForSearch(OpenXmlText(cell)))))
+                    .Where(row => !string.IsNullOrWhiteSpace(row));
+                var tableText = string.Join(Environment.NewLine, tableRows);
+                if (!string.IsNullOrWhiteSpace(tableText))
+                    sections.Add(new ExtractedSection(tableText,
+                        new SourceLocation(LocationKind.Slide, Slide: slideNumber,
+                            StructurePath: $"slide[{slideNumber}]/table[{slideTableOrdinal}]",
+                            LayoutWarning: hasSpans ? "table_spans: merged cells retained; cell alignment is uncertain." : null),
+                        ExtractionMethod.NativeText, Heading: slideHeading, SectionKey: slideSectionKey,
+                        HeadingPath: slideHeadingPath));
+            }
 
             if (slidePart.NotesSlidePart?.NotesSlide is { } notes)
             {
@@ -217,7 +264,9 @@ public sealed partial class DocumentExtractionRegistry
                     notes.Descendants<A.Paragraph>().Select(OpenXmlText).Where(value => !string.IsNullOrWhiteSpace(value)));
                 if (!string.IsNullOrWhiteSpace(notesText))
                     sections.Add(new ExtractedSection(notesText,
-                        new SourceLocation(LocationKind.Slide, Slide: slideNumber, StructurePath: "notes"), ExtractionMethod.NativeText));
+                        new SourceLocation(LocationKind.Slide, Slide: slideNumber, StructurePath: "notes"),
+                        ExtractionMethod.NativeText, Heading: slideHeading, SectionKey: slideSectionKey,
+                        HeadingPath: slideHeadingPath));
             }
             if (slidePart.SlideCommentsPart?.CommentList is { } commentList)
             {
@@ -225,7 +274,8 @@ public sealed partial class DocumentExtractionRegistry
                 if (!string.IsNullOrWhiteSpace(commentText))
                     sections.Add(new ExtractedSection(commentText,
                         new SourceLocation(LocationKind.Slide, Slide: slideNumber, StructurePath: "comments"),
-                        ExtractionMethod.NativeText));
+                        ExtractionMethod.NativeText, Heading: slideHeading, SectionKey: slideSectionKey,
+                        HeadingPath: slideHeadingPath));
             }
 
             var altOrdinal = 0;

@@ -2,9 +2,9 @@ namespace ContextMole.Core;
 
 public static class IndexPreparation
 {
-    public const string ExtractionVersion = "layout-v6";
+    public const string ExtractionVersion = "layout-v7";
     public const string ChunkingVersion = "spans-v4";
-    public const string SemanticVersion = "body-context-v5";
+    public const string SemanticVersion = "body-context-v6";
     public const string Version = ExtractionVersion + "/" + ChunkingVersion + "/" + SemanticVersion;
 }
 

@@ -9,7 +9,7 @@ public sealed class HybridSearchService(
     VectorIndexCache cache,
     IGlobalCpuBudget cpuBudget,
     bool diversifyPreviews = false,
-    bool anchorSemanticPreviews = false)
+    bool anchorSemanticPreviews = true)
 {
     private const double RrfK = 60;
     private const double OptionalShouldBranchWeight = 0.6;
@@ -178,10 +178,20 @@ public sealed class HybridSearchService(
                     }).Where(candidate => preparedQuery.Evaluate(candidate, minimumShouldMatch).IsMatch)
                     .Where(candidate => !options.StrictSemanticThreshold || candidate.SemanticScore >= options.SemanticSimilarityThreshold).ToArray();
                 semanticMatchedCount = acceptedSemantic.Length;
-                semanticCandidates = acceptedSemantic.GroupBy(CandidateKey).Select(group => group.OrderByDescending(candidate => candidate.SemanticScore)
-                        .ThenBy(candidate => candidate.PassageId).First())
-                    .OrderByDescending(candidate => candidate.SemanticScore).ThenBy(CandidateKey)
-                    .Select((candidate, rank) => candidate with { SemanticRank = rank + 1 }).ToArray();
+                semanticCandidates = acceptedSemantic.GroupBy(CandidateKey).Select(group =>
+                    {
+                        var ordered = group.OrderByDescending(candidate => candidate.SemanticScore)
+                            .ThenBy(candidate => candidate.PassageId).ToArray();
+                        var best = ordered[0];
+                        var bonus = request.Scope == SearchScope.Section && ordered.Length > 1
+                            ? SectionCorroborationBonus(ordered, best.SemanticScore ?? 0)
+                            : 0;
+                        return (Candidate: best, EffectiveScore: (best.SemanticScore ?? 0) + bonus);
+                    })
+                    .OrderByDescending(item => item.EffectiveScore)
+                    .ThenByDescending(item => item.Candidate.SemanticScore)
+                    .ThenBy(item => CandidateKey(item.Candidate))
+                    .Select((item, rank) => item.Candidate with { SemanticRank = rank + 1 }).ToArray();
             }
             catch (ContextMoleException exception) when (!IsSemanticAvailabilityFailure(exception)) { throw; }
             catch (Exception exception) when (exception is not OperationCanceledException)
@@ -198,9 +208,13 @@ public sealed class HybridSearchService(
         var generation = Math.Max(keywordSnapshot.SearchGeneration, vectorMetadata.SearchGeneration);
         if (generation == 0)
             generation = await _store.GetSearchGenerationAsync(request.ProjectId, cancellationToken).ConfigureAwait(false);
+        var queryTokens = string.IsNullOrWhiteSpace(request.SemanticQuery)
+            ? []
+            : LexicalText.Tokens(request.SemanticQuery).Where(token => token.Length >= 3).Distinct(StringComparer.Ordinal).ToArray();
         var selection = BuildSelection(keyword, semanticCandidates, keywordCompleted, semanticCompleted,
             branchWeights, clauses, minimumShouldMatch, options, request.Scope, preparedQuery, _diversifyPreviews,
-            _anchorSemanticPreviews && semanticCompleted ? new SemanticPreviewAnchors(request.SemanticQuery!) : null);
+            _anchorSemanticPreviews && semanticCompleted ? new SemanticPreviewAnchors(request.SemanticQuery!) : null,
+            queryTokens);
         var capped = keywordSnapshot.MainLimitReached || keywordSnapshot.OptionalLimitReached || semanticLimitReached;
         return new SearchResponse(request.Mode, keywordCompleted && semanticCompleted ? "hybrid" : semanticCompleted ? "semantic" : keywordCompleted ? "keyword" : "unavailable",
             warnings.DistinctBy(warning => (warning.Code, warning.Message)).ToArray(), generation, selection.RankedCount,
@@ -230,12 +244,35 @@ public sealed class HybridSearchService(
 
     private static Guid CandidateKey(SearchCandidate candidate) => candidate.SectionText is not null ? candidate.SectionId ?? candidate.PassageId : candidate.PassageId;
 
+    private static double SectionCorroborationBonus(IReadOnlyList<SearchCandidate> ordered, double bestScore)
+    {
+        var usedOffsets = new List<int> { ordered[0].SectionOffset };
+        var supporting = 0;
+        var floor = Math.Max(0.30, bestScore - 0.12);
+        for (var i = 1; i < ordered.Count; i++)
+        {
+            var candidate = ordered[i];
+            if ((candidate.SemanticScore ?? 0) < floor) break;
+            if (!string.IsNullOrWhiteSpace(candidate.Heading) &&
+                string.Equals(TextNormalization.ForDisplay(candidate.DisplayText),
+                    TextNormalization.ForDisplay(candidate.Heading), StringComparison.Ordinal))
+                continue;
+            if (usedOffsets.Any(offset => Math.Abs(candidate.SectionOffset - offset) < 240))
+                continue;
+            usedOffsets.Add(candidate.SectionOffset);
+            supporting++;
+            if (supporting >= 3) break;
+        }
+        return Math.Min(0.06, supporting * 0.025);
+    }
+
     private static SearchCandidate[] RerankKeywordCandidates(IReadOnlyList<SearchCandidate> mainCandidates,
         IReadOnlyList<SearchCandidate> optionalCandidates, IReadOnlyList<SearchClause> clauses,
         int minimumShouldMatch, StructuredSearchQuery.PreparedQuery preparedQuery)
     {
         var shouldIds = clauses.Where(clause => clause.Occur == SearchClauseOccur.Should)
             .Select(clause => clause.Id).ToHashSet(StringComparer.Ordinal);
+        var positiveClauseCount = clauses.Count(clause => clause.Occur != SearchClauseOccur.MustNot);
         var mainRanks = mainCandidates.Select((candidate, index) => (PassageId: CandidateKey(candidate), Rank: index + 1))
             .ToDictionary(item => item.PassageId, item => item.Rank);
         var optionalRanks = optionalCandidates.Select((candidate, index) => (PassageId: CandidateKey(candidate), Rank: index + 1))
@@ -254,17 +291,62 @@ public sealed class HybridSearchService(
                                 !optionalRanks.TryGetValue(CandidateKey(candidate), out var optionalRank)
                 ? 0
                 : OptionalShouldBranchWeight * optionalMatches / shouldIds.Count / (RrfK + optionalRank);
-            return (Candidate: candidate, Score: 1d / (RrfK + baseRank) + optionalBoost, Include: true, BaseRank: baseRank);
+            var mainShouldCoordBoost = minimumShouldMatch > 0 && shouldIds.Count >= 2 && optionalRanks.Count == 0
+                ? 0.006 * optionalMatches / shouldIds.Count
+                : 0;
+            var proximityBoost = 0d;
+            if (positiveClauseCount >= 2)
+            {
+                var bodyText = candidate.SectionText ?? candidate.DisplayText;
+                var spans = preparedQuery.FindBodyMatches(bodyText);
+                proximityBoost = 0.0035 * ClauseSpanProximity(spans);
+            }
+            return (Candidate: candidate,
+                Score: 1d / (RrfK + baseRank) + optionalBoost + mainShouldCoordBoost + proximityBoost,
+                Include: true, BaseRank: baseRank);
         }).Where(item => item.Include).OrderByDescending(item => item.Score).ThenBy(item => item.BaseRank)
           .ThenBy(item => item.Candidate.PassageId).Select((item, rank) => item.Candidate with { KeywordRank = rank + 1 })
           .ToArray();
+    }
+
+    private static double ClauseSpanProximity(IReadOnlyList<SearchMatchSpan> spans)
+    {
+        if (spans.Count < 2) return 0;
+        var distinctClauses = spans.Select(span => span.ClauseId).Distinct(StringComparer.Ordinal).ToArray();
+        if (distinctClauses.Length < 2) return 0;
+        var ordered = spans.OrderBy(span => span.Start).ThenBy(span => span.Length).ToArray();
+        var counts = new Dictionary<string, int>(StringComparer.Ordinal);
+        var covered = 0;
+        var left = 0;
+        var bestGap = int.MaxValue;
+        for (var right = 0; right < ordered.Length; right++)
+        {
+            var rightId = ordered[right].ClauseId;
+            var prevCount = counts.GetValueOrDefault(rightId);
+            counts[rightId] = prevCount + 1;
+            if (prevCount == 0) covered++;
+            while (covered == distinctClauses.Length)
+            {
+                var windowStart = ordered[left].Start;
+                var windowEnd = ordered[left..(right + 1)].Max(span => span.Start + span.Length);
+                var minTokenSum = distinctClauses.Sum(clauseId => ordered[left..(right + 1)]
+                    .Where(span => span.ClauseId == clauseId).Min(span => span.Length));
+                var gap = Math.Max(0, windowEnd - windowStart - minTokenSum);
+                if (gap < bestGap) bestGap = gap;
+                var leftId = ordered[left].ClauseId;
+                counts[leftId]--;
+                if (counts[leftId] == 0) covered--;
+                left++;
+            }
+        }
+        return bestGap == int.MaxValue ? 0 : 1d / (1d + bestGap / 12d);
     }
 
     private static Selection BuildSelection(IReadOnlyList<SearchCandidate> keyword,
         IReadOnlyList<SearchCandidate> semantic, bool keywordCompleted, bool semanticCompleted,
         SearchBranchWeights branchWeights, IReadOnlyList<SearchClause> clauses, int minimumShouldMatch,
         SearchResultOptions options, SearchScope scope, StructuredSearchQuery.PreparedQuery preparedQuery,
-        bool diversifyPreviews, SemanticPreviewAnchors? semanticAnchors)
+        bool diversifyPreviews, SemanticPreviewAnchors? semanticAnchors, IReadOnlyList<string> queryTokens)
     {
         var keywordWeight = keywordCompleted ? branchWeights.Keyword : 0;
         var semanticWeight = semanticCompleted ? branchWeights.Semantic : 0;
@@ -287,7 +369,7 @@ public sealed class HybridSearchService(
             .ThenBy(item => item.Candidate.PassageId).ToArray();
         var groups = ranked.GroupBy(item => scope == SearchScope.Section ? CandidateKey(item.Candidate) : item.Candidate.ContentId)
             .Select(group => BuildGroup(group.ToArray(), clauses, minimumShouldMatch, options, preparedQuery,
-                diversifyPreviews, semanticAnchors, previewsFollowFusedScore: semanticCompleted))
+                diversifyPreviews, semanticAnchors, previewsFollowFusedScore: semanticCompleted, queryTokens))
             .OrderByDescending(group => group.Score).ThenBy(group => group.DocumentId).ThenBy(group => group.ContentId)
             .ThenBy(group => group.SectionId)
             .ToArray();
@@ -472,7 +554,8 @@ public sealed class HybridSearchService(
 
     private static SearchResultGroup BuildGroup(IReadOnlyList<Fused> matches, IReadOnlyList<SearchClause> clauses,
         int minimumShouldMatch, SearchResultOptions options, StructuredSearchQuery.PreparedQuery preparedQuery,
-        bool diversifyPreviews, SemanticPreviewAnchors? semanticAnchors, bool previewsFollowFusedScore)
+        bool diversifyPreviews, SemanticPreviewAnchors? semanticAnchors, bool previewsFollowFusedScore,
+        IReadOnlyList<string> queryTokens)
     {
         var best = matches.OrderByDescending(match => match.Score).ThenBy(match => match.Candidate.PassageId).First();
         var scopeCandidate = best.Candidate;
@@ -505,17 +588,19 @@ public sealed class HybridSearchService(
         // clauses first would let long passages full of common query words push out the best semantic
         // evidence, including the passage that gave this group its rank.
         var rankedEvidence = matchingEvidence
-            .OrderByDescending(item => previewsFollowFusedScore ? item.Item.Score : 0)
-            .ThenByDescending(item => item.Spans.Select(span => span.ClauseId)
-                .Concat(item.Fields.Select(field => field.ClauseId)).Distinct().Count())
-            .ThenByDescending(item => item.Item.Score).ThenByDescending(item => item.Item.Candidate.SemanticScore)
+            .OrderByDescending(item => SubstantivePreviewTier(item, matchingEvidence, queryTokens))
+            .ThenByDescending(item => previewsFollowFusedScore ? item.Item.Score : 0)
+            .ThenByDescending(DistinctClauseCount)
+            .ThenByDescending(item => previewsFollowFusedScore ? 0 : ClauseSpanProximity(item.Spans))
+            .ThenByDescending(item => item.Item.Score)
+            .ThenByDescending(item => item.Item.Candidate.SemanticScore)
+            .ThenByDescending(item => ClauseSpanProximity(item.Spans))
             .ThenBy(item => item.Item.Candidate.Ordinal)
             .ThenBy(item => item.Item.Candidate.PassageId).ToArray();
-        var previewEvidence = diversifyPreviews
-            ? SelectDiversePreviews(rankedEvidence, options.PreviewsPerGroup)
-            : rankedEvidence.Take(options.PreviewsPerGroup);
-        var previews = previewEvidence.Select(item => BuildPreview(item.Item, clauses, options, item.Spans, item.Fields,
-            semanticAnchors)).ToArray();
+        var orderedPool = diversifyPreviews
+            ? SelectDiversePreviews(rankedEvidence, options.PreviewsPerGroup).ToArray()
+            : rankedEvidence;
+        var previews = BuildNonOverlappingPreviews(orderedPool, clauses, options, semanticAnchors);
         var scopeEvaluation = preparedQuery.Evaluate(scopeCandidate, minimumShouldMatch);
         var matchedClauseIds = scopeEvaluation.MatchedClauseIds.Concat(evaluated.SelectMany(item =>
             item.Spans.Select(span => span.ClauseId).Concat(item.Fields.Select(field => field.ClauseId)))).Distinct().ToArray();
@@ -580,6 +665,150 @@ public sealed class HybridSearchService(
             CompactEvidencePassageIds = compactEvidence.SelectMany(item => item.PassageIds)
                 .Concat(semanticAnchor is { } anchor ? [anchor] : []).Distinct().ToArray()
         };
+    }
+
+    private static int DistinctClauseCount(EvaluatedEvidence item) =>
+        item.Spans.Select(span => span.ClauseId)
+            .Concat(item.Fields.Select(field => field.ClauseId))
+            .Distinct(StringComparer.Ordinal).Count();
+
+    private static int SubstantivePreviewTier(EvaluatedEvidence item, IReadOnlyList<EvaluatedEvidence> all,
+        IReadOnlyList<string> queryTokens)
+    {
+        if (all.Count < 2) return 1;
+        var candidate = item.Item.Candidate;
+        var clauseCount = DistinctClauseCount(item);
+        // Bare heading-only passage: defer behind substantive body passages sharing the same heading.
+        if (!string.IsNullOrWhiteSpace(candidate.Heading))
+        {
+            var normalizedText = TextNormalization.ForDisplay(candidate.DisplayText);
+            var normalizedHeading = TextNormalization.ForDisplay(candidate.Heading);
+            if (string.Equals(normalizedText, normalizedHeading, StringComparison.Ordinal) &&
+                all.Any(other => other.Item.Candidate.PassageId != candidate.PassageId &&
+                    string.Equals(other.Item.Candidate.Heading, candidate.Heading, StringComparison.Ordinal) &&
+                    !string.Equals(TextNormalization.ForDisplay(other.Item.Candidate.DisplayText),
+                        normalizedHeading, StringComparison.Ordinal) &&
+                    DistinctClauseCount(other) >= clauseCount))
+            {
+                return 0;
+            }
+        }
+        // Row-1 pure column-header passage on a spreadsheet: defer behind matched data rows on the same sheet.
+        if (candidate.Location.Kind == LocationKind.Sheet &&
+            !string.IsNullOrWhiteSpace(candidate.Location.Sheet) &&
+            IsRowOneSpreadsheetHeader(candidate.Location.CellRange, candidate.DisplayText) &&
+            all.Any(other => other.Item.Candidate.PassageId != candidate.PassageId &&
+                other.Item.Candidate.Location.Kind == LocationKind.Sheet &&
+                string.Equals(other.Item.Candidate.Location.Sheet, candidate.Location.Sheet, StringComparison.Ordinal) &&
+                !IsRowOneSpreadsheetHeader(other.Item.Candidate.Location.CellRange, other.Item.Candidate.DisplayText) &&
+                DistinctClauseCount(other) >= clauseCount))
+        {
+            return 0;
+        }
+        // Email envelope header block: defer behind substantive body passages on the same email content
+        // only when the body contains at least as many literal matched spans and query tokens as headers.
+        if (candidate.Location is { Kind: LocationKind.EmailPart, EmailPart: "headers" })
+        {
+            var headerSpanClauses = DistinctBodySpanClauses(item);
+            var headerQueryTokens = CountQueryTokenMatches(candidate.DisplayText, queryTokens);
+            if (all.Any(other => other.Item.Candidate.PassageId != candidate.PassageId &&
+                    other.Item.Candidate.ContentId == candidate.ContentId &&
+                    other.Item.Candidate.Location is { Kind: LocationKind.EmailPart, EmailPart: not "headers" } &&
+                    DistinctClauseCount(other) >= clauseCount &&
+                    DistinctBodySpanClauses(other) >= headerSpanClauses &&
+                    CountQueryTokenMatches(other.Item.Candidate.DisplayText, queryTokens) >= headerQueryTokens &&
+                    (candidate.SemanticScore is null ||
+                     other.Item.Candidate.SemanticScore is { } bodyScore && bodyScore >= candidate.SemanticScore.Value - 0.06)))
+            {
+                return 0;
+            }
+        }
+        return 1;
+
+        static int DistinctBodySpanClauses(EvaluatedEvidence evidence) =>
+            evidence.Spans.Select(span => span.ClauseId).Distinct(StringComparer.Ordinal).Count();
+
+        static int CountQueryTokenMatches(string displayText, IReadOnlyList<string> tokens)
+        {
+            if (tokens.Count == 0 || string.IsNullOrWhiteSpace(displayText)) return 0;
+            var passageTokens = LexicalText.Tokens(displayText).ToHashSet(StringComparer.Ordinal);
+            return tokens.Count(passageTokens.Contains);
+        }
+
+        static bool IsRowOneSpreadsheetHeader(string? cellRange, string displayText)
+        {
+            if (string.IsNullOrWhiteSpace(cellRange)) return false;
+            var index = 0;
+            while (index < cellRange.Length && char.IsAsciiLetter(cellRange[index])) index++;
+            var start = index;
+            while (index < cellRange.Length && char.IsAsciiDigit(cellRange[index])) index++;
+            if (index == start || !int.TryParse(cellRange.AsSpan(start, index - start), out var row) || row != 1)
+                return false;
+            var cells = displayText.Split('\t', StringSplitOptions.RemoveEmptyEntries);
+            if (cells.Length == 0) return false;
+            foreach (var raw in cells)
+            {
+                var colon = raw.IndexOf(": ", StringComparison.Ordinal);
+                var val = colon >= 0 ? raw[(colon + 2)..] : raw;
+                if (val.Any(char.IsDigit) && !val.Any(char.IsLetter)) return false;
+            }
+            return true;
+        }
+    }
+
+    private static SearchResultItem[] BuildNonOverlappingPreviews(IReadOnlyList<EvaluatedEvidence> ordered,
+        IReadOnlyList<SearchClause> clauses, SearchResultOptions options, SemanticPreviewAnchors? semanticAnchors)
+    {
+        var limit = options.PreviewsPerGroup;
+        if (limit <= 1 || ordered.Count <= 1)
+            return ordered.Take(limit).Select(item => BuildPreview(item.Item, clauses, options, item.Spans, item.Fields, semanticAnchors)).ToArray();
+
+        var selected = new List<(EvaluatedEvidence Evidence, SearchResultItem Preview)>(limit);
+        var deferred = new List<SearchResultItem>();
+        foreach (var item in ordered)
+        {
+            var preview = BuildPreview(item.Item, clauses, options, item.Spans, item.Fields, semanticAnchors);
+            var candidate = item.Item.Candidate;
+            if (candidate.SectionId is { } sectionId && selected.Any(existing =>
+                    existing.Preview.SectionId == sectionId &&
+                    IsRedundantSectionChunkPreview(existing.Evidence, existing.Preview, item, preview)))
+            {
+                deferred.Add(preview);
+                continue;
+            }
+            selected.Add((item, preview));
+            if (selected.Count == limit) break;
+        }
+        var result = selected.Select(pair => pair.Preview).ToList();
+        foreach (var extra in deferred)
+        {
+            if (result.Count == limit) break;
+            result.Add(extra);
+        }
+        return result.ToArray();
+
+        static bool IsRedundantSectionChunkPreview(EvaluatedEvidence existingEvidence, SearchResultItem existingPreview,
+            EvaluatedEvidence candidateEvidence, SearchResultItem candidatePreview)
+        {
+            var aStart = existingEvidence.Item.Candidate.SectionOffset + existingPreview.ExcerptStart;
+            var aEnd = aStart + existingPreview.ExcerptLength;
+            var bStart = candidateEvidence.Item.Candidate.SectionOffset + candidatePreview.ExcerptStart;
+            var bEnd = bStart + candidatePreview.ExcerptLength;
+            var overlap = Math.Max(0, Math.Min(aEnd, bEnd) - Math.Max(aStart, bStart));
+            var minLen = Math.Min(existingPreview.ExcerptLength, candidatePreview.ExcerptLength);
+            if (minLen > 0 && overlap >= minLen * 0.25) return true;
+            if (candidateEvidence.Spans.Length > 0 && candidateEvidence.Fields.Count == 0 &&
+                candidateEvidence.Spans.All(span =>
+                {
+                    var absStart = candidateEvidence.Item.Candidate.SectionOffset + span.Start;
+                    var absEnd = absStart + span.Length;
+                    return absStart >= aStart && absEnd <= aEnd;
+                }))
+            {
+                return true;
+            }
+            return false;
+        }
     }
 
     private static IEnumerable<EvaluatedEvidence> SelectDiversePreviews(

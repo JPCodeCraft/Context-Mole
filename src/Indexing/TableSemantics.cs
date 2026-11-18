@@ -23,11 +23,24 @@ public static partial class TableSemantics
     /// <param name="cellReferences">Cells are prefixed with their spreadsheet reference ("A1: value").</param>
     public static Header? ParseHeader(string text, bool cellReferences)
     {
-        var firstRow = text.Split('\n').FirstOrDefault(row => row.Trim().Length > 0);
-        if (firstRow is null) return null;
+        var nonEmptyRows = text.Split('\n').Where(row => row.Trim().Length > 0).ToArray();
+        if (nonEmptyRows.Length == 0) return null;
+        var firstHeader = ParseRowHeader(nonEmptyRows[0], cellReferences);
+        if (!cellReferences && nonEmptyRows.Length >= 3)
+        {
+            var firstCells = nonEmptyRows[0].Split('\t').Count(cell => cell.Trim().Length > 0);
+            if (firstCells == 1 && ParseRowHeader(nonEmptyRows[1], cellReferences: false) is { } secondHeader &&
+                secondHeader.Cells.Count(cell => cell.Length > 0) >= 2)
+                return secondHeader;
+        }
+        return firstHeader;
+    }
+
+    private static Header? ParseRowHeader(string rowText, bool cellReferences)
+    {
         var cells = new List<string>();
         var columns = cellReferences ? new Dictionary<string, string>(StringComparer.Ordinal) : null;
-        foreach (var raw in firstRow.Split('\t'))
+        foreach (var raw in rowText.Split('\t'))
         {
             var (column, value) = cellReferences ? SplitReference(raw) : (null, raw);
             value = TextNormalization.ForSearch(value);

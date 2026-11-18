@@ -296,7 +296,7 @@ public sealed class SemanticFragmentEligibilityTests
     [Fact]
     public async Task V3EligibilityCannotBeRelabeledAsV4ByAnEmbeddingOnlyRefresh()
     {
-        Assert.Equal("layout-v6/spans-v4/body-context-v5", IndexPreparation.Version);
+        Assert.Equal("layout-v7/spans-v4/body-context-v6", IndexPreparation.Version);
         await using var database = await StorageTestDatabase.CreateAsync(Token);
         var path = Path.Combine(database.Paths.SourceDirectory, "v3-evidence.txt");
         await File.WriteAllTextAsync(path, "1.\nApproved", Token);

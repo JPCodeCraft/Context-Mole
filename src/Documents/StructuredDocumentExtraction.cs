@@ -229,22 +229,64 @@ public sealed partial class DocumentExtractionRegistry
         var sections = new List<ExtractedSection>();
         var heading = new HeadingContext();
         var ordinal = 0;
-        foreach (var element in content.Descendants().Where(element => element.Name == TextNs + "h" || element.Name == TextNs + "p"))
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var text = OdfText(element).Trim();
-            if (string.IsNullOrWhiteSpace(text)) continue;
-            if (element.Name == TextNs + "h")
-            {
-                var level = int.TryParse((string?)element.Attribute(TextNs + "outline-level"), out var value) ? value : 1;
-                heading.Start(Math.Clamp(level, 1, 9), text);
-            }
-            sections.Add(new ExtractedSection(text,
-                new SourceLocation(LocationKind.Structure, StructurePath: $"document/paragraph[{++ordinal}]"),
-                ExtractionMethod.NativeText, Heading: heading.Heading,
-                SectionKey: heading.Key, HeadingPath: heading.Path));
-        }
+        var tableOrdinal = 0;
+        var root = content.Descendants(OfficeNs + "text").FirstOrDefault() ?? content.Root;
+        if (root is not null) WalkOdfText(root);
         return new ExtractedNode(name, mimeType, relationship, sections, []);
+
+        void WalkOdfText(XElement container)
+        {
+            foreach (var element in container.Elements())
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (element.Name == TableNs + "table")
+                {
+                    var (tableText, hasSpans) = ExtractOdfTable(element);
+                    if (!string.IsNullOrWhiteSpace(tableText))
+                        sections.Add(new ExtractedSection(tableText,
+                            new SourceLocation(LocationKind.Structure,
+                                StructurePath: $"document/table[{++tableOrdinal}]",
+                                LayoutWarning: hasSpans ? "table_spans: merged cells retained; cell alignment is uncertain." : null),
+                            ExtractionMethod.NativeText, Heading: heading.Heading,
+                            SectionKey: heading.Key, HeadingPath: heading.Path));
+                    continue;
+                }
+                if (element.Name == TextNs + "h" || element.Name == TextNs + "p")
+                {
+                    var text = OdfText(element).Trim();
+                    if (!string.IsNullOrWhiteSpace(text))
+                    {
+                        if (element.Name == TextNs + "h")
+                        {
+                            var level = int.TryParse((string?)element.Attribute(TextNs + "outline-level"), out var value) ? value : 1;
+                            heading.Start(Math.Clamp(level, 1, 9), text);
+                        }
+                        sections.Add(new ExtractedSection(text,
+                            new SourceLocation(LocationKind.Structure, StructurePath: $"document/paragraph[{++ordinal}]"),
+                            ExtractionMethod.NativeText, Heading: heading.Heading,
+                            SectionKey: heading.Key, HeadingPath: heading.Path));
+                    }
+                    continue;
+                }
+                WalkOdfText(element);
+            }
+        }
+    }
+
+    private static (string Text, bool HasSpans) ExtractOdfTable(XElement table)
+    {
+        var hasSpans = table.Descendants().Any(element =>
+            element.Name == TableNs + "covered-table-cell" ||
+            Repetition(element, TableNs + "number-columns-spanned") > 1 ||
+            Repetition(element, TableNs + "number-rows-spanned") > 1);
+        var allRows = table.Elements().SelectMany(element =>
+            element.Name == TableNs + "table-header-rows"
+                ? element.Elements(TableNs + "table-row")
+                : element.Name == TableNs + "table-row" ? [element] : []);
+        var lines = allRows.Select(row => string.Join('\t', row.Elements(TableNs + "table-cell")
+                .Select(cell => TextNormalization.ForSearch(OdfCellText(cell)))))
+            .Where(line => !string.IsNullOrWhiteSpace(line));
+        return (string.Join(Environment.NewLine, lines), hasSpans);
     }
 
     private async Task<ExtractedNode> OpenDocumentSpreadsheetNodeAsync(byte[] bytes, string name, string? mimeType,
@@ -303,13 +345,29 @@ public sealed partial class DocumentExtractionRegistry
             cancellationToken.ThrowIfCancellationRequested();
             slide++;
             var pageName = (string?)page.Attribute(DrawNs + "name");
+            var heading = string.IsNullOrWhiteSpace(pageName) ? null : pageName;
+            var headingPath = heading is null ? Array.Empty<string>() : [heading];
+            var sectionKey = $"slide:{slide}";
             var text = string.Join(Environment.NewLine,
-                page.Descendants().Where(element => element.Name == TextNs + "h" || element.Name == TextNs + "p")
+                page.Descendants().Where(element => (element.Name == TextNs + "h" || element.Name == TextNs + "p") &&
+                        element.Ancestors(TableNs + "table").FirstOrDefault() is null)
                     .Select(OdfText).Where(value => !string.IsNullOrWhiteSpace(value)));
             if (!string.IsNullOrWhiteSpace(text))
                 sections.Add(new ExtractedSection(text,
                     new SourceLocation(LocationKind.Slide, Slide: slide, StructurePath: pageName),
-                    ExtractionMethod.NativeText));
+                    ExtractionMethod.NativeText, Heading: heading, SectionKey: sectionKey, HeadingPath: headingPath));
+
+            var tableOrdinal = 0;
+            foreach (var table in page.Descendants(TableNs + "table"))
+            {
+                var (tableText, hasSpans) = ExtractOdfTable(table);
+                if (!string.IsNullOrWhiteSpace(tableText))
+                    sections.Add(new ExtractedSection(tableText,
+                        new SourceLocation(LocationKind.Slide, Slide: slide,
+                            StructurePath: $"slide[{slide}]/table[{++tableOrdinal}]",
+                            LayoutWarning: hasSpans ? "table_spans: merged cells retained; cell alignment is uncertain." : null),
+                        ExtractionMethod.NativeText, Heading: heading, SectionKey: sectionKey, HeadingPath: headingPath));
+            }
         }
         return new ExtractedNode(name, mimeType, relationship, sections, []);
     }
