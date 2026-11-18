@@ -1,8 +1,5 @@
 using System.Globalization;
-using System.Net;
-using System.Net.Http.Headers;
 using System.Runtime.Intrinsics.X86;
-using System.Security.Cryptography;
 using System.Text.Json;
 
 using ContextMole.Core;
@@ -159,107 +156,48 @@ public sealed class GraniteModelInstaller : IDisposable
         }
     }
 
-    private static IReadOnlyList<DownloadAsset> BuildAssets(
+    private static IReadOnlyList<ModelAsset> BuildAssets(
         GraniteEmbeddingModelDefinition model,
         string directory,
         bool useQuantized)
     {
         var root = $"https://huggingface.co/{model.ModelId}/resolve/{model.Revision}";
-        var assets = new List<DownloadAsset>
+        var assets = new List<ModelAsset>
         {
             new($"{model.DisplayName} tokenizer", $"{root}/tokenizer.json?download=true",
                 Path.Combine(directory, "tokenizer.json"), model.TokenizerSha)
         };
         if (useQuantized)
         {
-            assets.Add(new DownloadAsset($"{model.DisplayName} optimized model",
+            assets.Add(new ModelAsset($"{model.DisplayName} optimized model",
                 $"{root}/onnx/model_quint8_avx2.onnx?download=true",
                 Path.Combine(directory, "model_quint8_avx2.onnx"), model.QuantizedSha));
         }
-        assets.Add(new DownloadAsset($"{model.DisplayName} full-precision model", $"{root}/onnx/model.onnx?download=true",
+        assets.Add(new ModelAsset($"{model.DisplayName} full-precision model", $"{root}/onnx/model.onnx?download=true",
             Path.Combine(directory, "model.onnx"), model.Fp32Sha));
         return assets;
     }
 
-    private async Task DownloadVerifiedAsync(
-        DownloadAsset asset,
+    private Task DownloadVerifiedAsync(
+        ModelAsset asset,
         IProgress<ModelInstallProgress>? progress,
-        CancellationToken cancellationToken)
-    {
-        if (File.Exists(asset.Target))
-        {
-            progress?.Report(new ModelInstallProgress("verifying", asset.Name));
-            if (await HasExpectedHashAsync(asset.Target, asset.Sha256, cancellationToken).ConfigureAwait(false))
+        CancellationToken cancellationToken) =>
+        ModelAssetDownload.DownloadVerifiedAsync(_client, asset, progress is null ? null : new InlineProgress(update =>
+            progress.Report(update.Stage switch
             {
-                progress?.Report(new ModelInstallProgress("verified", asset.Name));
-                return;
-            }
-        }
-
-        var partial = asset.Target + ".partial";
-        if (File.Exists(partial))
-        {
-            progress?.Report(new ModelInstallProgress("verifying", $"partial {asset.Name}"));
-            if (await HasExpectedHashAsync(partial, asset.Sha256, cancellationToken).ConfigureAwait(false))
-            {
-                File.Move(partial, asset.Target, true);
-                progress?.Report(new ModelInstallProgress("verified", asset.Name));
-                return;
-            }
-        }
-
-        var existingLength = File.Exists(partial) ? new FileInfo(partial).Length : 0;
-        using var request = new HttpRequestMessage(HttpMethod.Get, asset.Url);
-        if (existingLength > 0) request.Headers.Range = new RangeHeaderValue(existingLength, null);
-        using var response = await _client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
-        if (existingLength > 0 && response.StatusCode == HttpStatusCode.RequestedRangeNotSatisfiable)
-        {
-            File.Delete(partial);
-            progress?.Report(new ModelInstallProgress("downloading", $"Restarting {asset.Name} from the beginning"));
-            await DownloadVerifiedAsync(asset, progress, cancellationToken).ConfigureAwait(false);
-            return;
-        }
-        response.EnsureSuccessStatusCode();
-
-        var append = existingLength > 0 && response.StatusCode == HttpStatusCode.PartialContent;
-        if (!append) existingLength = 0;
-        var total = response.Content.Headers.ContentRange?.Length ??
-            (response.Content.Headers.ContentLength is { } remaining ? existingLength + remaining : null);
-        progress?.Report(new ModelInstallProgress("downloading", asset.Name, existingLength, total));
-
-        await using (var remote = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false))
-        await using (var local = new FileStream(partial, append ? FileMode.Append : FileMode.Create, FileAccess.Write, FileShare.None,
-                         1024 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan))
-        {
-            var buffer = new byte[1024 * 1024];
-            var received = existingLength;
-            while (true)
-            {
-                var read = await remote.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
-                if (read == 0) break;
-                await local.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
-                received += read;
-                progress?.Report(new ModelInstallProgress("downloading", asset.Name, received, total));
-            }
-            await local.FlushAsync(cancellationToken).ConfigureAwait(false);
-        }
-
-        progress?.Report(new ModelInstallProgress("verifying", asset.Name));
-        var actual = await HashAsync(partial, cancellationToken).ConfigureAwait(false);
-        if (!string.Equals(actual, asset.Sha256, StringComparison.OrdinalIgnoreCase))
-        {
-            File.Delete(partial);
-            throw new ContextMoleException("asset_checksum_mismatch",
-                $"Checksum verification failed for {asset.Name}. Expected {asset.Sha256}, received {actual}.");
-        }
-
-        File.Move(partial, asset.Target, true);
-    }
+                ModelAssetDownloadStage.CheckingExisting or ModelAssetDownloadStage.VerifyingDownload =>
+                    new ModelInstallProgress("verifying", update.Asset.Name),
+                ModelAssetDownloadStage.CheckingPartial => new ModelInstallProgress("verifying", $"partial {update.Asset.Name}"),
+                ModelAssetDownloadStage.Verified => new ModelInstallProgress("verified", update.Asset.Name),
+                ModelAssetDownloadStage.Restarting =>
+                    new ModelInstallProgress("downloading", $"Restarting {update.Asset.Name} from the beginning"),
+                _ => new ModelInstallProgress("downloading", update.Asset.Name, update.BytesReceived, update.TotalBytes)
+            })), ModelAssetDownload.DefaultStallTimeout, cancellationToken);
 
     private async Task WriteInstallationMetadataAsync(
         GraniteEmbeddingModelDefinition model,
         string modelDirectory,
-        IReadOnlyList<DownloadAsset> assets,
+        IReadOnlyList<ModelAsset> assets,
         CancellationToken cancellationToken)
     {
         if (model.RequiresGemmaTerms)
@@ -310,16 +248,6 @@ public sealed class GraniteModelInstaller : IDisposable
         File.Move(partial, target, true);
     }
 
-    private static async Task<bool> HasExpectedHashAsync(string path, string expected, CancellationToken cancellationToken) =>
-        string.Equals(await HashAsync(path, cancellationToken).ConfigureAwait(false), expected, StringComparison.OrdinalIgnoreCase);
-
-    private static async Task<string> HashAsync(string path, CancellationToken cancellationToken)
-    {
-        await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1024 * 1024,
-            FileOptions.Asynchronous | FileOptions.SequentialScan);
-        return Convert.ToHexStringLower(await SHA256.HashDataAsync(stream, cancellationToken).ConfigureAwait(false));
-    }
-
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
@@ -336,5 +264,9 @@ public sealed class GraniteModelInstaller : IDisposable
         }
     }
 
-    private sealed record DownloadAsset(string Name, string Url, string Target, string Sha256);
+    /// <summary>Reports synchronously, so progress arrives in order on the downloading thread.</summary>
+    private sealed class InlineProgress(Action<ModelAssetDownloadProgress> report) : IProgress<ModelAssetDownloadProgress>
+    {
+        public void Report(ModelAssetDownloadProgress value) => report(value);
+    }
 }

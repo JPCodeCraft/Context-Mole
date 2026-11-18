@@ -169,6 +169,17 @@ public sealed class IndexingActivityTracker
         }
     }
 
+    /// <summary>Every claimed job across all projects, oldest claim first.</summary>
+    public IReadOnlyList<IndexingActivitySnapshot> GetActiveItems()
+    {
+        lock (_gate)
+        {
+            var now = _time.GetTimestamp();
+            return _active.Values.OrderBy(item => item.ClaimedTimestamp).Select(item => CreateSnapshot(item, now))
+                .ToArray();
+        }
+    }
+
     private IndexingActivitySnapshot CreateSnapshot(ActiveActivity item, long now)
     {
         var stageElapsed = item.StageStartedTimestamp is { } stageStarted

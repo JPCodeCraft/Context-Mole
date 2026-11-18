@@ -44,12 +44,20 @@ public sealed class SourceMemoryAdmission
     public static SourceMemoryAdmission CreateForCurrentProcess() =>
         new(CalculateBudget(GC.GetGCMemoryInfo().TotalAvailableMemoryBytes));
 
-    public async ValueTask<Lease> AcquireAsync(long sourceBytes, CancellationToken cancellationToken)
-    {
-        if (sourceBytes < ThresholdBytes) return Lease.None;
-        var reservation = sourceBytes > BudgetBytes / WorkingSetMultiplier
+    /// <summary>
+    /// The bytes <see cref="AcquireAsync"/> reserves for a source of <paramref name="sourceBytes"/>: nothing below the
+    /// threshold, the whole budget for a file too large to share it.
+    /// </summary>
+    public long ReservationFor(long sourceBytes) => sourceBytes < ThresholdBytes
+        ? 0
+        : sourceBytes > BudgetBytes / WorkingSetMultiplier
             ? BudgetBytes
             : sourceBytes * WorkingSetMultiplier;
+
+    public async ValueTask<Lease> AcquireAsync(long sourceBytes, CancellationToken cancellationToken)
+    {
+        var reservation = ReservationFor(sourceBytes);
+        if (reservation == 0) return Lease.None;
         // One waiter at a time accumulates capacity, so large files are admitted in arrival order and two
         // partially admitted files can never block each other.
         await _turn.WaitAsync(cancellationToken).ConfigureAwait(false);

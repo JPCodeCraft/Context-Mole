@@ -43,6 +43,36 @@ public interface IGlobalCpuBudget
     int MaximumWorkerCount { get; }
     ValueTask<ICpuWorkerLease> AcquireWorkerAsync(CancellationToken cancellationToken);
     ValueTask<ICpuFullCapacityLease> AcquireFullCapacityAsync(CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Gives back the CPU slot of the worker that <see cref="ICpuWorkerLease.Activate"/> made current, until the
+    /// returned scope is disposed. Use it around waits that need no processor time, such as a model download,
+    /// so they never keep other files from running. Disposing waits for a slot again, ahead of new work.
+    /// Without a current worker it does nothing.
+    /// </summary>
+    IAsyncDisposable SuspendWorker() => NoCpuWorkerSuspension.Instance;
+
+    /// <summary>How the slots are used right now, for diagnostics; null when the budget does not track it.</summary>
+    CpuBudgetUsage? DescribeUsage() => null;
+}
+
+/// <summary>
+/// A moment's view of an <see cref="IGlobalCpuBudget"/>: <paramref name="SlotsInUse"/> of <paramref name="SlotLimit"/>
+/// slots are taken (a full-capacity lease takes them all), and the waiters are queued in arrival order.
+/// </summary>
+public sealed record CpuBudgetUsage(
+    int SlotLimit,
+    int SlotsInUse,
+    int FullCapacityLeases,
+    int WaitingForSlot,
+    int WaitingForFullCapacity);
+
+/// <summary>The scope <see cref="IGlobalCpuBudget.SuspendWorker"/> returns when there is no slot to give back.</summary>
+public sealed class NoCpuWorkerSuspension : IAsyncDisposable
+{
+    public static readonly NoCpuWorkerSuspension Instance = new();
+    private NoCpuWorkerSuspension() { }
+    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }
 
 public interface IDocumentExtractor

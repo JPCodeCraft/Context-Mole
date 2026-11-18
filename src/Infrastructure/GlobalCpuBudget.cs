@@ -9,6 +9,7 @@ public sealed class GlobalCpuBudget : IGlobalCpuBudget, IDisposable
     private readonly AsyncLocal<WorkerLease?> _ambientWorker = new();
     private readonly LinkedList<Waiter> _waiters = [];
     private int _activeCapacity;
+    private int _fullCapacityLeases;
     private bool _disposed;
 
     public GlobalCpuBudget(ICpuUsageSettings settings)
@@ -39,6 +40,30 @@ public sealed class GlobalCpuBudget : IGlobalCpuBudget, IDisposable
             if (request.SuspendedWorker)
                 await ResumeWorkerAsync(worker!).ConfigureAwait(false);
             throw;
+        }
+    }
+
+    public IAsyncDisposable SuspendWorker()
+    {
+        var worker = _ambientWorker.Value;
+        if (worker is null || !ReferenceEquals(worker.Owner, this)) return NoCpuWorkerSuspension.Instance;
+        lock (_gate)
+        {
+            if (_disposed || worker.State != WorkerLeaseState.Held) return NoCpuWorkerSuspension.Instance;
+            worker.State = WorkerLeaseState.Suspended;
+            _activeCapacity--;
+            PumpWaitersLocked();
+        }
+        return new WorkerSuspension(this, worker);
+    }
+
+    public CpuBudgetUsage DescribeUsage()
+    {
+        lock (_gate)
+        {
+            var waitingForFullCapacity = _waiters.Count(waiter => waiter.FullCapacity);
+            return new CpuBudgetUsage(_settings.ThreadLimit, _activeCapacity, _fullCapacityLeases,
+                _waiters.Count - waitingForFullCapacity, waitingForFullCapacity);
         }
     }
 
@@ -101,6 +126,7 @@ public sealed class GlobalCpuBudget : IGlobalCpuBudget, IDisposable
             {
                 var capacity = _settings.ThreadLimit;
                 _activeCapacity = capacity;
+                _fullCapacityLeases++;
                 return new FullCapacityRequest(Task.FromResult(new CapacityGrant(capacity)), suspendedWorker);
             }
 
@@ -190,6 +216,7 @@ public sealed class GlobalCpuBudget : IGlobalCpuBudget, IDisposable
             if (lease.IsDisposed) return;
             lease.IsDisposed = true;
             _activeCapacity -= lease.ThreadCount;
+            _fullCapacityLeases--;
             if (lease.SuspendedWorker is { State: WorkerLeaseState.Suspended } worker)
             {
                 worker.State = WorkerLeaseState.Held;
@@ -225,6 +252,7 @@ public sealed class GlobalCpuBudget : IGlobalCpuBudget, IDisposable
                 _waiters.RemoveFirst();
                 waiter.Node = null;
                 _activeCapacity = limit;
+                _fullCapacityLeases++;
                 waiter.Completion.TrySetResult(new CapacityGrant(limit));
                 return;
             }
@@ -272,6 +300,15 @@ public sealed class GlobalCpuBudget : IGlobalCpuBudget, IDisposable
         public WorkerLease? SuspendedWorker { get; } = suspendedWorker;
         public bool IsDisposed { get; set; }
         public void Dispose() => owner.ReleaseFullCapacity(this);
+    }
+
+    private sealed class WorkerSuspension(GlobalCpuBudget owner, WorkerLease worker) : IAsyncDisposable
+    {
+        private int _resumed;
+
+        public ValueTask DisposeAsync() => Interlocked.Exchange(ref _resumed, 1) == 0
+            ? new ValueTask(owner.ResumeWorkerAsync(worker))
+            : ValueTask.CompletedTask;
     }
 
     private sealed class AmbientScope(GlobalCpuBudget owner, WorkerLease? previous) : IDisposable

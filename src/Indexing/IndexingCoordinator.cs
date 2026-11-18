@@ -775,12 +775,15 @@ public sealed partial class IndexingCoordinator(
                         }
 
                         activity.SetStage(IndexingPipelineStage.WaitingForCpu);
-                        // Reserve memory for a large source before taking a CPU slot, so a worker waiting for
-                        // memory never idles processor capacity that smaller files could use.
-                        if (source is not null)
-                            memory = await _sourceMemory.AcquireAsync(source.Length, jobCancellationToken)
-                                .ConfigureAwait(false);
-                        capacity = await _cpuBudget.AcquireWorkerAsync(jobCancellationToken).ConfigureAwait(false);
+                        using (WatchResourceWait(job, source?.Length))
+                        {
+                            // Reserve memory for a large source before taking a CPU slot, so a worker waiting for
+                            // memory never idles processor capacity that smaller files could use.
+                            if (source is not null)
+                                memory = await _sourceMemory.AcquireAsync(source.Length, jobCancellationToken)
+                                    .ConfigureAwait(false);
+                            capacity = await _cpuBudget.AcquireWorkerAsync(jobCancellationToken).ConfigureAwait(false);
+                        }
                         using (capacity.Activate())
                         {
                             activity.StartProcessing(job.Kind == IndexJobKind.EmbeddingRefresh

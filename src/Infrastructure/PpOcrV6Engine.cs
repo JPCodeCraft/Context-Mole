@@ -1,8 +1,5 @@
 using System.Diagnostics;
-using System.Net;
-using System.Net.Http.Headers;
 using System.Runtime.InteropServices;
-using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
@@ -26,6 +23,8 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
     private const string ArenaShrinkageConfigKey = "memory.enable_memory_arena_shrinkage";
     private const string CpuArenaShrinkageConfigValue = "cpu:0";
     internal static readonly TimeSpan DefaultSessionIdleTimeout = TimeSpan.FromMinutes(5);
+    /// <summary>How long OCR requests from indexing fail fast after model setup failed, instead of retrying it.</summary>
+    internal static readonly TimeSpan DefaultSetupRetryDelay = TimeSpan.FromMinutes(5);
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -60,6 +59,10 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
     private readonly CancellationTokenSource _lifetime = new();
     private readonly object _stateGate = new();
     private readonly TimeSpan _sessionIdleTimeout;
+    private readonly TimeSpan _downloadStallTimeout;
+    private readonly TimeSpan _setupRetryDelay;
+    private long _lastSetupFailureTimestamp;
+    private int _setupFailureCount;
     private readonly Timer _sessionIdleTimer;
     private InferenceSession? _detector;
     private InferenceSession? _recognizer;
@@ -97,14 +100,32 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
         ICpuUsageSettings cpuUsageSettings,
         IGlobalCpuBudget cpuBudget,
         TimeSpan sessionIdleTimeout)
+        : this(paths, cpuUsageSettings, cpuBudget, sessionIdleTimeout, httpHandler: null,
+            ModelAssetDownload.DefaultStallTimeout, DefaultSetupRetryDelay)
+    {
+    }
+
+    internal PpOcrV6Engine(
+        IAppPaths paths,
+        ICpuUsageSettings cpuUsageSettings,
+        IGlobalCpuBudget cpuBudget,
+        TimeSpan sessionIdleTimeout,
+        HttpMessageHandler? httpHandler,
+        TimeSpan downloadStallTimeout,
+        TimeSpan setupRetryDelay)
     {
         if (sessionIdleTimeout <= TimeSpan.Zero || sessionIdleTimeout == Timeout.InfiniteTimeSpan)
             throw new ArgumentOutOfRangeException(nameof(sessionIdleTimeout));
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(downloadStallTimeout, TimeSpan.Zero);
+        ArgumentOutOfRangeException.ThrowIfLessThan(setupRetryDelay, TimeSpan.Zero);
         _paths = paths;
         _cpuUsageSettings = cpuUsageSettings;
         _cpuBudget = cpuBudget;
         _sessionIdleTimeout = sessionIdleTimeout;
-        _client = new HttpClient { Timeout = TimeSpan.FromHours(2) };
+        _downloadStallTimeout = downloadStallTimeout;
+        _setupRetryDelay = setupRetryDelay;
+        _client = httpHandler is null ? new HttpClient() : new HttpClient(httpHandler, disposeHandler: false);
+        _client.Timeout = TimeSpan.FromHours(2);
         _client.DefaultRequestHeaders.UserAgent.ParseAdd("ContextMole/1.0");
         _sessionIdleTimer = new Timer(static state => ((PpOcrV6Engine)state!).StartIdleUnload(), this,
             Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
@@ -124,7 +145,37 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
         }
     }
 
-    public async Task PrepareAssetsAsync(CancellationToken cancellationToken = default)
+    public Task PrepareAssetsAsync(CancellationToken cancellationToken = default) =>
+        PrepareAssetsCoreAsync(failuresBefore: null, cancellationToken);
+
+    private bool AreAssetsPrepared => AreAssetsReady && (!_cachedAssetsOnly || _cachedAssetsVerified);
+
+    /// <summary>
+    /// Model setup for an OCR request: joins a download that is already running, but does not start another one
+    /// soon after setup failed. Each page of each queued file would otherwise retry the download in turn.
+    /// </summary>
+    private Task PrepareAssetsForRecognitionAsync(CancellationToken cancellationToken)
+    {
+        var failuresBefore = Volatile.Read(ref _setupFailureCount);
+        ThrowIfSetupFailedRecently();
+        return PrepareAssetsCoreAsync(failuresBefore, cancellationToken);
+    }
+
+    private void ThrowIfSetupFailedRecently()
+    {
+        var failed = Interlocked.Read(ref _lastSetupFailureTimestamp);
+        if (failed != 0 && Stopwatch.GetElapsedTime(failed) < _setupRetryDelay)
+            throw new ContextMoleException("ocr_setup_failed",
+                UnavailableReason ?? "PP-OCRv6 setup failed recently and will be tried again shortly.", true);
+    }
+
+    private void RecordSetupFailure()
+    {
+        Interlocked.Exchange(ref _lastSetupFailureTimestamp, Stopwatch.GetTimestamp());
+        Interlocked.Increment(ref _setupFailureCount);
+    }
+
+    private async Task PrepareAssetsCoreAsync(int? failuresBefore, CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
         if (_cachedAssetsOnly)
@@ -142,6 +193,14 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
         using var operation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _lifetime.Token);
         var operationToken = operation.Token;
         await _installGate.WaitAsync(operationToken).ConfigureAwait(false);
+        if (failuresBefore is { } count && Volatile.Read(ref _setupFailureCount) != count && !AreAssetsReady)
+        {
+            // The download this request waited for failed; report that instead of starting it again.
+            _installGate.Release();
+            ThrowIfSetupFailedRecently();
+            throw new ContextMoleException("ocr_setup_failed",
+                UnavailableReason ?? "PP-OCRv6 setup failed and will be tried again shortly.", true);
+        }
         try
         {
             ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
@@ -171,11 +230,13 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
         catch (ContextMoleException exception)
         {
             MarkAssetsUnavailable(exception.Message);
+            RecordSetupFailure();
             throw;
         }
         catch (Exception exception)
         {
             MarkAssetsUnavailable($"PP-OCRv6 setup failed: {exception.Message}");
+            RecordSetupFailure();
             throw new ContextMoleException("ocr_setup_failed", UnavailableReason!, true);
         }
         finally
@@ -214,7 +275,7 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
     {
         foreach (var asset in GetDownloadAssets(ModelDirectory))
             if (!File.Exists(asset.Target) ||
-                !await HasExpectedHashAsync(asset.Target, asset.Sha256, cancellationToken).ConfigureAwait(false))
+                !await ModelAssetDownload.HasExpectedHashAsync(asset.Target, asset.Sha256, cancellationToken).ConfigureAwait(false))
                 throw new ContextMoleException("ocr_cached_assets_unavailable",
                     $"{asset.Name} is missing or does not match its pinned checksum. Prepare the models separately before this cached-only run.");
         _cachedAssetsVerified = true;
@@ -276,7 +337,14 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
         var inferenceGateHeld = false;
         try
         {
-            await PrepareAssetsAsync(operationToken).ConfigureAwait(false);
+            if (!AreAssetsPrepared)
+            {
+                // Downloading and checking model files needs no processor time. Holding the indexing worker's
+                // CPU slot through it let files that need OCR take every slot while a slow or stalled download
+                // ran, so all other files sat in "Waiting for CPU or memory".
+                await using (_cpuBudget.SuspendWorker())
+                    await PrepareAssetsForRecognitionAsync(operationToken).ConfigureAwait(false);
+            }
             // Suspend the indexing worker lease and wait for full profile capacity so OCR uses
             // every CPU thread allowed by the current profile without competing with parsers.
             using var cpuCapacity = await _cpuBudget.AcquireFullCapacityAsync(operationToken).ConfigureAwait(false);
@@ -868,66 +936,17 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
         return value;
     }
 
-    private async Task DownloadVerifiedAsync(DownloadAsset asset, CancellationToken cancellationToken)
-    {
-        if (File.Exists(asset.Target) && await HasExpectedHashAsync(asset.Target, asset.Sha256, cancellationToken).ConfigureAwait(false))
-            return;
+    private Task DownloadVerifiedAsync(ModelAsset asset, CancellationToken cancellationToken) =>
+        ModelAssetDownload.DownloadVerifiedAsync(_client, asset, new DownloadStatus(this), _downloadStallTimeout,
+            cancellationToken);
 
-        var partial = asset.Target + ".partial";
-        if (File.Exists(partial) && await HasExpectedHashAsync(partial, asset.Sha256, cancellationToken).ConfigureAwait(false))
-        {
-            File.Move(partial, asset.Target, true);
-            return;
-        }
-
-        var existingLength = File.Exists(partial) ? new FileInfo(partial).Length : 0;
-        using var request = new HttpRequestMessage(HttpMethod.Get, asset.Url);
-        if (existingLength > 0) request.Headers.Range = new RangeHeaderValue(existingLength, null);
-        using var response = await _client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
-        response.EnsureSuccessStatusCode();
-
-        var append = existingLength > 0 && response.StatusCode == HttpStatusCode.PartialContent;
-        if (!append) existingLength = 0;
-        var total = response.Content.Headers.ContentRange?.Length ??
-                    (response.Content.Headers.ContentLength is { } remaining ? existingLength + remaining : null);
-
-        await using (var remote = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false))
-        await using (var local = new FileStream(partial, append ? FileMode.Append : FileMode.Create, FileAccess.Write, FileShare.None,
-                         1024 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan))
-        {
-            var buffer = new byte[1024 * 1024];
-            var received = existingLength;
-            while (true)
-            {
-                var read = await remote.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
-                if (read == 0) break;
-                await local.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
-                received += read;
-                SetUnavailable(total is > 0
-                    ? $"Downloading {asset.Name}… {received * 100d / total.Value:F0}%"
-                    : $"Downloading {asset.Name}… {received / (1024d * 1024d):F1} MB");
-            }
-            await local.FlushAsync(cancellationToken).ConfigureAwait(false);
-        }
-
-        SetUnavailable($"Verifying {asset.Name}…");
-        var actual = await HashAsync(partial, cancellationToken).ConfigureAwait(false);
-        if (!string.Equals(actual, asset.Sha256, StringComparison.OrdinalIgnoreCase))
-        {
-            File.Delete(partial);
-            throw new ContextMoleException("asset_checksum_mismatch",
-                $"Checksum verification failed for {asset.Name}. Expected {asset.Sha256}, received {actual}.");
-        }
-        File.Move(partial, asset.Target, true);
-    }
-
-    private static IReadOnlyList<DownloadAsset> GetDownloadAssets(string directory) =>
+    private static IReadOnlyList<ModelAsset> GetDownloadAssets(string directory) =>
     [
-        new DownloadAsset("PP-OCRv6 detector", BuildUrl(DetectorModelId, DetectorRevision, "inference.onnx"),
+        new ModelAsset("PP-OCRv6 detector", BuildUrl(DetectorModelId, DetectorRevision, "inference.onnx"),
             Path.Combine(directory, "detector.onnx"), DetectorSha256),
-        new DownloadAsset("PP-OCRv6 recognizer", BuildUrl(RecognizerModelId, RecognizerRevision, "inference.onnx"),
+        new ModelAsset("PP-OCRv6 recognizer", BuildUrl(RecognizerModelId, RecognizerRevision, "inference.onnx"),
             Path.Combine(directory, "recognizer.onnx"), RecognizerSha256),
-        new DownloadAsset("PP-OCRv6 character dictionary",
+        new ModelAsset("PP-OCRv6 character dictionary",
             BuildUrl(RecognizerModelId, RecognizerRevision, "inference.yml"),
             Path.Combine(directory, "recognizer.yml"), RecognizerConfigSha256)
     ];
@@ -970,6 +989,7 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
 
     internal void MarkAssetsPrepared()
     {
+        Interlocked.Exchange(ref _lastSetupFailureTimestamp, 0);
         lock (_stateGate)
         {
             _areAssetsReady = true;
@@ -1058,16 +1078,6 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
     private string ModelDirectory => Path.Combine(_paths.AssetsDirectory, "pp-ocrv6-medium",
         $"{DetectorRevision[..12]}-{RecognizerRevision[..12]}");
 
-    private static async Task<bool> HasExpectedHashAsync(string path, string expected, CancellationToken cancellationToken) =>
-        string.Equals(await HashAsync(path, cancellationToken).ConfigureAwait(false), expected, StringComparison.OrdinalIgnoreCase);
-
-    private static async Task<string> HashAsync(string path, CancellationToken cancellationToken)
-    {
-        await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1024 * 1024,
-            FileOptions.Asynchronous | FileOptions.SequentialScan);
-        return Convert.ToHexStringLower(await SHA256.HashDataAsync(stream, cancellationToken).ConfigureAwait(false));
-    }
-
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
@@ -1107,7 +1117,24 @@ public sealed class PpOcrV6Engine : IOcrEngine, IDisposable
         return new StandaloneCpuDependencies(settings, new GlobalCpuBudget(settings));
     }
 
-    private sealed record DownloadAsset(string Name, string Url, string Target, string Sha256);
+    /// <summary>Shows download progress as the reason OCR is not ready yet.</summary>
+    private sealed class DownloadStatus(PpOcrV6Engine owner) : IProgress<ModelAssetDownloadProgress>
+    {
+        public void Report(ModelAssetDownloadProgress value)
+        {
+            switch (value.Stage)
+            {
+                case ModelAssetDownloadStage.Downloading:
+                    owner.SetUnavailable(value.TotalBytes is > 0
+                        ? $"Downloading {value.Asset.Name}… {value.BytesReceived * 100d / value.TotalBytes.Value:F0}%"
+                        : $"Downloading {value.Asset.Name}… {value.BytesReceived / (1024d * 1024d):F1} MB");
+                    break;
+                case ModelAssetDownloadStage.VerifyingDownload:
+                    owner.SetUnavailable($"Verifying {value.Asset.Name}…");
+                    break;
+            }
+        }
+    }
     private sealed record StandaloneCpuDependencies(CpuUsageSettings Settings, GlobalCpuBudget Budget);
     private readonly record struct TextBox(int Left, int Top, int Right, int Bottom);
     private sealed record RecognizedLine(TextBox Box, string Text, double Confidence);
