@@ -43,6 +43,17 @@ and numbering, and aligns prose chunks to sentences. Every v5 source queues one
 source-backed re-extraction, including OCR. Previous active evidence stays
 available until each replacement commits, and the database schema is unchanged.
 
+## Office, OpenDocument and layout preparation upgrade
+
+The `layout-v7/spans-v4/body-context-v6` preparation (v0.5.0) indexes Word
+content controls, extracts PowerPoint, ODT and ODP tables as structured tables
+and slide titles as headings, pairs spreadsheet values under title rows and
+sub-table headers, keeps multi-column PDF reading order across tighter layouts,
+replaces garbled hidden text in scanned PDFs with OCR, and adds email header
+blocks to meaning-based search. Every v6 source queues one source-backed
+re-extraction, including OCR. Previous active evidence stays available until
+each replacement commits, and the database schema is unchanged.
+
 ## Regression coverage
 
 `MigrationRegressionTests` exercises representative schema 6 and 7 indexes with active evidence, attachments, old vectors, paused projects, unavailable and missing sources, exact literal excerpts, passage/section search and reading, old location fallback, foreign-key/FTS integrity, failed migration rollback and retry, repeated startup, failed atomic replacement, interrupted staging recovery (including staging child rows), superseded-evidence exclusion, and a successful source-backed replacement. Separate preparation refresh tests verify that stale preparation cannot be relabeled by embedding-only repair. These are local fixture tests; they do not claim recovery of data deleted by a previously released upgrade.

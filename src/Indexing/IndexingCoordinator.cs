@@ -1374,7 +1374,9 @@ public sealed partial class IndexingCoordinator(
                     if (rows[i].CellCount == 1 && i + 2 < rows.Length &&
                         rows[i + 1].Row == currentRow + 1 && rows[i + 2].Row == currentRow + 2 &&
                         rows[i + 1].CellCount >= 2 &&
-                        IsCleanSubtableHeader(rows[i + 1].Text, out var subBannerHeader))
+                        IsCleanSubtableHeader(rows[i + 1].Text, out var subBannerHeader) &&
+                        (string.Equals(subBannerHeader.Display, activeHeader?.Display, StringComparison.OrdinalIgnoreCase) ||
+                         StartsSubtable(subBannerHeader, activeHeader, rows[i + 2].Text)))
                     {
                         activeCaption = ExtractSpreadsheetCellValue(rows[i].Text);
                         activeHeader = subBannerHeader;
@@ -1382,7 +1384,8 @@ public sealed partial class IndexingCoordinator(
                     else if (rows[i].CellCount >= 2 && i + 1 < rows.Length &&
                         rows[i + 1].Row == currentRow + 1 &&
                         IsCleanSubtableHeader(rows[i].Text, out var subHeader) &&
-                        !string.Equals(subHeader.Display, activeHeader?.Display, StringComparison.OrdinalIgnoreCase))
+                        !string.Equals(subHeader.Display, activeHeader?.Display, StringComparison.OrdinalIgnoreCase) &&
+                        StartsSubtable(subHeader, activeHeader, rows[i + 1].Text))
                     {
                         activeHeader = subHeader;
                     }
@@ -1426,6 +1429,21 @@ public sealed partial class IndexingCoordinator(
             }
             header = parsed;
             return true;
+        }
+
+        // A text-only row after a blank row is often just more data ("Bob | London | UK"), and
+        // taking it as a header would label every row below it with those values. It starts a new
+        // table only when the row under it puts a number or date under one of its labels, or when it
+        // names columns outside the active header and the row under it stays within them. An
+        // all-text table in the same columns keeps the active header, as before banner detection.
+        static bool StartsSubtable(TableSemantics.Header candidate, TableSemantics.Header? active, string nextRowText)
+        {
+            var labels = candidate.Columns ?? new Dictionary<string, string>(StringComparer.Ordinal);
+            var next = TableSemantics.ReferencedCells(nextRowText);
+            if (next.Any(cell => labels.ContainsKey(cell.Key) && cell.Value.Any(char.IsDigit))) return true;
+            if (active?.Columns is not { Count: > 0 } activeColumns) return false;
+            return labels.Keys.Any(column => !activeColumns.ContainsKey(column)) &&
+                   next.Keys.All(labels.ContainsKey);
         }
 
         static bool IsHeaderYear(string value) =>

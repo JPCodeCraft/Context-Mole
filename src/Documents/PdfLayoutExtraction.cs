@@ -296,7 +296,14 @@ public sealed partial class DocumentExtractionRegistry
         Math.Max(0, Math.Min(first.X + first.Width, second.X + second.Width) - Math.Max(first.X, second.X)) *
         Math.Max(0, Math.Min(first.Y + first.Height, second.Y + second.Height) - Math.Max(first.Y, second.Y));
 
-    private static double TextQuality(string text)
+    /// <param name="tolerateScatteredNoise">
+    /// For the decision to skip OCR on a page with native text. Code identifiers ("getElementById",
+    /// "std::map", "C#/.NET"), legal citations and short symbol-only blocks ("* * *") look like OCR
+    /// garble one token or block at a time, so penalizing them here would send clean born-digital
+    /// pages through OCR. A broken glyph mapping garbles most words of a block, so only that is
+    /// penalized. Comparisons between native and OCR text keep the strict score.
+    /// </param>
+    private static double TextQuality(string text, bool tolerateScatteredNoise = false)
     {
         var normalized = TextNormalization.ForSearch(text);
         if (normalized.Length == 0) return 0;
@@ -305,15 +312,18 @@ public sealed partial class DocumentExtractionRegistry
         var replacements = normalized.Count(character => character is '\uFFFD' or '\0');
         var nonWhitespace = normalized.Count(character => !char.IsWhiteSpace(character));
         var alphaNumeric = normalized.Count(char.IsLetterOrDigit);
-        var symbolNoisePenalty = nonWhitespace >= 3 && alphaNumeric / (double)nonWhitespace < 0.45
+        var symbolNoisePenalty = nonWhitespace >= (tolerateScatteredNoise ? 20 : 3) &&
+                                 alphaNumeric / (double)nonWhitespace < 0.45
             ? (0.55 - alphaNumeric / (double)nonWhitespace) * 1.5
             : 0;
         var words = normalized.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         var longWords = words.Count(word => word.Length > 30);
         var garbledWords = words.Count(IsGarbledOcrToken);
+        var garbledShare = garbledWords / (double)Math.Max(1, words.Length);
+        if (tolerateScatteredNoise && (garbledWords < 3 || garbledShare < 0.5)) garbledShare = 0;
         return Math.Clamp(printable / (double)normalized.Length - replacements / (double)normalized.Length * 8 -
             longWords / (double)Math.Max(1, words.Length) * 0.5 - symbolNoisePenalty -
-            garbledWords / (double)Math.Max(1, words.Length) * 1.4, 0, 1);
+            garbledShare * 1.4, 0, 1);
     }
 
     private static bool IsGarbledOcrToken(string token)

@@ -177,7 +177,8 @@ public sealed partial class DocumentExtractionRegistry(IOcrEngine ocrEngine) : I
             var normalized = TextNormalization.ForSearch(text, dehyphenateLineBreaks: true);
             var alphanumerics = normalized.Count(char.IsLetterOrDigit);
             var tokens = normalized.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length;
-            if (alphanumerics >= 80 && tokens >= 10 && nativeBlocks.All(block => TextQuality(block.Text) >= 0.85) &&
+            if (alphanumerics >= 80 && tokens >= 10 &&
+                nativeBlocks.All(block => TextQuality(block.Text, tolerateScatteredNoise: true) >= 0.85) &&
                 !HasUncoveredPdfImages(page, nativeBlocks))
             {
                 continue;

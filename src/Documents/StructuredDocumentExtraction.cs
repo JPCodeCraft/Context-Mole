@@ -2,6 +2,7 @@ using System.Globalization;
 using System.IO.Compression;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Xml;
 using System.Xml.Linq;
 
@@ -124,7 +125,7 @@ public sealed partial class DocumentExtractionRegistry
             FlattenJson(document.RootElement, "$", lines);
             var sections = lines.Count == 0
                 ? Array.Empty<ExtractedSection>()
-                : [new ExtractedSection(string.Join(Environment.NewLine, lines),
+                : [new ExtractedSection(string.Join('\n', lines),
                     new SourceLocation(LocationKind.Structure, StructurePath: "$"), ExtractionMethod.NativeText)];
             return new ExtractedNode(name, mimeType, relationship, sections, []);
         }
@@ -159,7 +160,7 @@ public sealed partial class DocumentExtractionRegistry
             {
                 values.Add(line);
             }
-            sections.Add(new ExtractedSection(string.Join(Environment.NewLine, values),
+            sections.Add(new ExtractedSection(string.Join('\n', values),
                 new SourceLocation(LocationKind.Structure, StructurePath: $"line[{lineNumber}]"),
                 ExtractionMethod.NativeText));
         }
@@ -209,7 +210,7 @@ public sealed partial class DocumentExtractionRegistry
             var attributes = element.Attributes().Where(attribute => !attribute.IsNamespaceDeclaration)
                 .Select(attribute => $"@{attribute.Name.LocalName}: {attribute.Value}");
             var directText = string.Concat(element.Nodes().OfType<XText>().Select(node => node.Value)).Trim();
-            var text = string.Join(Environment.NewLine, attributes.Append(directText)
+            var text = string.Join('\n', attributes.Append(directText)
                 .Where(value => !string.IsNullOrWhiteSpace(value)));
             if (string.IsNullOrWhiteSpace(text)) continue;
             var path = "/" + string.Join('/', element.AncestorsAndSelf().Reverse().Select(item => item.Name.LocalName));
@@ -279,14 +280,23 @@ public sealed partial class DocumentExtractionRegistry
             element.Name == TableNs + "covered-table-cell" ||
             Repetition(element, TableNs + "number-columns-spanned") > 1 ||
             Repetition(element, TableNs + "number-rows-spanned") > 1);
-        var allRows = table.Elements().SelectMany(element =>
-            element.Name == TableNs + "table-header-rows"
-                ? element.Elements(TableNs + "table-row")
-                : element.Name == TableNs + "table-row" ? [element] : []);
-        var lines = allRows.Select(row => string.Join('\t', row.Elements(TableNs + "table-cell")
+        var lines = OdfTableRows(table).Select(row => string.Join('\t', row.Elements(TableNs + "table-cell")
                 .Select(cell => TextNormalization.ForSearch(OdfCellText(cell)))))
             .Where(line => !string.IsNullOrWhiteSpace(line));
-        return (string.Join(Environment.NewLine, lines), hasSpans);
+        return (string.Join('\n', lines), hasSpans);
+
+        // Rows sit directly in the table or inside header-row, row and row-group wrappers, which
+        // can nest. Rows of a table nested in a cell belong to that cell, not to this table.
+        static IEnumerable<XElement> OdfTableRows(XElement container)
+        {
+            foreach (var element in container.Elements())
+            {
+                if (element.Name == TableNs + "table-row") yield return element;
+                else if (element.Name == TableNs + "table-header-rows" || element.Name == TableNs + "table-rows" ||
+                         element.Name == TableNs + "table-row-group")
+                    foreach (var row in OdfTableRows(element)) yield return row;
+            }
+        }
     }
 
     private async Task<ExtractedNode> OpenDocumentSpreadsheetNodeAsync(byte[] bytes, string name, string? mimeType,
@@ -345,10 +355,11 @@ public sealed partial class DocumentExtractionRegistry
             cancellationToken.ThrowIfCancellationRequested();
             slide++;
             var pageName = (string?)page.Attribute(DrawNs + "name");
-            var heading = string.IsNullOrWhiteSpace(pageName) ? null : pageName;
+            // LibreOffice names unnamed slides "page1", "page2"...; those say nothing about the slide.
+            var heading = string.IsNullOrWhiteSpace(pageName) || DefaultOdfPageName().IsMatch(pageName) ? null : pageName;
             var headingPath = heading is null ? Array.Empty<string>() : [heading];
             var sectionKey = $"slide:{slide}";
-            var text = string.Join(Environment.NewLine,
+            var text = string.Join('\n',
                 page.Descendants().Where(element => (element.Name == TextNs + "h" || element.Name == TextNs + "p") &&
                         element.Ancestors(TableNs + "table").FirstOrDefault() is null)
                     .Select(OdfText).Where(value => !string.IsNullOrWhiteSpace(value)));
@@ -509,7 +520,7 @@ public sealed partial class DocumentExtractionRegistry
         }
         if (element.Name == TextNs + "line-break")
         {
-            output.AppendLine();
+            output.Append('\n');
             return;
         }
         foreach (var child in element.Nodes()) AppendOdfText(child, output);
@@ -657,7 +668,7 @@ public sealed partial class DocumentExtractionRegistry
             else if (word == "bin" && parameter is > 0) binary = parameter.Value;
             else if (!state.Ignorable)
             {
-                if (word is "par" or "line") output.AppendLine();
+                if (word is "par" or "line") output.Append('\n');
                 else if (word == "tab") output.Append('\t');
                 else if (word == "emdash") output.Append('—');
                 else if (word == "endash") output.Append('–');
@@ -675,6 +686,9 @@ public sealed partial class DocumentExtractionRegistry
         "headerr", "footerl", "footerr", "filetbl", "listtable", "listoverridetable", "generator", "xmlnstbl",
         "datastore", "themedata", "colorschememapping"
     };
+
+    [GeneratedRegex(@"^page\d+$", RegexOptions.CultureInvariant)]
+    private static partial Regex DefaultOdfPageName();
 
     private readonly record struct RtfState(bool Ignorable, int UnicodeFallback);
     private sealed record EpubManifestItem(string? Id, string? Href, string? MediaType);

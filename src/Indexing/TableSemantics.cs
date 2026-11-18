@@ -91,6 +91,19 @@ public static partial class TableSemantics
         return string.Join('\n', output);
     }
 
+    /// <summary>Non-empty values of a spreadsheet row ("A1: value" cells) by column letter.</summary>
+    public static IReadOnlyDictionary<string, string> ReferencedCells(string rowText)
+    {
+        var cells = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var raw in rowText.Split('\t'))
+        {
+            var (column, value) = SplitReference(raw);
+            value = TextNormalization.ForSearch(value);
+            if (column is not null && value.Length > 0) cells[column] = value;
+        }
+        return cells;
+    }
+
     private static (string? Column, string Value) SplitReference(string cell)
     {
         var match = CellReference().Match(cell);
