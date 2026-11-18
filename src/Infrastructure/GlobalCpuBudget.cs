@@ -42,6 +42,20 @@ public sealed class GlobalCpuBudget : IGlobalCpuBudget, IDisposable
         }
     }
 
+    public IAsyncDisposable SuspendWorker()
+    {
+        var worker = _ambientWorker.Value;
+        if (worker is null || !ReferenceEquals(worker.Owner, this)) return NoCpuWorkerSuspension.Instance;
+        lock (_gate)
+        {
+            if (_disposed || worker.State != WorkerLeaseState.Held) return NoCpuWorkerSuspension.Instance;
+            worker.State = WorkerLeaseState.Suspended;
+            _activeCapacity--;
+            PumpWaitersLocked();
+        }
+        return new WorkerSuspension(this, worker);
+    }
+
     public void Dispose()
     {
         Waiter[] waiting;
@@ -272,6 +286,15 @@ public sealed class GlobalCpuBudget : IGlobalCpuBudget, IDisposable
         public WorkerLease? SuspendedWorker { get; } = suspendedWorker;
         public bool IsDisposed { get; set; }
         public void Dispose() => owner.ReleaseFullCapacity(this);
+    }
+
+    private sealed class WorkerSuspension(GlobalCpuBudget owner, WorkerLease worker) : IAsyncDisposable
+    {
+        private int _resumed;
+
+        public ValueTask DisposeAsync() => Interlocked.Exchange(ref _resumed, 1) == 0
+            ? new ValueTask(owner.ResumeWorkerAsync(worker))
+            : ValueTask.CompletedTask;
     }
 
     private sealed class AmbientScope(GlobalCpuBudget owner, WorkerLease? previous) : IDisposable

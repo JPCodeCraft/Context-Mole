@@ -62,7 +62,8 @@ public sealed class ProjectIssueGroupViewModel : ViewModelBase
     public string RecoveryGuidance => _source.Details.Any(detail => detail.Code == "ocr_platform_unsupported")
         ? "OCR is unavailable on this platform. Use a supported platform or a source copy with readable text. Retrying unchanged images will not add OCR."
         : _source.Details.Any(detail => detail.Code is "ocr_unavailable" or "ocr_not_available" or "ocr_setup_failed" or
-            "ocr_cached_assets_unavailable" or "ocr_initialization_failed" or "model_unavailable")
+            "ocr_cached_assets_unavailable" or "ocr_initialization_failed" or "model_unavailable" or
+            "model_download_stalled")
         ? "Setup blocked: check OCR or the selected semantic model in Settings before retrying."
         : _source.Details.Any(detail => detail.Code is "ocr_timeout" or "ocr_failed")
             ? "OCR processing failed. Check Document OCR in Settings and verify that the source opens, then retry this file."
