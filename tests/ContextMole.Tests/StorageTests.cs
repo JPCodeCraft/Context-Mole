@@ -770,6 +770,12 @@ public sealed class StorageTests
             await database.Writer.RetryFailedFilesAsync(projectId, cancellationToken));
         Assert.Equal(new RetryFailedFilesResult(0, 1),
             await database.Writer.RetryFailedFilesAsync(projectId, cancellationToken));
+        // A queued retry (or a whole-index reindex) shows the file as pending, but its error still stands.
+        var retrying = Assert.Single((await database.Store.ListDocumentsAsync(new DocumentListRequest(projectId,
+            DocumentStatusFilter.Error), cancellationToken)).Documents);
+        Assert.Equal(bravo.Observation.DocumentId, retrying.DocumentId);
+        Assert.Equal(DocumentInventoryStatus.Pending, retrying.Status);
+        Assert.Equal(1, retrying.ErrorCount);
         var retry = await database.Writer.LeaseNextJobAsync(TimeSpan.FromMinutes(1), cancellationToken);
         Assert.NotNull(retry);
         Assert.Equal(bravo.Observation.DocumentId, retry.DocumentId);

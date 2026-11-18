@@ -54,6 +54,20 @@ blocks to meaning-based search. Every v6 source queues one source-backed
 re-extraction, including OCR. Previous active evidence stays available until
 each replacement commits, and the database schema is unchanged.
 
+## Outlook email header repair
+
+Up to v0.5.0, the header block of Outlook `.msg` messages (standalone, attached
+or inside archives) named MsgReader's internal object types instead of the
+sender and recipients, for example `From: MsgReader.Outlook.Storage+Sender`.
+The fix keeps the `layout-v7/spans-v4/body-context-v6` preparation, so it does
+not re-extract or re-OCR the whole index. Instead, each startup queues a
+source-backed reindex for just the documents whose active `.msg` evidence still
+has such a header. Once a document is re-extracted its header no longer matches,
+so later startups queue nothing; a document with open work is left to it, and a
+repair that fails is not reopened, as with preparation upgrades. Previous active
+evidence stays available until each replacement commits, and the database schema
+is unchanged.
+
 ## Regression coverage
 
 `MigrationRegressionTests` exercises representative schema 6 and 7 indexes with active evidence, attachments, old vectors, paused projects, unavailable and missing sources, exact literal excerpts, passage/section search and reading, old location fallback, foreign-key/FTS integrity, failed migration rollback and retry, repeated startup, failed atomic replacement, interrupted staging recovery (including staging child rows), superseded-evidence exclusion, and a successful source-backed replacement. Separate preparation refresh tests verify that stale preparation cannot be relabeled by embedding-only repair. These are local fixture tests; they do not claim recovery of data deleted by a previously released upgrade.
