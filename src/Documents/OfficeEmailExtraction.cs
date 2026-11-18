@@ -68,7 +68,7 @@ public sealed partial class DocumentExtractionRegistry
                             var rows = table.Elements<W.TableRow>()
                                 .Select(row => string.Join("\t", row.Elements<W.TableCell>().Select(OpenXmlText)))
                                 .Where(row => !string.IsNullOrWhiteSpace(row));
-                            var text = string.Join(Environment.NewLine, rows);
+                            var text = string.Join('\n', rows);
                             if (!string.IsNullOrWhiteSpace(text))
                                 sections.Add(new ExtractedSection(text,
                                     new SourceLocation(LocationKind.Structure,
@@ -227,7 +227,7 @@ public sealed partial class DocumentExtractionRegistry
             var slideHeadingPath = slideHeading is null ? Array.Empty<string>() : [slideHeading];
             var slideSectionKey = $"slide:{slideNumber}";
 
-            var text = string.Join(Environment.NewLine,
+            var text = string.Join('\n',
                 slide.Descendants<A.Paragraph>()
                     .Where(paragraph => paragraph.Ancestors<A.Table>().FirstOrDefault() is null)
                     .Select(OpenXmlText).Where(value => !string.IsNullOrWhiteSpace(value)));
@@ -248,7 +248,7 @@ public sealed partial class DocumentExtractionRegistry
                         .Where(cell => cell.HorizontalMerge?.Value != true && cell.VerticalMerge?.Value != true)
                         .Select(cell => TextNormalization.ForSearch(OpenXmlText(cell)))))
                     .Where(row => !string.IsNullOrWhiteSpace(row));
-                var tableText = string.Join(Environment.NewLine, tableRows);
+                var tableText = string.Join('\n', tableRows);
                 if (!string.IsNullOrWhiteSpace(tableText))
                     sections.Add(new ExtractedSection(tableText,
                         new SourceLocation(LocationKind.Slide, Slide: slideNumber,
@@ -260,7 +260,7 @@ public sealed partial class DocumentExtractionRegistry
 
             if (slidePart.NotesSlidePart?.NotesSlide is { } notes)
             {
-                var notesText = string.Join(Environment.NewLine,
+                var notesText = string.Join('\n',
                     notes.Descendants<A.Paragraph>().Select(OpenXmlText).Where(value => !string.IsNullOrWhiteSpace(value)));
                 if (!string.IsNullOrWhiteSpace(notesText))
                     sections.Add(new ExtractedSection(notesText,

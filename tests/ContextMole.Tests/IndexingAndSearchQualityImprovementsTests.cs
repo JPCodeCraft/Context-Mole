@@ -25,7 +25,7 @@ using W = DocumentFormat.OpenXml.Wordprocessing;
 namespace ContextMole.Tests;
 
 [Collection(nameof(SqliteIntegrationCollection))]
-public sealed class IndexingQualityImprovementsTests
+public sealed partial class IndexingQualityImprovementsTests
 {
     private static CancellationToken Token => TestContext.Current.CancellationToken;
 
